@@ -1,0 +1,8 @@
+# FranklinWH-Automation Dependencies
+# Python 3.11+ required
+
+# Franklin WH API library
+franklinwh==0.13.0
+
+# HTTP requests for PVOutput and Weather Underground APIs
+requests>=2.31.0
