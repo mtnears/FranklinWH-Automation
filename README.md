@@ -73,7 +73,7 @@ The system runs on a schedule optimized for PG&E E-TOU-D rates (5 PM - 8 PM peak
 
 ```bash
 # Clone repository
-git clone https://github.com/YOUR-USERNAME/FranklinWH-Automation.git
+git clone https://github.com/mtnears/FranklinWH-Automation.git
 cd FranklinWH-Automation
 
 # Create virtual environment
