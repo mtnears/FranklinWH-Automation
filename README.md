@@ -41,6 +41,23 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 
 ---
 
+## Deployment Options
+
+This automation can be deployed in two ways:
+
+### Native Installation (Recommended for single system)
+- Direct installation on Synology NAS, Raspberry Pi, or Linux
+- Minimal overhead, simple setup
+- See [INSTALLATION.md](docs/INSTALLATION.md)
+
+### Docker Deployment (Recommended for portability)
+- Run in isolated containers
+- Easy to deploy across multiple systems
+- Consistent environment everywhere
+- See [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md)
+
+---
+
 ## 🔧 How It Works
 
 ### Core Automation (`smart_decision.py`)
@@ -349,6 +366,7 @@ MILESTONES = [8, 10, 12, 14, 16]  # Hours to send status
 - **[API Documentation](docs/API_REFERENCE.md)** - Franklin WH API details
 - **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Task Scheduler Setup](docs/TASK_SCHEDULER.md)** - Synology and cron configuration
+- **[DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) - Docker deployment guide
 
 ---
 

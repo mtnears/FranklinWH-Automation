@@ -1,0 +1,65 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+README.md
+LICENSE
+CONTRIBUTING.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+venv311/
+env/
+ENV/
+
+# Logs and data
+logs/
+*.log
+*.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+@eaDir/
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Sensitive data
+*.key
+*.pem
+*.env
+.env.local

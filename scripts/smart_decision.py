@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
+#!/volume1/docker/franklin/venv311/bin/python3
 """
 Smart Battery Decision - Single Run
 Makes one intelligent decision about charging vs. waiting for solar
 Designed to be run every 15 minutes via scheduler
-
-This is the CORE AUTOMATION script that replaces the old three-tier system.
-It uses peak state tracking to ensure intelligent decisions throughout the day.
 """
 import asyncio
 import csv
@@ -13,7 +10,6 @@ import subprocess
 from datetime import datetime, timedelta
 from franklinwh import Client, TokenFetcher
 
-# REPLACE WITH YOUR FRANKLIN WH CREDENTIALS
 USERNAME = "YOUR_EMAIL@example.com"
 PASSWORD = "YOUR_PASSWORD"
 GATEWAY_ID = "YOUR_GATEWAY_ID"
@@ -24,12 +20,12 @@ STATE_FILE = "/volume1/docker/franklin/logs/last_mode.txt"
 PEAK_STATE_FILE = "/volume1/docker/franklin/logs/peak_state.txt"
 
 # Configuration
-TARGET_SOC = 95.0                    # Target battery charge before peak
-PEAK_START_HOUR = 17                 # 5 PM (adjust for your TOU schedule)
-PEAK_END_HOUR = 20                   # 8 PM (adjust for your TOU schedule)
-CHARGE_RATE_PER_HOUR = 32.0          # Battery charges at ~32%/hour from grid
-SAFETY_MARGIN_HOURS = 0.5            # Buffer time for charging
-MIN_SOLAR_FOR_WAIT = 0.5             # Minimum solar kW to wait vs grid charge
+TARGET_SOC = 95.0
+PEAK_START_HOUR = 17  # 5 PM
+PEAK_END_HOUR = 20    # 8 PM
+CHARGE_RATE_PER_HOUR = 32.0
+SAFETY_MARGIN_HOURS = 0.5
+MIN_SOLAR_FOR_WAIT = 0.5
 
 def log_intelligence(message):
     """Write to intelligence log with timestamp"""
@@ -53,7 +49,7 @@ def save_mode(mode):
 def switch_to_backup():
     """Switch to Emergency Backup mode"""
     try:
-        log_intelligence("🔌 SWITCHING TO EMERGENCY BACKUP MODE (grid charging)")
+        log_intelligence("SWITCHING TO EMERGENCY BACKUP MODE (grid charging)")
         subprocess.run(['/volume1/docker/franklin/switch_to_backup_v2.py'],
                       capture_output=True, text=True, timeout=60)
         return True
@@ -64,7 +60,7 @@ def switch_to_backup():
 def switch_to_tou():
     """Switch to TOU mode"""
     try:
-        log_intelligence("☀️ SWITCHING TO TOU MODE (solar-first)")
+        log_intelligence("SWITCHING TO TOU MODE (solar-first)")
         subprocess.run(['/volume1/docker/franklin/switch_to_tou_v2.py'],
                       capture_output=True, text=True, timeout=60)
         return True
@@ -96,15 +92,15 @@ def update_peak_state():
 
     current_state = get_peak_state()
 
-    # Determine if we're in peak period (5 PM - 8 PM by default)
+    # Determine if we're in peak period (5 PM - 8 PM)
     in_peak_window = (PEAK_START_HOUR <= current_hour < PEAK_END_HOUR)
 
     if in_peak_window:
-        # We're in the peak time window
+        # We're in the peak time window (5-8 PM)
         new_state = f"Peak-{today_date}"
         if current_state != new_state:
             save_peak_state(new_state)
-            log_intelligence(f"📊 Peak period started: {new_state}")
+            log_intelligence(f"Peak period started: {new_state}")
         return True
     else:
         # We're outside peak window
@@ -112,18 +108,18 @@ def update_peak_state():
         if current_state and current_state.startswith("Peak-"):
             # We just exited peak period
             save_peak_state(new_state)
-            log_intelligence(f"📊 Peak period ended: {new_state}")
+            log_intelligence(f"Peak period ended: {new_state}")
         elif current_state != new_state:
             # Normal update (midnight rollover, etc)
             save_peak_state(new_state)
         return False
 
 def calculate_time_to_peak():
-    """Calculate hours until next peak period (5 PM by default)"""
+    """Calculate hours until next peak period (5 PM)"""
     now = datetime.now()
     peak_today = now.replace(hour=PEAK_START_HOUR, minute=0, second=0, microsecond=0)
 
-    # If we're past today's peak END time, calculate to tomorrow's peak
+    # If we're past today's peak END time (8 PM), calculate to tomorrow's peak
     peak_end_today = now.replace(hour=PEAK_END_HOUR, minute=0, second=0, microsecond=0)
     if now >= peak_end_today:
         # Peak is tomorrow
@@ -142,7 +138,7 @@ def should_charge_from_grid(soc, solar_kw, hours_to_peak, in_peak):
     Decide: grid charge or wait for solar?
     Returns: (should_charge, reason)
     """
-    # NEVER change modes during peak period
+    # NEVER change modes during peak period (5-8 PM)
     if in_peak:
         return False, f"IN PEAK PERIOD - no charging decisions (SOC: {soc:.1f}%)"
 

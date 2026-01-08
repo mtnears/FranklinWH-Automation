@@ -1,3 +1,5 @@
+> **Note:** This guide covers native installation. For Docker deployment, see [DOCKER_INSTALLATION.md](DOCKER_INSTALLATION.md).
+
 # Installation Guide
 
 **Complete step-by-step installation for Franklin WH Battery Automation**

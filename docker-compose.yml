@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  franklin-automation:
+    build: .
+    image: franklin-automation:latest
+    container_name: franklin-battery
+    restart: unless-stopped
+    
+    environment:
+      # Franklin WH Credentials - REQUIRED
+      - FRANKLIN_USERNAME=${FRANKLIN_USERNAME}
+      - FRANKLIN_PASSWORD=${FRANKLIN_PASSWORD}
+      - FRANKLIN_GATEWAY_ID=${FRANKLIN_GATEWAY_ID}
+      
+      # Peak Period Configuration - REQUIRED
+      - PEAK_START_HOUR=${PEAK_START_HOUR:-17}
+      - PEAK_END_HOUR=${PEAK_END_HOUR:-20}
+      
+      # Battery Configuration - REQUIRED
+      - CHARGE_RATE_PER_HOUR=${CHARGE_RATE_PER_HOUR:-32.0}
+      
+      # Advanced Configuration - Optional
+      - TARGET_SOC=${TARGET_SOC:-95.0}
+      - SAFETY_MARGIN_HOURS=${SAFETY_MARGIN_HOURS:-0.5}
+      - MIN_SOLAR_FOR_WAIT=${MIN_SOLAR_FOR_WAIT:-0.5}
+      
+      # Timezone (adjust to your location)
+      - TZ=${TZ:-America/Los_Angeles}
+    
+    volumes:
+      # Persist logs outside container
+      - ./logs:/app/logs
+      
+      # Optional: Mount custom scripts if you want to modify
+      # - ./scripts:/app/scripts:ro
+    
+    # Run every 15 minutes
+    # Option 1: External cron calls 'docker exec franklin-battery python /app/smart_decision.py'
+    # Option 2: Container runs continuously with internal scheduler (see entrypoint below)
+    command: python /app/smart_decision.py
+    
+    # Healthcheck to ensure container is responsive
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Optional: Add monitoring service
+  # franklin-status:
+  #   image: franklin-automation:latest
+  #   container_name: franklin-status
+  #   depends_on:
+  #     - franklin-automation
+  #   environment:
+  #     - FRANKLIN_USERNAME=${FRANKLIN_USERNAME}
+  #     - FRANKLIN_PASSWORD=${FRANKLIN_PASSWORD}
+  #     - FRANKLIN_GATEWAY_ID=${FRANKLIN_GATEWAY_ID}
+  #   volumes:
+  #     - ./logs:/app/logs
+  #   command: python /app/daily_status_report.py
+  #   # Run once per day at 10:15 PM via external scheduler
+
+# Volumes for persistent data
+volumes:
+  logs:
+    driver: local
