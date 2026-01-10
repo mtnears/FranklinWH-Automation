@@ -578,6 +578,113 @@ grep "Decision made" logs/solar_intelligence.log | tail -100 | wc -l
 
 ---
 
+## Weekly Performance Charts (Optional)
+
+**Purpose:** Generate visual performance charts showing 7 days of automation effectiveness.
+
+**Script:** `scripts/generate_weekly_charts.py`
+
+**Schedule:** Weekly - Sunday at 2:00 AM (captures full previous week)
+
+**What it generates:**
+- `MM-DD-YYYY_chart_soc_timeline.png` - 7-day battery SOC with mode switches
+- `MM-DD-YYYY_chart_daily_summary.png` - Daily SOC ranges and solar vs grid charges
+- `MM-DD-YYYY_chart_power_flow.png` - 48-hour detailed power flow
+
+**Synology Task Scheduler Setup:**
+
+1. **General Tab:**
+   - Task Name: `Franklin Battery - Weekly Charts`
+   - User: `root`
+   - Enabled: ✓
+
+2. **Schedule Tab:**
+   - Run on: Weekly
+   - Days: Sunday
+   - Time: 02:00
+   - Frequency: Once
+
+3. **Task Settings Tab:**
+   ```bash
+   cd /volume1/docker/franklin && source venv311/bin/activate && ./scripts/generate_weekly_charts.py >> logs/weekly_charts.log 2>&1
+   ```
+
+**Linux Cron Setup:**
+
+```bash
+# Weekly charts - Sunday at 2 AM
+0 2 * * 0 cd /volume1/docker/franklin && source venv311/bin/activate && ./scripts/generate_weekly_charts.py >> logs/weekly_charts.log 2>&1
+```
+
+**Docker Setup:**
+
+```bash
+# Weekly charts - Sunday at 2 AM
+0 2 * * 0 docker compose -f /path/to/docker-compose.yml run --rm franklin-automation python /app/generate_weekly_charts.py >> logs/weekly_charts.log 2>&1
+```
+
+**Output Location:**
+- Charts saved to: `/volume1/docker/franklin/logs/`
+- Filename format: `MM-DD-YYYY_chart_[type].png`
+- Files are dated and archived automatically
+
+**View Charts:**
+```bash
+# List recent charts
+ls -lt /volume1/docker/franklin/logs/*_chart_*.png | head -9
+
+# View specific week
+ls /volume1/docker/franklin/logs/01-12-2026_chart_*.png
+```
+
+**Dependencies:**
+- pandas >= 2.0.0
+- matplotlib >= 3.7.0
+- (Automatically installed via requirements.txt)
+
+**Testing:**
+```bash
+cd /volume1/docker/franklin
+source venv311/bin/activate
+./scripts/generate_weekly_charts.py
+```
+
+**Troubleshooting:**
+
+If charts fail to generate:
+- Check log: `cat logs/weekly_charts.log`
+- Verify pandas/matplotlib installed: `pip list | grep -E "pandas|matplotlib"`
+- Ensure CSV header has 13 fields: `head -1 logs/continuous_monitoring.csv`
+- Check permissions: Script must be executable (`chmod +x scripts/generate_weekly_charts.py`)
+
+**Chart Descriptions:**
+
+**Chart 1: SOC Timeline**
+- Shows 7 days of battery state of charge overlaid
+- Red circles = Grid charge events (mode → BACKUP)
+- Green circles = Solar mode switches (mode → TOU)
+- Pink shaded area = Peak period (5-8 PM)
+- Demonstrates peak protection effectiveness
+
+**Chart 2: Daily Summary**
+- Top panel: Daily SOC range with start/end markers
+- Bottom panel: Solar production vs grid charge events
+- Shows sunny vs cloudy day patterns
+
+**Chart 3: Power Flow**
+- Top panel: 48-hour power flow (solar, grid, home load)
+- Bottom panel: Battery SOC and charging/discharging activity
+- Detailed view of recent system behavior
+
+**Use Cases:**
+- Weekly performance review
+- Identifying optimization opportunities
+- Documenting system effectiveness
+- Troubleshooting unusual behavior
+- Creating performance reports
+
+---
+
 **Next:** [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues and solutions.
 
 ---

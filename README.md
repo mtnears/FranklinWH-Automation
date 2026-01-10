@@ -21,6 +21,13 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 - **📈 Comprehensive Logging** - Detailed decision logs and CSV data for analysis
 - **💰 Significant Savings** - Estimated ~$1,050/year on PG&E CARE rates
 - **🔧 Zero Manual Intervention** - Set it and forget it
+- **📊 Performance Visualization (Optional)
+  - Generate visual performance charts showing 7 days of automation effectiveness:
+  - SOC Timeline: 7-day battery state of charge with mode switches
+  - Daily Summary: SOC ranges, solar production, and grid charge events
+  - Power Flow: 48-hour detailed power flow and battery activity
+  - Charts are generated weekly with dated filenames for historical tracking.
+  - See TASK_SCHEDULER.md for setup instructions.
 
 ---
 

@@ -1,8 +1,11 @@
-# FranklinWH-Automation Dependencies
-# Python 3.11+ required
+# Franklin WH Battery Automation - Python Dependencies
 
-# Franklin WH API library
-franklinwh==0.13.0
+# Core functionality
+franklinwh-api>=0.1.0
 
-# HTTP requests for PVOutput and Weather Underground APIs
-requests>=2.31.0
+# Chart generation (for generate_weekly_charts.py)
+pandas>=2.0.0
+matplotlib>=3.7.0
+
+# Optional: Enhanced scheduling (if using internal scheduler in Docker)
+# schedule>=1.1.0
