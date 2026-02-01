@@ -1,69 +1,110 @@
 version: '3.8'
 
+# ==============================================================================
+# FranklinWH Battery Automation - Docker Compose Configuration
+# ==============================================================================
+# 
+# Usage:
+#   docker compose build                    # Build the image
+#   docker compose run --rm franklin        # Run automation once
+#   docker compose up -d                    # Start continuous mode (if using scheduler)
+#
+# Configuration:
+#   Copy .env.example to .env and customize settings
+#
+# ==============================================================================
+
 services:
   franklin-automation:
-    build: .
-    image: franklin-automation:latest
-    container_name: franklin-battery
-    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: franklin-automation
     
-    environment:
-      # Franklin WH Credentials - REQUIRED
-      - FRANKLIN_USERNAME=${FRANKLIN_USERNAME}
-      - FRANKLIN_PASSWORD=${FRANKLIN_PASSWORD}
-      - FRANKLIN_GATEWAY_ID=${FRANKLIN_GATEWAY_ID}
-      
-      # Peak Period Configuration - REQUIRED
-      - PEAK_START_HOUR=${PEAK_START_HOUR:-17}
-      - PEAK_END_HOUR=${PEAK_END_HOUR:-20}
-      
-      # Battery Configuration - REQUIRED
-      - CHARGE_RATE_PER_HOUR=${CHARGE_RATE_PER_HOUR:-32.0}
-      
-      # Advanced Configuration - Optional
-      - TARGET_SOC=${TARGET_SOC:-95.0}
-      - SAFETY_MARGIN_HOURS=${SAFETY_MARGIN_HOURS:-0.5}
-      - MIN_SOLAR_FOR_WAIT=${MIN_SOLAR_FOR_WAIT:-0.5}
-      
-      # Timezone (adjust to your location)
-      - TZ=${TZ:-America/Los_Angeles}
+    # Environment configuration
+    env_file:
+      - .env
     
+    # Volume mounts for persistent data
     volumes:
-      # Persist logs outside container
+      # Logs directory (persistent across container restarts)
       - ./logs:/app/logs
       
-      # Optional: Mount custom scripts if you want to modify
+      # Data directory for savings tracking
+      - ./data:/app/data
+      
+      # Optional: Mount scripts for development/testing
+      # Uncomment to edit scripts without rebuilding:
       # - ./scripts:/app/scripts:ro
     
-    # Run every 15 minutes
-    # Option 1: External cron calls 'docker exec franklin-battery python /app/smart_decision.py'
-    # Option 2: Container runs continuously with internal scheduler (see entrypoint below)
-    command: python /app/smart_decision.py
+    # Network configuration
+    # The container needs internet access for Franklin Cloud API
+    # and optionally for dynamic pricing APIs
+    network_mode: bridge
     
-    # Healthcheck to ensure container is responsive
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 5m
-      timeout: 10s
-      retries: 3
-      start_period: 30s
+    # Timezone (from .env)
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+    
+    # Resource limits (optional, adjust as needed)
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+    
+    # Default command: run smart_decision.py once
+    # For scheduled execution, use external scheduler (cron/Task Scheduler)
+    command: python /app/scripts/smart_decision.py
+    
+    # Restart policy
+    # - "no": Don't restart (use with external scheduler)
+    # - "unless-stopped": Always restart (use with internal scheduler)
+    restart: "no"
 
-  # Optional: Add monitoring service
-  # franklin-status:
-  #   image: franklin-automation:latest
-  #   container_name: franklin-status
-  #   depends_on:
-  #     - franklin-automation
-  #   environment:
-  #     - FRANKLIN_USERNAME=${FRANKLIN_USERNAME}
-  #     - FRANKLIN_PASSWORD=${FRANKLIN_PASSWORD}
-  #     - FRANKLIN_GATEWAY_ID=${FRANKLIN_GATEWAY_ID}
+  # ==============================================================================
+  # Optional: Dashboard data generator
+  # ==============================================================================
+  # Uncomment to run dashboard updates via Docker
+  #
+  # dashboard:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: franklin-dashboard
+  #   env_file:
+  #     - .env
   #   volumes:
   #     - ./logs:/app/logs
-  #   command: python /app/daily_status_report.py
-  #   # Run once per day at 10:15 PM via external scheduler
+  #     - ./data:/app/data
+  #     - ${WEB_DIR:-/volume1/web}:/app/web
+  #   command: python /app/scripts/generate_dashboard_data.py
+  #   restart: "no"
 
-# Volumes for persistent data
-volumes:
-  logs:
-    driver: local
+  # ==============================================================================
+  # Optional: Weekly chart generator
+  # ==============================================================================
+  # Uncomment to run chart generation via Docker
+  #
+  # charts:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: franklin-charts
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./logs:/app/logs
+  #     - ${WEB_DIR:-/volume1/web}:/app/web
+  #   command: python /app/scripts/generate_weekly_charts.py
+  #   restart: "no"
+
+# ==============================================================================
+# Volume definitions (for named volumes if preferred)
+# ==============================================================================
+# Uncomment to use named volumes instead of bind mounts:
+#
+# volumes:
+#   franklin-logs:
+#   franklin-data:
