@@ -1,23 +1,24 @@
-#!/volume1/docker/franklin/venv311/bin/python3
+#!/usr/bin/env python3
 """
 Switch to Time-of-Use Mode
 This stops grid charging and returns to TOU operation
+
+Configuration loaded from .env file via config module.
 """
 import asyncio
 from franklinwh import Client, TokenFetcher, Mode
 
-# ⚠️ REPLACE WITH YOUR FRANKLIN WH CREDENTIALS
-USERNAME = "YOUR_EMAIL@example.com"
-PASSWORD = "YOUR_PASSWORD"
-GATEWAY_ID = "YOUR_GATEWAY_ID"
+# Import configuration
+from config import config
+
 
 async def main():
     try:
         print("Authenticating with Franklin WH...")
-        fetcher = TokenFetcher(USERNAME, PASSWORD)
+        fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
 
         print("Creating client...")
-        client = Client(fetcher, GATEWAY_ID)
+        client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
 
         print("Switching to TOU mode...")
         await client.set_mode(Mode.time_of_use())
@@ -28,6 +29,7 @@ async def main():
         print(f"✗ Error: {e}")
         import traceback
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

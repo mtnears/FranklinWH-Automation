@@ -44,6 +44,7 @@ Want to contribute code? Great!
 
 - **Maintain Python 3.11+ compatibility**
 - **Follow existing code style** (similar formatting to current scripts)
+- **Use the config system** - All settings should be in `.env`, not hardcoded
 - **Add comments** for complex logic
 - **Test on your system** before submitting
 - **Sanitize credentials** in any examples or logs
@@ -52,8 +53,8 @@ Want to contribute code? Great!
 
 Before submitting code changes, verify:
 - [ ] Scripts run without errors
-- [ ] Credentials are properly sanitized
-- [ ] No hardcoded personal information
+- [ ] Scripts use `from config import config` for settings
+- [ ] No hardcoded credentials or personal information
 - [ ] Log files are in `.gitignore`
 - [ ] Changes work on your Franklin WH system
 - [ ] Documentation updated if needed
@@ -66,29 +67,41 @@ Before submitting code changes, verify:
 - Gateway IDs
 - Personal email addresses
 - IP addresses or hostnames
+- Your `.env` file (it's in `.gitignore`)
 
-Always use placeholder values like:
-- `YOUR_EMAIL@example.com`
-- `YOUR_PASSWORD`
-- `YOUR_API_KEY`
-- `YOUR_GATEWAY_ID`
+**Always use the config system:**
+```python
+# ✓ CORRECT - use config
+from config import config
+client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
+
+# ✗ WRONG - hardcoded values
+GATEWAY_ID = "10060005A02X24470437"
+```
+
+**In documentation, use placeholders:**
+- `your_email@example.com`
+- `your_password`
+- `your_api_key`
+- `your_gateway_id`
 
 ## 📋 Feature Request Priority
 
 High priority features:
-- Support for different utility rate schedules
-- Additional data sources (solar forecasting APIs)
-- Better error handling and retry logic
+- Support for additional utility rate schedules
+- Additional pricing providers (ERCOT, CAISO, etc.)
+- Solar forecasting integrations
 - Home Assistant integration
-- Web dashboard for monitoring
+- Enhanced web dashboard features
 
 ## 🌍 Platform Testing
 
 Help test on different platforms:
 - Different Synology NAS models
-- Raspberry Pi
+- Raspberry Pi (various models)
 - Ubuntu/Debian servers
 - Other Linux distributions
+- Docker deployments
 
 Report your results to help others!
 

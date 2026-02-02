@@ -6,6 +6,8 @@ Sends status emails at key times during the day for testing/monitoring
 This script is useful during initial setup and testing to monitor system
 behavior at critical decision points throughout the day. Can be disabled
 once confident in system operation.
+
+Configuration loaded from .env file via config module.
 """
 import asyncio
 import smtplib
@@ -14,38 +16,29 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from franklinwh import Client, TokenFetcher
 
-# REPLACE WITH YOUR FRANKLIN WH CREDENTIALS
-USERNAME = "YOUR_EMAIL@example.com"
-PASSWORD = "YOUR_PASSWORD"
-GATEWAY_ID = "YOUR_GATEWAY_ID"
-
-# REPLACE WITH YOUR EMAIL CONFIGURATION
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "YOUR_EMAIL@example.com"
-SENDER_PASSWORD = "YOUR_APP_SPECIFIC_PASSWORD"  # App-specific password for Gmail
-RECIPIENT_EMAIL = "YOUR_EMAIL@example.com"
+# Import configuration
+from config import config
 
 # Milestone times (hours of day to send status emails)
 # Adjust based on your peak period and testing needs
 MILESTONES = [8, 10, 12, 14, 16]
 
-INTELLIGENCE_LOG = "/volume1/docker/franklin/logs/solar_intelligence.log"
 
 def get_recent_log_entries(lines=30):
     """Get recent entries from intelligence log"""
     try:
-        with open(INTELLIGENCE_LOG, 'r') as f:
+        with open(config.INTELLIGENCE_LOG, 'r') as f:
             all_lines = f.readlines()
             return ''.join(all_lines[-lines:])
     except Exception as e:
         return f"Could not read log: {e}"
 
+
 async def get_current_status():
     """Get current battery status"""
     try:
-        fetcher = TokenFetcher(USERNAME, PASSWORD)
-        client = Client(fetcher, GATEWAY_ID)
+        fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
+        client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
         stats = await client.get_stats()
 
         return {
@@ -58,8 +51,15 @@ async def get_current_status():
     except Exception as e:
         return None
 
+
 def send_milestone_email(hour, status, log_excerpt):
     """Send milestone status email"""
+    
+    # Check if email is configured
+    if not config.EMAIL_ENABLED:
+        print("Email not configured. Set EMAIL_ENABLED=true and configure SMTP settings in .env")
+        return False
+    
     now = datetime.now()
 
     subject = f"Solar Intelligence Milestone - {hour}:00 Status"
@@ -89,19 +89,19 @@ RECENT INTELLIGENCE DECISIONS:
 
 ========================================================
 This is an automated milestone report for testing.
-Full logs: /volume1/docker/franklin/logs/
+Full logs: {config.LOG_DIR}
 """
 
     try:
         msg = MIMEMultipart()
-        msg['From'] = SENDER_EMAIL
-        msg['To'] = RECIPIENT_EMAIL
+        msg['From'] = config.SMTP_SENDER
+        msg['To'] = config.SMTP_RECIPIENT
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
 
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
             server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.login(config.SMTP_SENDER, config.SMTP_PASSWORD)
             server.send_message(msg)
 
         print(f"✓ Milestone email sent for {hour}:00")
@@ -109,6 +109,7 @@ Full logs: /volume1/docker/franklin/logs/
     except Exception as e:
         print(f"✗ Failed to send email: {e}")
         return False
+
 
 async def check_and_send_milestone():
     """Check if we're at a milestone hour and send email"""
@@ -127,6 +128,7 @@ async def check_and_send_milestone():
             print(f"Milestone hour {current_hour}:00 but already past window")
     else:
         print(f"Not a milestone hour (current: {current_hour}:00)")
+
 
 if __name__ == "__main__":
     asyncio.run(check_and_send_milestone())

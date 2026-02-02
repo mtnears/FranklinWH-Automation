@@ -669,13 +669,23 @@ source venv311/bin/activate
 python3
 
 >>> from franklinwh import Client, TokenFetcher
->>> fetcher = TokenFetcher("YOUR_EMAIL", "YOUR_PASSWORD")
->>> client = Client(fetcher, "YOUR_GATEWAY_ID")
+>>> from config import config
+>>> fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
+>>> client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
 >>> import asyncio
 >>> stats = asyncio.run(client.get_stats())
 >>> print(f"SOC: {stats.current.battery_soc}%")
 >>> exit()
 ```
+
+### Test Configuration Loading
+
+```bash
+source venv311/bin/activate
+python -c "from config import config; print(config.get_config_summary())"
+```
+
+If you see configuration errors, check your `.env` file.
 
 ---
 

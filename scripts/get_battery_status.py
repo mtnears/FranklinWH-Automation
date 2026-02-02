@@ -1,21 +1,21 @@
-#!/volume1/docker/franklin/venv311/bin/python3
+#!/usr/bin/env python3
 """
 Get Current Battery Status
 Uses Franklin Cloud API with retry logic for reliability
+
+Configuration loaded from .env file via config module.
 """
 import asyncio
-import time
 from franklinwh import Client, TokenFetcher
 
-# ⚠️ REPLACE WITH YOUR FRANKLIN WH CREDENTIALS
-USERNAME = "YOUR_EMAIL@example.com"
-PASSWORD = "YOUR_PASSWORD"
-GATEWAY_ID = "YOUR_GATEWAY_ID"
+# Import configuration
+from config import config
+
 
 async def get_stats_with_retry(max_retries=3, delay=5):
     """Get stats with retry logic for cloud API timeouts"""
-    fetcher = TokenFetcher(USERNAME, PASSWORD)
-    client = Client(fetcher, GATEWAY_ID)
+    fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
+    client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
     
     for attempt in range(max_retries):
         try:
@@ -28,6 +28,7 @@ async def get_stats_with_retry(max_retries=3, delay=5):
                 await asyncio.sleep(delay)
             else:
                 raise
+
 
 async def main():
     try:
@@ -48,8 +49,9 @@ async def main():
         return stats.current.battery_soc
 
     except Exception as e:
-        print(f"Error: Device response timed out")
+        print(f"Error: {e}")
         return None
+
 
 if __name__ == "__main__":
     soc = asyncio.run(main())

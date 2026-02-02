@@ -4,7 +4,7 @@
 
 **Complete step-by-step installation for Franklin WH Battery Automation**
 
-This guide covers fresh installations on Synology NAS and Linux systems. If you're migrating from the old three-tier system, see [MIGRATION_V1_TO_V2.md](MIGRATION_V1_TO_V2.md).
+This guide covers fresh installations on Synology NAS and Linux systems. If you're migrating from the old three-tier system, see [MIGRATION_V1_TO_V2.md](MIGRATION_V1_TO_V2.md). If upgrading from v2.x to v3.0, see [UPGRADE_v3.md](UPGRADE_v3.md).
 
 ---
 
@@ -104,15 +104,12 @@ pwd
 ### Step 5: Clone Repository
 
 ```bash
-# Install git if needed
-# (Usually pre-installed on Synology DSM 7+)
-
 # Clone repository
-git clone https://github.com/YOUR-USERNAME/FranklinWH-Automation.git .
+git clone https://github.com/mtnears/FranklinWH-Automation.git .
 
 # Verify files
 ls -la
-# Should see: scripts/, docs/, README.md, requirements.txt, etc.
+# Should see: scripts/, docs/, README.md, requirements.txt, .env.example, etc.
 ```
 
 ### Step 6: Set Up Python Environment
@@ -132,7 +129,7 @@ pip install --break-system-packages -r requirements.txt
 
 # Verify installation
 pip list
-# Should see: franklinwh, requests, and dependencies
+# Should see: franklinwh, python-dotenv, requests, and dependencies
 ```
 
 **Note:** The `--break-system-packages` flag is required on Synology DSM 7.2+.
@@ -149,7 +146,7 @@ ls -la scripts/
 # Should show: -rwxr-xr-x for .py and .sh files
 ```
 
-### Step 8: Configure Scripts
+### Step 8: Configure via .env File
 
 See [Configuration](#configuration) section below.
 
@@ -216,7 +213,7 @@ cd ~/franklin
 ### Step 4: Clone Repository
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/FranklinWH-Automation.git .
+git clone https://github.com/mtnears/FranklinWH-Automation.git .
 ```
 
 ### Step 5: Set Up Python Environment
@@ -242,7 +239,7 @@ chmod +x scripts/*.py
 chmod +x scripts/*.sh
 ```
 
-### Step 7: Configure Scripts
+### Step 7: Configure via .env File
 
 See [Configuration](#configuration) section below.
 
@@ -263,38 +260,47 @@ crontab -e
 
 ## Configuration
 
-### 1. Configure Franklin WH Credentials
+### v3.0 Configuration System
 
-Edit all core scripts to add your credentials.
+As of v3.0, all configuration is done via a `.env` file. **You no longer need to edit Python scripts directly.**
 
-**Files to edit:**
-- `scripts/smart_decision.py`
-- `scripts/switch_to_backup_v2.py`
-- `scripts/switch_to_tou_v2.py`
-- `scripts/get_battery_status.py`
+### Step 1: Create Your .env File
 
-**In each file, replace:**
-```python
-USERNAME = "YOUR_EMAIL@example.com"  # Your Franklin WH email
-PASSWORD = "YOUR_PASSWORD"            # Your Franklin WH password
-GATEWAY_ID = "YOUR_GATEWAY_ID"       # From Franklin mobile app
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit with your settings
+nano .env
 ```
 
-**Example:**
-```python
-USERNAME = "john.smith@gmail.com"
-PASSWORD = "MySecurePass123!"
-GATEWAY_ID = "10060005A02X24470437"
+### Step 2: Set Required Values
+
+At minimum, you must set these values in your `.env` file:
+
+```bash
+# Franklin WH Credentials (REQUIRED)
+FRANKLIN_USERNAME=your_email@example.com
+FRANKLIN_PASSWORD=your_password
+FRANKLIN_GATEWAY_ID=your_gateway_id
+
+# Battery Settings (REQUIRED)
+BATTERY_CAPACITY_KWH=30
+CHARGE_RATE_PER_HOUR=32
 ```
 
-### 2. Configure Peak Period Hours
+**Finding your Gateway ID:**
+1. Open Franklin WH mobile app
+2. Go to Settings → System Info
+3. Copy the Gateway ID (format: `10060005A02X24470437`)
 
-Edit `scripts/smart_decision.py`:
+### Step 3: Configure TOU Peak Period
 
-```python
-# Adjust these for your utility's TOU schedule
-PEAK_START_HOUR = 17  # 5 PM (use 24-hour format)
-PEAK_END_HOUR = 20    # 8 PM
+```bash
+# TOU Settings - Adjust for your utility
+PEAK_START_HOUR=17
+PEAK_END_HOUR=20
+PEAK_DAYS=weekdays
 ```
 
 **Common TOU Schedules:**
@@ -302,18 +308,18 @@ PEAK_END_HOUR = 20    # 8 PM
 - **SCE TOU-D-4-9PM:** 4 PM - 9 PM → `16` to `21`
 - **SDG&E TOU-DR1:** 4 PM - 9 PM → `16` to `21`
 
-### 3. Configure Charging Parameters (Optional)
+### Step 4: Enable/Disable Features
 
-Advanced users can adjust decision logic in `scripts/smart_decision.py`:
-
-```python
-TARGET_SOC = 95.0                 # Target charge before peak (%)
-CHARGE_RATE_PER_HOUR = 32.0       # Your battery's grid charge rate
-SAFETY_MARGIN_HOURS = 0.5         # Buffer time before must-charge deadline
-MIN_SOLAR_FOR_WAIT = 0.5          # Min solar (kW) to wait vs grid charge
+```bash
+# Feature Toggles
+SOLAR_ENABLED=true
+TOU_ENABLED=true
+DYNAMIC_PRICING_ENABLED=false
+WEATHER_ENABLED=false
+PVOUTPUT_ENABLED=false
 ```
 
-### 4. Create Log Directory
+### Step 5: Create Log Directory
 
 ```bash
 mkdir -p logs
@@ -324,26 +330,78 @@ On Synology:
 mkdir -p /volume1/docker/franklin/logs
 ```
 
-### 5. Initialize State Files
+### Complete .env Example
 
 ```bash
-# Create initial peak state file
-echo "OffPeak-$(date +%Y-%m-%d)" > logs/peak_state.txt
+# ============================================================
+# FRANKLINWH AUTOMATION - CONFIGURATION
+# ============================================================
 
-# Create initial mode file
-echo "TOU" > logs/last_mode.txt
+# Franklin WH Credentials (REQUIRED)
+FRANKLIN_USERNAME=john.smith@gmail.com
+FRANKLIN_PASSWORD=MySecurePass123!
+FRANKLIN_GATEWAY_ID=10060005A02X24470437
+
+# Battery Settings
+BATTERY_CAPACITY_KWH=30
+CHARGE_RATE_PER_HOUR=32
+TARGET_SOC=95
+SAFETY_MARGIN_HOURS=0.5
+
+# Feature Toggles
+SOLAR_ENABLED=true
+TOU_ENABLED=true
+DYNAMIC_PRICING_ENABLED=false
+WEATHER_ENABLED=false
+PVOUTPUT_ENABLED=false
+
+# TOU Settings
+PEAK_START_HOUR=17
+PEAK_END_HOUR=20
+PEAK_DAYS=weekdays
+
+# Solar Settings
+SOLAR_CAPACITY_KW=10.0
+MIN_SOLAR_FOR_WAIT=0.5
 ```
+
+See `.env.example` for all available options.
 
 ---
 
 ## Testing
 
-### Test Core Automation
+### Test Configuration Loading
 
 ```bash
 cd /volume1/docker/franklin  # Or your install path
 source venv311/bin/activate
-./scripts/smart_decision.py
+python -c "from config import config; print(config.get_config_summary())"
+```
+
+**Expected output:**
+```
+============================================================
+CONFIGURATION SUMMARY
+============================================================
+ENABLED FEATURES:
+  [x] Solar
+  [x] TOU (17:00-20:00)
+DISABLED FEATURES:
+  [ ] Dynamic Pricing
+  [ ] Weather
+  [ ] PVOutput
+BATTERY SETTINGS:
+  Capacity: 30.0 kWh
+  Charge Rate: 32.0%/hour
+  Target SOC: 95.0%
+============================================================
+```
+
+### Test Core Automation
+
+```bash
+python smart_decision.py
 ```
 
 **Expected output:**
@@ -361,15 +419,15 @@ Mode unchanged: TOU
 
 **If you see errors:**
 - `ModuleNotFoundError: No module named 'franklinwh'` → Activate venv: `source venv311/bin/activate`
-- `Authentication failed` → Check USERNAME and PASSWORD
-- `Gateway not found` → Check GATEWAY_ID
-- `Connection timeout` → Check internet connection and Franklin WH system status
+- `Configuration errors: FRANKLIN_USERNAME required` → Check your `.env` file
+- `Authentication failed` → Check credentials in `.env`
+- `Gateway not found` → Check FRANKLIN_GATEWAY_ID in `.env`
 
 ### Test Mode Switching
 
 ```bash
 # Test switching to BACKUP mode (grid charging)
-./scripts/switch_to_backup_v2.py
+python switch_to_backup_v2.py
 
 # Expected output:
 # Authenticating with Franklin WH...
@@ -378,13 +436,13 @@ Mode unchanged: TOU
 # ✓ Successfully switched to Emergency Backup mode
 
 # Switch back to TOU
-./scripts/switch_to_tou_v2.py
+python switch_to_tou_v2.py
 ```
 
 ### Test Battery Status
 
 ```bash
-./scripts/get_battery_status.py
+python get_battery_status.py
 
 # Expected output:
 # ==================================================
@@ -399,19 +457,6 @@ Mode unchanged: TOU
 # ==================================================
 ```
 
-### Check Logs
-
-```bash
-# View intelligence log
-cat logs/solar_intelligence.log
-
-# Should show recent decision
-# Example:
-# 2026-01-04 10:23:45 - ======================================================================
-# 2026-01-04 10:23:45 - SOC: 67.3%, Solar: 2.145kW, Status: 6.5h to peak
-# 2026-01-04 10:23:45 - Decision: Solar can provide ~12.8%...
-```
-
 ---
 
 ## Optional Components
@@ -423,18 +468,14 @@ cat logs/solar_intelligence.log
 **Setup:**
 1. Sign up for Weather Underground API: https://www.wunderground.com/member/api-keys
 2. Get your Personal Weather Station (PWS) ID
-3. Edit `scripts/collect_weather.py`:
-   ```python
-   PWS_ID = "YOUR_STATION_ID"      # e.g., "KCAGEORG58"
-   API_KEY = "YOUR_WU_API_KEY"
-   ```
-4. Set up task to run every 15 minutes:
+3. Add to your `.env` file:
    ```bash
-   #!/bin/bash
-   cd /volume1/docker/franklin
-   source venv311/bin/activate
-   ./scripts/collect_weather.py
+   WEATHER_ENABLED=true
+   WEATHER_PROVIDER=wunderground
+   WEATHER_STATION_ID=KCAGEORG58
+   WEATHER_API_KEY=your_api_key_here
    ```
+4. Set up task to run every 15 minutes
 
 ### PVOutput Solar Tracking
 
@@ -444,33 +485,48 @@ cat logs/solar_intelligence.log
 1. Create free account: https://pvoutput.org/register.jsp
 2. Add your solar system(s)
 3. Get API key: Account Settings → API Settings
-4. Edit `scripts/collect_pvoutput.py`:
-   ```python
-   API_KEY = "YOUR_PVOUTPUT_API_KEY"
-   GROUND_MOUNT_SID = "YOUR_SYSTEM_ID"
-   # If you have a second system:
-   HOUSE_SID = "YOUR_SECOND_SYSTEM_ID"
+4. Add to your `.env` file:
+   ```bash
+   PVOUTPUT_ENABLED=true
+   PVOUTPUT_API_KEY=your_api_key_here
+   PVOUTPUT_SYSTEM_IDS=12345,67890
    ```
 5. Set up hourly task
+
+### Dynamic Pricing (ComEd)
+
+**For ComEd customers with hourly pricing:**
+
+Add to your `.env` file:
+```bash
+DYNAMIC_PRICING_ENABLED=true
+PRICING_PROVIDER=comed
+PRICE_THRESHOLD_CENTS=4.0
+PRICE_CEILING_CENTS=10.0
+```
 
 ### Email Notifications
 
 **For testing/monitoring during setup:**
 
-Edit `scripts/milestone_emailer.py`:
-```python
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "your-email@gmail.com"
-SENDER_PASSWORD = "your-app-password"  # Gmail App Password
-RECIPIENT_EMAIL = "your-email@gmail.com"
-MILESTONES = [8, 10, 12, 14, 16]  # Hours to send emails
+Add to your `.env` file:
+```bash
+EMAIL_ENABLED=true
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SENDER=your-email@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_RECIPIENT=your-email@gmail.com
 ```
 
 **Gmail App Password:**
 1. Google Account → Security
 2. 2-Step Verification → App passwords
 3. Generate password for "Mail"
+
+### Web Dashboard
+
+See [WEB_DASHBOARD.md](WEB_DASHBOARD.md) for setup instructions.
 
 ---
 
@@ -506,20 +562,13 @@ tail -5 logs/continuous_monitoring.csv
 # Should show recent 15-minute intervals
 ```
 
-**5. Battery reaching target before peak:**
-```bash
-# Check SOC at 4:45 PM (before peak)
-grep "$(date +%Y-%m-%d) 16:45:" logs/solar_intelligence.log
-# SOC should be ≥90% on sunny days
-```
-
 ---
 
 ## Next Steps
 
 ### Fine-Tuning
 
-After a week of operation, consider adjusting:
+After a week of operation, consider adjusting in your `.env`:
 
 1. **TARGET_SOC** - Lower to 90% if consistently reaching 95% early
 2. **SAFETY_MARGIN_HOURS** - Reduce if overly conservative
@@ -529,17 +578,17 @@ After a week of operation, consider adjusting:
 
 Set up optional monitoring:
 - Daily status report at 4:30 PM
-- Hourly milestone emails (during setup)
-- Data aggregation for analysis
+- Web dashboard for real-time monitoring
+- Weekly performance charts
 
-See [TASK_SCHEDULER.md](TASK_SCHEDULER.md) for details.
+See [TASK_SCHEDULER.md](TASK_SCHEDULER.md) and [WEB_DASHBOARD.md](WEB_DASHBOARD.md) for details.
 
 ### Documentation
 
 Bookmark these docs:
 - [PEAK_STATE_LOGIC.md](PEAK_STATE_LOGIC.md) - How peak protection works
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md) - Common issues
-- [Task Scheduler Setup](TASK_SCHEDULER.md) - Scheduler configuration
+- [UPGRADE_v3.md](UPGRADE_v3.md) - Upgrading from v2.x
 
 ---
 
@@ -549,19 +598,31 @@ Bookmark these docs:
 
 ```bash
 python3 --version
-# If < 3.11, install newer version or use system Python if ≥3.9
+# If < 3.11, install newer version
 ```
 
 ### pip install fails
 
 ```bash
 # Try with --break-system-packages (Synology)
-pip install --break-system-packages franklinwh
+pip install --break-system-packages -r requirements.txt
 
-# Or create virtual environment first
-python3 -m venv venv311
+# Or ensure virtual environment is activated
 source venv311/bin/activate
-pip install franklinwh
+pip install -r requirements.txt
+```
+
+### Configuration not loading
+
+```bash
+# Verify .env file exists
+ls -la .env
+
+# Check for syntax errors
+cat .env
+
+# Test config loading
+python -c "from config import config; print(config.FRANKLIN_USERNAME)"
 ```
 
 ### Permission denied
@@ -572,26 +633,7 @@ chmod +x scripts/*.py
 chmod +x scripts/*.sh
 
 # Or run with Python explicitly
-python3 scripts/smart_decision.py
-```
-
-### Task doesn't run
-
-**Synology:**
-- Check Task Scheduler history for errors
-- Verify script path is absolute
-- Test script manually first
-
-**Linux/Cron:**
-```bash
-# Check cron is running
-sudo systemctl status cron
-
-# View cron logs
-grep CRON /var/log/syslog
-
-# Test cron entry manually
-/opt/franklin/scripts/run_smart_decision.sh
+python scripts/smart_decision.py
 ```
 
 ---
@@ -614,5 +656,5 @@ Monitor the logs for the first few days to ensure everything is working as expec
 
 ---
 
-**Last Updated:** January 4, 2026  
-**Version:** 2.0
+**Last Updated:** February 2026  
+**Version:** 3.0
