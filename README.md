@@ -22,6 +22,25 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 
 ---
 
+## What's New in v3.1
+
+### Complete Docker Support
+Docker is now the recommended deployment method:
+- **Self-contained scheduler** - No external cron or Task Scheduler needed
+- **Built-in web dashboard** - Nginx server included on port 8100
+- **Single command startup** - Just `docker compose up -d`
+- **Configurable port** - Set `DASHBOARD_PORT` in your `.env` file
+
+### Dashboard Improvements
+- **System Logs tab** - View intelligence, scheduler, and monitoring logs in browser
+- **Fixed battery status** - Now correctly shows Standby when idle (±0.1kW threshold)
+- **Auto-refresh logs** - Logs tab updates every 30 seconds
+
+See [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) for the easiest setup path.
+
+---
+
+
 ## What's New in v3.0
 
 ### Configuration-Driven Architecture
