@@ -1,17 +1,19 @@
-# Franklin WH Battery Automation - Python Dependencies
+# ==============================================================================
+# FranklinWH Battery Automation - Python Dependencies
+# ==============================================================================
 
-# Core functionality
+# Core Franklin WH API
 franklinwh>=0.1.0
 
 # Configuration management
 python-dotenv>=1.0.0
 
-# HTTP requests (for pricing API, weather)
+# HTTP requests (for pricing API, weather, PVOutput)
 requests>=2.28.0
 
-# Chart generation (for generate_weekly_charts.py)
+# Chart generation
 pandas>=2.0.0
 matplotlib>=3.7.0
 
-# Optional: Enhanced scheduling (if using internal scheduler in Docker)
-# schedule>=1.1.0
+# Internal task scheduler (for Docker)
+schedule>=1.2.0

@@ -1,4 +1,4 @@
-#!/volume1/docker/franklin/venv311/bin/python3
+#!/usr/bin/env python3
 """
 PVOutput Daily Data Collector
 Collects yesterday's completed solar production data
@@ -13,7 +13,7 @@ API_KEY = "YOUR_PVOUTPUT_API_KEY"
 GROUND_MOUNT_SID = "YOUR_SYSTEM_ID_1"  # Remove if you only have one system
 HOUSE_SID = "YOUR_SYSTEM_ID_2"
 
-LOG_DIR = Path("/volume1/docker/franklin/logs")
+LOG_DIR = Path("/app/logs")
 GROUND_LOG = LOG_DIR / "pvoutput_ground_mount_daily.csv"
 HOUSE_LOG = LOG_DIR / "pvoutput_house_daily.csv"
 

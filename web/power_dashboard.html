@@ -156,6 +156,12 @@
             border: 1px solid #f59e0b;
         }
         
+        .charging-status.idle {
+            background: rgba(148, 163, 184, 0.2);
+            color: #94a3b8;
+            border: 1px solid #94a3b8;
+        }
+        
         /* Power source indicators */
         .power-sources {
             display: flex;
@@ -505,6 +511,103 @@
             margin-bottom: 10px;
         }
         
+        /* Logs Tab */
+        .logs-container {
+            background: linear-gradient(145deg, #1a1f3a 0%, #0f1628 100%);
+            border-radius: 16px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 12px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .logs-title {
+            font-size: 20px;
+            font-weight: 600;
+        }
+        
+        .logs-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .logs-controls select, .logs-controls input {
+            background: #0f1628;
+            color: #e0e6ed;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        
+        .logs-controls button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .logs-controls button:hover {
+            background: #2563eb;
+        }
+        
+        .log-viewer {
+            background: #0a0e17;
+            border-radius: 8px;
+            padding: 15px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .log-line {
+            padding: 2px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+        
+        .log-line.error { color: #ef4444; }
+        .log-line.warning { color: #f59e0b; }
+        .log-line.success { color: #10b981; }
+        .log-line.info { color: #94a3b8; }
+        
+        .log-timestamp { color: #6b7280; }
+        
+        .auto-refresh-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: #94a3b8;
+            font-size: 12px;
+        }
+        
+        .auto-refresh-indicator .dot {
+            width: 8px;
+            height: 8px;
+            background: #10b981;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
         /* Responsive */
         @media (max-width: 1200px) {
             .live-grid {
@@ -531,6 +634,9 @@
             <button class="tab-btn" data-tab="weekly">
                 <span class="tab-icon">📊</span> Weekly Reports
             </button>
+            <button class="tab-btn" data-tab="logs">
+                <span class="tab-icon">📋</span> System Logs
+            </button>
         </div>
         
         <!-- Live Dashboard Tab -->
@@ -542,9 +648,9 @@
                         <div class="card-title">🔋 Battery Status</div>
                         <div class="status-row">
                             <span class="status-badge status-tou" id="battery-mode-badge">TOU Mode</span>
-                            <span class="charging-status charging" id="charging-status">
-                                <span id="charging-icon">⚡</span>
-                                <span id="charging-text">Charging</span>
+                            <span class="charging-status idle" id="charging-status">
+                                <span id="charging-icon">🔋</span>
+                                <span id="charging-text">Idle</span>
                             </span>
                             <div class="power-sources">
                                 <div class="source-dot solar" data-label="Solar" id="source-solar"></div>
@@ -602,8 +708,13 @@
                         </div>
                         
                         <div class="power-stat battery">
-                            <div class="value" id="flow-battery">0.9 kW</div>
+                            <div class="value" id="flow-battery">4.7 kW</div>
                             <div class="label">Charging</div>
+                        </div>
+                        
+                        <div class="power-stat home">
+                            <div class="value" id="flow-home">1.2 kW</div>
+                            <div class="label">Consuming</div>
                         </div>
                         
                         <div class="power-stat generator">
@@ -611,36 +722,43 @@
                             <div class="label">Generator</div>
                         </div>
                         
-                        <div class="power-stat home">
-                            <div class="value" id="flow-home">3.6 kW</div>
-                            <div class="label">Consuming</div>
-                        </div>
-                        
                         <!-- Flow lines SVG -->
-                        <svg class="flow-svg" viewBox="0 0 300 450" preserveAspectRatio="xMidYMid meet">
+                        <svg class="flow-svg" viewBox="0 0 400 450">
                             <!-- Solar to House -->
-                            <path id="line-solar-house" class="flow-line" stroke="#fbbf24" 
-                                  d="M150,90 L150,200"/>
+                            <path id="line-solar-house" class="flow-line" stroke="#fbbf24" d="M200,90 L200,280"/>
                             <!-- Grid to House -->
-                            <path id="line-grid-house" class="flow-line" stroke="#3b82f6" 
-                                  d="M60,225 L100,225 L100,250 L150,250"/>
+                            <path id="line-grid-house" class="flow-line" stroke="#3b82f6" d="M70,225 L150,280"/>
                             <!-- House to Battery (charging) -->
-                            <path id="line-house-battery" class="flow-line" stroke="#10b981" 
-                                  d="M150,250 L200,250 L200,225 L240,225"/>
+                            <path id="line-house-battery" class="flow-line" stroke="#10b981" d="M250,280 L330,225"/>
                             <!-- Battery to House (discharging) -->
-                            <path id="line-battery-house" class="flow-line" stroke="#10b981" 
-                                  d="M240,225 L200,225 L200,250 L150,250"/>
+                            <path id="line-battery-house" class="flow-line" stroke="#10b981" d="M330,225 L250,280"/>
                             <!-- Generator to House -->
-                            <path id="line-gen-house" class="flow-line" stroke="#9ca3af" 
-                                  d="M240,320 L200,320 L200,280 L150,280"/>
+                            <path id="line-gen-house" class="flow-line" stroke="#9ca3af" d="M330,340 L250,320"/>
                         </svg>
                         
-                        <!-- Solar panel -->
+                        <!-- Solar Panel -->
                         <div class="solar-panel" id="solar-panel">
                             <span class="icon">☀️</span>
                         </div>
                         
-                        <!-- Equipment left side - Grid/Meter -->
+                        <!-- House SVG -->
+                        <div class="house">
+                            <svg viewBox="0 0 140 100" width="140" height="100">
+                                <!-- Roof -->
+                                <polygon points="70,5 130,45 10,45" fill="#5d4e37"/>
+                                <!-- Walls -->
+                                <rect x="20" y="45" width="100" height="50" fill="#8B8B6B"/>
+                                <!-- Door -->
+                                <rect x="55" y="60" width="25" height="35" fill="#5d4e37"/>
+                                <!-- Windows -->
+                                <rect x="30" y="55" width="18" height="18" fill="#87CEEB" opacity="0.7"/>
+                                <rect x="92" y="55" width="18" height="18" fill="#87CEEB" opacity="0.7"/>
+                                <!-- Chimney -->
+                                <rect x="95" y="20" width="12" height="25" fill="#8B7355"/>
+                            </svg>
+                        </div>
+                        
+                        <!-- Equipment Left (Grid) -->
                         <div class="equipment-left">
                             <div class="equip-box equip-grid" id="equip-grid">
                                 <span class="icon">⚡</span>
@@ -648,40 +766,15 @@
                             </div>
                         </div>
                         
-                        <!-- Equipment right side - Battery & Generator -->
+                        <!-- Equipment Right (Battery + Generator) -->
                         <div class="equipment-right">
                             <div class="equip-box equip-battery" id="equip-battery">
                                 <span class="icon">🔋</span>
                             </div>
                             <div class="equip-box equip-generator" id="equip-generator">
-                                <span class="icon">⛽</span>
+                                <span class="icon">⚙️</span>
                             </div>
                         </div>
-                        
-                        <!-- House SVG - Simple one-story, tan/olive color -->
-                        <svg class="house" viewBox="0 0 140 100">
-                            <!-- Main house body - tan/olive like yours -->
-                            <rect x="10" y="35" width="120" height="65" fill="#8B8B6B" stroke="#6B6B4B" stroke-width="2"/>
-                            
-                            <!-- Roof -->
-                            <polygon points="0,35 70,5 140,35" fill="#5D4037" stroke="#4E342E" stroke-width="1"/>
-                            
-                            <!-- Door -->
-                            <rect x="55" y="55" width="25" height="45" fill="#8B4513" stroke="#5D4037" stroke-width="1"/>
-                            <circle cx="75" cy="80" r="2" fill="#fbbf24"/>
-                            
-                            <!-- Windows -->
-                            <rect x="20" y="50" width="25" height="20" fill="#87CEEB" stroke="#5D4037" stroke-width="1" opacity="0.8"/>
-                            <rect x="95" y="50" width="25" height="20" fill="#87CEEB" stroke="#5D4037" stroke-width="1" opacity="0.8"/>
-                            <line x1="32" y1="50" x2="32" y2="70" stroke="#5D4037" stroke-width="1"/>
-                            <line x1="20" y1="60" x2="45" y2="60" stroke="#5D4037" stroke-width="1"/>
-                            <line x1="107" y1="50" x2="107" y2="70" stroke="#5D4037" stroke-width="1"/>
-                            <line x1="95" y1="60" x2="120" y2="60" stroke="#5D4037" stroke-width="1"/>
-                            
-                            <!-- Solar panels on roof -->
-                            <rect x="30" y="18" width="35" height="12" fill="#1a237e" stroke="#fbbf24" stroke-width="1" rx="1"/>
-                            <rect x="75" y="18" width="35" height="12" fill="#1a237e" stroke="#fbbf24" stroke-width="1" rx="1"/>
-                        </svg>
                         
                         <!-- Ground -->
                         <div class="ground-area"></div>
@@ -696,25 +789,25 @@
                     
                     <div class="savings-grid">
                         <div class="savings-box">
-                            <div class="savings-value" id="savings-today">$2.45</div>
+                            <div class="savings-value" id="savings-today">$0.00</div>
                             <div class="savings-label">Today</div>
                         </div>
                         <div class="savings-box">
-                            <div class="savings-value" id="savings-month">$45.80</div>
+                            <div class="savings-value" id="savings-month">$0.00</div>
                             <div class="savings-label">This Month</div>
-                            <div class="savings-detail" id="savings-month-detail">19 days</div>
+                            <div class="savings-detail" id="savings-month-detail">0 days • $0.00/day avg</div>
                         </div>
                         <div class="savings-box">
-                            <div class="savings-value" id="savings-annual">$1,050</div>
+                            <div class="savings-value" id="savings-annual">$0</div>
                             <div class="savings-label">Projected Annual</div>
                         </div>
                         <div class="savings-box">
-                            <div class="savings-value" id="savings-trueup">$144</div>
+                            <div class="savings-value" id="savings-trueup">$0</div>
                             <div class="savings-label">True-Up Projection</div>
-                            <div class="savings-detail" id="savings-improvement">91.7% improvement</div>
+                            <div class="savings-detail" id="savings-improvement">0.0% improvement</div>
                         </div>
                         <div class="savings-box" style="grid-column: span 2;">
-                            <div class="savings-value" style="color: #fbbf24;">PG&E E-TOU-D + CARE</div>
+                            <div class="savings-value" style="color: #3b82f6;">PG&E E-TOU-D + CARE</div>
                             <div class="savings-label">Rate Plan</div>
                             <div class="savings-detail">Peak: 5-8 PM Weekdays</div>
                         </div>
@@ -725,19 +818,43 @@
         
         <!-- Weekly Reports Tab -->
         <div id="tab-weekly" class="tab-content">
-            <div class="card">
-                <div class="reports-header">
-                    <select id="report-select" class="report-select">
-                        <option value="">Select a weekly report...</option>
-                    </select>
-                    <span class="report-info" id="report-info">Loading reports...</span>
+            <div class="reports-header">
+                <select id="report-select" class="report-select">
+                    <option value="">Select a report...</option>
+                </select>
+                <span class="report-info">Charts generated weekly</span>
+            </div>
+            
+            <div id="charts-container" class="charts-container">
+                <div class="chart-placeholder">
+                    <div class="chart-placeholder-icon">📊</div>
+                    <p>Select a report from the dropdown above</p>
                 </div>
-                
-                <div id="charts-container" class="charts-container">
-                    <div class="chart-placeholder">
-                        <div class="chart-placeholder-icon">📊</div>
-                        <p>Select a report to view charts</p>
+            </div>
+        </div>
+        
+        <!-- System Logs Tab -->
+        <div id="tab-logs" class="tab-content">
+            <div class="logs-container">
+                <div class="logs-header">
+                    <div class="logs-title">📋 System Logs</div>
+                    <div class="logs-controls">
+                        <select id="log-file-select" onchange="loadLogs()">
+                            <option value="intelligence">Intelligence Log</option>
+                            <option value="scheduler">Scheduler Log</option>
+                            <option value="monitoring">Monitoring Data (CSV)</option>
+                        </select>
+                        <input type="number" id="log-lines" value="100" min="10" max="500" style="width: 80px;">
+                        <span style="color: #94a3b8;">lines</span>
+                        <button onclick="loadLogs()">Refresh</button>
+                        <div class="auto-refresh-indicator">
+                            <div class="dot"></div>
+                            <span>Auto-refresh: 30s</span>
+                        </div>
                     </div>
+                </div>
+                <div id="log-viewer" class="log-viewer">
+                    Loading logs...
                 </div>
             </div>
         </div>
@@ -748,68 +865,43 @@
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
                 document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
                 
-                if (btn.dataset.tab === 'weekly') {
-                    scanForReports();
+                // Load logs when switching to logs tab
+                if (btn.dataset.tab === 'logs') {
+                    loadLogs();
                 }
             });
         });
         
-        let availableReports = [];
-        
-        async function scanForReports() {
+        // Weekly Reports
+        async function loadAvailableReports() {
             const select = document.getElementById('report-select');
-            const info = document.getElementById('report-info');
+            const reports = await scanForReports();
             
-            select.innerHTML = '<option value="">Scanning for reports...</option>';
-            
-            try {
-                const response = await fetch('weekly_reports_index.json?t=' + Date.now());
-                if (response.ok) {
-                    const data = await response.json();
-                    availableReports = data.reports || [];
-                } else {
-                    availableReports = await probeForReports();
-                }
-            } catch (e) {
-                availableReports = await probeForReports();
-            }
-            
-            if (availableReports.length === 0) {
-                select.innerHTML = '<option value="">No reports found</option>';
-                info.textContent = 'Run the weekly chart generator to create reports.';
-                return;
-            }
-            
-            select.innerHTML = '<option value="">Select a weekly report...</option>';
-            availableReports.forEach(report => {
+            reports.forEach(report => {
                 const option = document.createElement('option');
                 option.value = report.date;
-                option.textContent = report.label || formatReportDate(report.date);
+                option.textContent = report.label;
                 select.appendChild(option);
             });
             
-            info.textContent = `${availableReports.length} report(s) available`;
-            
-            if (availableReports.length > 0) {
-                select.value = availableReports[0].date;
-                loadReport(availableReports[0].date);
+            if (reports.length > 0) {
+                select.value = reports[0].date;
+                loadReport(reports[0].date);
             }
         }
         
-        async function probeForReports() {
+        async function scanForReports() {
             const reports = [];
             const today = new Date();
             
-            for (let i = 0; i < 8; i++) {
-                const checkDate = new Date(today);
-                checkDate.setDate(today.getDate() - (i * 7));
-                
-                const dateStr = formatDateForFilename(checkDate);
+            for (let i = 0; i < 12; i++) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - (i * 7));
+                const dateStr = formatDateForFilename(date);
                 const testUrl = `logs/${dateStr}_chart_soc_timeline.png`;
                 
                 try {
@@ -868,6 +960,77 @@
             `;
         }
         
+        // Logs functionality
+        async function loadLogs() {
+            const logType = document.getElementById('log-file-select').value;
+            const lines = document.getElementById('log-lines').value;
+            const viewer = document.getElementById('log-viewer');
+            
+            const logFiles = {
+                'scheduler': 'logs/scheduler.log',
+                'intelligence': 'logs/solar_intelligence.log',
+                'monitoring': 'logs/continuous_monitoring.csv'
+            };
+            
+            try {
+                const response = await fetch(logFiles[logType] + '?t=' + Date.now());
+                if (!response.ok) throw new Error('Log file not found');
+                
+                const text = await response.text();
+                const allLines = text.trim().split('\n');
+                const recentLines = allLines.slice(-parseInt(lines));
+                
+                if (logType === 'monitoring') {
+                    // Format CSV as a table
+                    viewer.innerHTML = formatCSVAsTable(recentLines);
+                } else {
+                    viewer.innerHTML = recentLines.map(line => {
+                        let className = 'log-line info';
+                        if (line.includes('ERROR') || line.includes('✗') || line.includes('Failed')) className = 'log-line error';
+                        else if (line.includes('WARNING') || line.includes('⚠')) className = 'log-line warning';
+                        else if (line.includes('SUCCESS') || line.includes('✓') || line.includes('Completed')) className = 'log-line success';
+                        
+                        // Highlight timestamp
+                        const highlighted = line.replace(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}|\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\])/, '<span class="log-timestamp">$1</span>');
+                        
+                        return `<div class="${className}">${highlighted}</div>`;
+                    }).join('');
+                }
+                
+                // Scroll to bottom
+                viewer.scrollTop = viewer.scrollHeight;
+            } catch (error) {
+                viewer.innerHTML = `<div class="log-line error">Unable to load log file: ${error.message}</div>
+                    <div class="log-line info">Log files are generated by the automation system.</div>
+                    <div class="log-line info">If this is a fresh install, logs will appear after the first scheduled run.</div>
+                    <div class="log-line info"></div>
+                    <div class="log-line info">For Docker scheduler output, use: docker compose logs franklin-automation</div>`;
+            }
+        }
+        
+        function formatCSVAsTable(lines) {
+            if (lines.length === 0) return '<div class="log-line info">No data available</div>';
+            
+            let html = '<table style="width:100%; border-collapse: collapse; font-size: 11px;">';
+            
+            lines.forEach((line, index) => {
+                const cells = line.split(',');
+                const tag = index === 0 ? 'th' : 'td';
+                const style = index === 0 
+                    ? 'style="border-bottom: 1px solid #3b82f6; padding: 8px 4px; text-align: left; color: #94a3b8;"'
+                    : 'style="border-bottom: 1px solid rgba(255,255,255,0.05); padding: 6px 4px;"';
+                
+                html += '<tr>';
+                cells.forEach(cell => {
+                    html += `<${tag} ${style}>${cell.trim()}</${tag}>`;
+                });
+                html += '</tr>';
+            });
+            
+            html += '</table>';
+            return html;
+        }
+        
         // Update flow visualization
         function updateFlowVisualization(data) {
             const solar = data.energy_flow.solar;
@@ -878,18 +1041,18 @@
             
             // Update labels
             const batteryLabel = document.querySelector('.power-stat.battery .label');
-            if (battery < 0) {
+            if (battery < -0.1) {
                 batteryLabel.textContent = 'Charging';
-            } else if (battery > 0) {
+            } else if (battery > 0.1) {
                 batteryLabel.textContent = 'Discharging';
             } else {
                 batteryLabel.textContent = 'Idle';
             }
             
             const gridLabel = document.querySelector('.power-stat.grid .label');
-            if (grid > 0) {
+            if (grid > 0.05) {
                 gridLabel.textContent = 'Import';
-            } else if (grid < 0) {
+            } else if (grid < -0.05) {
                 gridLabel.textContent = 'Export';
             } else {
                 gridLabel.textContent = 'Grid';
@@ -920,19 +1083,19 @@
             document.getElementById('source-battery').classList.toggle('active', battery > 0.1);
         }
         
-        // Update charging status
+        // Update charging status - FIXED to handle idle state
         function updateChargingStatus(data) {
             const batteryPower = data.battery.current_power;
             const statusEl = document.getElementById('charging-status');
             const iconEl = document.getElementById('charging-icon');
             const textEl = document.getElementById('charging-text');
             
-            const isCharging = batteryPower < 0;
+            // Remove all status classes first
+            statusEl.classList.remove('charging', 'discharging', 'idle');
             
-            statusEl.classList.toggle('charging', isCharging);
-            statusEl.classList.toggle('discharging', !isCharging);
-            
-            if (isCharging) {
+            if (batteryPower < -0.1) {
+                // Charging (negative power = energy going into battery)
+                statusEl.classList.add('charging');
                 iconEl.textContent = '⚡';
                 if (data.energy_flow.solar > 0.5 && data.energy_flow.grid < 0.5) {
                     textEl.textContent = 'Charging (Solar)';
@@ -943,9 +1106,16 @@
                 } else {
                     textEl.textContent = 'Charging';
                 }
-            } else {
+            } else if (batteryPower > 0.1) {
+                // Discharging (positive power = energy coming from battery)
+                statusEl.classList.add('discharging');
                 iconEl.textContent = '🔋';
                 textEl.textContent = 'Discharging';
+            } else {
+                // Idle (power near zero)
+                statusEl.classList.add('idle');
+                iconEl.textContent = '⏸️';
+                textEl.textContent = 'Standby';
             }
         }
         
@@ -962,7 +1132,16 @@
                 
                 const power = Math.abs(data.battery.current_power);
                 document.getElementById('battery-power').innerHTML = power.toFixed(1) + '<span class="stat-unit">kW</span>';
-                document.getElementById('battery-status').textContent = data.battery.current_power < 0 ? 'Charging' : 'Discharging';
+                
+                // Fixed battery status text
+                if (data.battery.current_power < -0.1) {
+                    document.getElementById('battery-status').textContent = 'Charging';
+                } else if (data.battery.current_power > 0.1) {
+                    document.getElementById('battery-status').textContent = 'Discharging';
+                } else {
+                    document.getElementById('battery-status').textContent = 'Standby';
+                }
+                
                 document.getElementById('available-energy').innerHTML = data.battery.available_energy.toFixed(1) + '<span class="stat-unit">kWh</span>';
                 document.getElementById('peak-countdown').innerHTML = data.battery.peak_countdown_minutes + '<span class="stat-unit">min</span>';
                 document.getElementById('peak-time').textContent = data.battery.peak_time;
@@ -972,7 +1151,7 @@
                 document.getElementById('today-solar-ratio').textContent = Math.round(data.today.solar_ratio) + '% Solar';
                 
                 // Energy flow values
-                document.getElementById('flow-solar').textContent = data.energy_flow.solar.toFixed(1) + ' kW';
+                document.getElementById('flow-solar').textContent = Math.max(0, data.energy_flow.solar).toFixed(1) + ' kW';
                 document.getElementById('flow-grid').textContent = Math.abs(data.energy_flow.grid).toFixed(1) + ' kW';
                 document.getElementById('flow-battery').textContent = Math.abs(data.energy_flow.battery).toFixed(1) + ' kW';
                 document.getElementById('flow-home').textContent = data.energy_flow.home.toFixed(1) + ' kW';
@@ -1004,7 +1183,15 @@
         
         // Initialize
         updateDashboard();
+        loadAvailableReports();
         setInterval(updateDashboard, 15000);
+        
+        // Auto-refresh logs every 30 seconds if on logs tab
+        setInterval(() => {
+            if (document.getElementById('tab-logs').classList.contains('active')) {
+                loadLogs();
+            }
+        }, 30000);
     </script>
 </body>
 </html>

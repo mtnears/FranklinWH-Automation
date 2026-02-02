@@ -125,10 +125,10 @@ class Config:
     CHARGING_STRATEGY: str = field(default_factory=lambda: os.getenv('CHARGING_STRATEGY', 'balanced'))
     
     # ===== System Paths =====
-    BASE_DIR: Path = field(default_factory=lambda: Path(os.getenv('BASE_DIR', '/volume1/docker/franklin')))
-    LOG_DIR: Path = field(default_factory=lambda: Path(os.getenv('LOG_DIR', '/volume1/docker/franklin/logs')))
-    DATA_DIR: Path = field(default_factory=lambda: Path(os.getenv('DATA_DIR', '/volume1/docker/franklin/data')))
-    WEB_DIR: Path = field(default_factory=lambda: Path(os.getenv('WEB_DIR', '/volume1/web')))
+    BASE_DIR: Path = field(default_factory=lambda: Path(os.getenv('BASE_DIR', '/app')))
+    LOG_DIR: Path = field(default_factory=lambda: Path(os.getenv('LOG_DIR', '/app/logs')))
+    DATA_DIR: Path = field(default_factory=lambda: Path(os.getenv('DATA_DIR', '/app/data')))
+    WEB_DIR: Path = field(default_factory=lambda: Path(os.getenv('WEB_DIR', '/app/web')))
     
     # ===== Notifications =====
     EMAIL_ENABLED: bool = field(default_factory=lambda: get_bool('EMAIL_ENABLED', False))

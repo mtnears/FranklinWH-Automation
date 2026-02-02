@@ -33,9 +33,9 @@ except ImportError:
         FRANKLIN_USERNAME = ""
         FRANKLIN_PASSWORD = ""
         FRANKLIN_GATEWAY_ID = ""
-        LOG_DIR = Path("/volume1/docker/franklin/logs")
-        DATA_DIR = Path("/volume1/docker/franklin/data")
-        WEB_DIR = Path("/volume1/web")
+        LOG_DIR = Path("/app/logs")
+        DATA_DIR = Path("/app/data")
+        WEB_DIR = Path("/app/web")
         BATTERY_CAPACITY_KWH = 30.0
         LOG_FILE = LOG_DIR / "continuous_monitoring.csv"
         INTELLIGENCE_LOG = LOG_DIR / "solar_intelligence.log"

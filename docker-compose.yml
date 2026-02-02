@@ -1,110 +1,121 @@
-version: '3.8'
-
 # ==============================================================================
-# FranklinWH Battery Automation - Docker Compose Configuration
+# FranklinWH Battery Automation - Docker Compose
 # ==============================================================================
-# 
-# Usage:
-#   docker compose build                    # Build the image
-#   docker compose run --rm franklin        # Run automation once
-#   docker compose up -d                    # Start continuous mode (if using scheduler)
 #
-# Configuration:
-#   Copy .env.example to .env and customize settings
+# Complete automation system with:
+#   - Automated battery management (every 15 minutes)
+#   - Dashboard data generation (every minute)
+#   - Weather collection (if enabled)
+#   - PVOutput tracking (if enabled)
+#   - Weekly performance charts
+#   - Built-in web dashboard server
+#
+# Quick Start:
+#   1. Copy .env.example to .env and configure
+#   2. docker compose build
+#   3. docker compose up -d
+#   4. Access dashboard at http://YOUR-IP:8100 (or custom DASHBOARD_PORT)
 #
 # ==============================================================================
 
 services:
+  # ============================================================================
+  # Main Automation Service
+  # ============================================================================
   franklin-automation:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: franklin-automation
     
-    # Environment configuration
+    # Load configuration from .env file
     env_file:
       - .env
     
-    # Volume mounts for persistent data
+    # Persistent storage
     volumes:
-      # Logs directory (persistent across container restarts)
       - ./logs:/app/logs
-      
-      # Data directory for savings tracking
       - ./data:/app/data
-      
-      # Optional: Mount scripts for development/testing
-      # Uncomment to edit scripts without rebuilding:
-      # - ./scripts:/app/scripts:ro
+      - ./web:/app/web
     
-    # Network configuration
-    # The container needs internet access for Franklin Cloud API
-    # and optionally for dynamic pricing APIs
-    network_mode: bridge
-    
-    # Timezone (from .env)
+    # Timezone support
     environment:
       - TZ=${TZ:-America/Los_Angeles}
     
-    # Resource limits (optional, adjust as needed)
+    # Resource limits
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
         reservations:
-          memory: 64M
+          memory: 128M
     
-    # Default command: run smart_decision.py once
-    # For scheduled execution, use external scheduler (cron/Task Scheduler)
-    command: python /app/scripts/smart_decision.py
+    # Always restart unless explicitly stopped
+    restart: unless-stopped
     
-    # Restart policy
-    # - "no": Don't restart (use with external scheduler)
-    # - "unless-stopped": Always restart (use with internal scheduler)
-    restart: "no"
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  # ==============================================================================
-  # Optional: Dashboard data generator
-  # ==============================================================================
-  # Uncomment to run dashboard updates via Docker
-  #
-  # dashboard:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: franklin-dashboard
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - ./logs:/app/logs
-  #     - ./data:/app/data
-  #     - ${WEB_DIR:-/volume1/web}:/app/web
-  #   command: python /app/scripts/generate_dashboard_data.py
-  #   restart: "no"
-
-  # ==============================================================================
-  # Optional: Weekly chart generator
-  # ==============================================================================
-  # Uncomment to run chart generation via Docker
-  #
-  # charts:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: franklin-charts
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - ./logs:/app/logs
-  #     - ${WEB_DIR:-/volume1/web}:/app/web
-  #   command: python /app/scripts/generate_weekly_charts.py
-  #   restart: "no"
+  # ============================================================================
+  # Web Dashboard Server (Built-in)
+  # ============================================================================
+  franklin-dashboard:
+    image: nginx:alpine
+    container_name: franklin-dashboard
+    
+    # Dashboard port - configurable via .env (default: 8100)
+    ports:
+      - "${DASHBOARD_PORT:-8100}:80"
+    
+    # Mount web files and logs (for charts)
+    volumes:
+      - ./web:/usr/share/nginx/html:ro
+      - ./logs:/logs:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    
+    # Timezone
+    environment:
+      - TZ=${TZ:-America/Los_Angeles}
+    
+    # Depends on automation to generate data
+    depends_on:
+      - franklin-automation
+    
+    # Always restart
+    restart: unless-stopped
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 # ==============================================================================
-# Volume definitions (for named volumes if preferred)
+# Notes:
 # ==============================================================================
-# Uncomment to use named volumes instead of bind mounts:
 #
-# volumes:
-#   franklin-logs:
-#   franklin-data:
+# Logs and Data:
+#   - Logs are stored in ./logs (mounted from host)
+#   - Data files are stored in ./data (mounted from host)
+#   - Dashboard files are in ./web (mounted from host)
+#
+# Dashboard Access:
+#   - Open http://YOUR-SERVER-IP:8100 in a browser (or custom DASHBOARD_PORT)
+#   - Dashboard auto-refreshes every 15 seconds
+#   - Weekly charts available in the Reports tab
+#
+# Monitoring:
+#   - View logs: docker compose logs -f franklin-automation
+#   - Check status: docker compose ps
+#   - Restart: docker compose restart
+#
+# Stopping:
+#   - Stop all: docker compose down
+#   - Stop and remove data: docker compose down -v
+#
+# ==============================================================================

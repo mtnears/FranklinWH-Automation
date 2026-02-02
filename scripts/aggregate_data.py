@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 # Data source paths
-LOG_DIR = Path("/volume1/docker/franklin/logs")
+LOG_DIR = Path("/app/logs")
 FRANKLIN_LOG = LOG_DIR / "continuous_monitoring.csv"
 GROUND_SOLAR_LOG = LOG_DIR / "pvoutput_ground_mount.csv"
 HOUSE_SOLAR_LOG = LOG_DIR / "pvoutput_house.csv"

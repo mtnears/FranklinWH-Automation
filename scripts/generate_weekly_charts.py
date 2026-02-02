@@ -30,10 +30,10 @@ try:
     PEAK_END_HOUR = config.PEAK_END_HOUR
 except ImportError:
     # Fallback defaults
-    LOG_FILE = "/volume1/docker/franklin/logs/continuous_monitoring.csv"
-    INTELLIGENCE_LOG = "/volume1/docker/franklin/logs/solar_intelligence.log"
-    OUTPUT_DIR = "/volume1/docker/franklin/logs"
-    WEB_DIR = "/volume1/web"
+    LOG_FILE = "/app/logs/continuous_monitoring.csv"
+    INTELLIGENCE_LOG = "/app/logs/solar_intelligence.log"
+    OUTPUT_DIR = "/app/logs"
+    WEB_DIR = "/app/web"
     PEAK_START_HOUR = 17
     PEAK_END_HOUR = 20
 
