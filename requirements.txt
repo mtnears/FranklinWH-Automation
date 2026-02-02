@@ -1,7 +1,13 @@
 # Franklin WH Battery Automation - Python Dependencies
 
 # Core functionality
-franklinwh-api>=0.1.0
+franklinwh>=0.1.0
+
+# Configuration management
+python-dotenv>=1.0.0
+
+# HTTP requests (for pricing API, weather)
+requests>=2.28.0
 
 # Chart generation (for generate_weekly_charts.py)
 pandas>=2.0.0
