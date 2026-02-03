@@ -100,6 +100,11 @@ class Config:
     PEAK2_END_HOUR: Optional[int] = field(default_factory=lambda: get_int('PEAK2_END_HOUR', 0) or None)
     PEAK2_DAYS: str = field(default_factory=lambda: os.getenv('PEAK2_DAYS', 'weekdays'))
     
+    # ===== Scheduling Settings =====
+    CHECK_INTERVAL_MINUTES: int = field(default_factory=lambda: get_int('CHECK_INTERVAL_MINUTES', 15))
+    PEAK_TRANSITION_BUFFER_MINUTES: int = field(default_factory=lambda: get_int('PEAK_TRANSITION_BUFFER_MINUTES', 5))
+    HOME_MODE: str = field(default_factory=lambda: os.getenv('HOME_MODE', 'tou'))
+    
     # ===== Dynamic Pricing Settings =====
     PRICING_PROVIDER: str = field(default_factory=lambda: os.getenv('PRICING_PROVIDER', 'comed'))
     PRICE_THRESHOLD_CENTS: float = field(default_factory=lambda: get_float('PRICE_THRESHOLD_CENTS', 4.0))
@@ -150,6 +155,11 @@ class Config:
         self.LOG_DIR = Path(self.LOG_DIR)
         self.DATA_DIR = Path(self.DATA_DIR)
         self.WEB_DIR = Path(self.WEB_DIR)
+        
+        # Normalize HOME_MODE
+        self.HOME_MODE = self.HOME_MODE.lower().strip()
+        if self.HOME_MODE not in ('tou', 'self_consumption'):
+            self.HOME_MODE = 'tou'
     
     @property
     def LOG_FILE(self) -> Path:
@@ -163,7 +173,7 @@ class Config:
     
     @property
     def STATE_FILE(self) -> Path:
-        """Path to last mode state file."""
+        """Path to last mode state file (legacy, used for logging only)."""
         return self.LOG_DIR / "last_mode.txt"
     
     @property
@@ -205,6 +215,16 @@ class Config:
                 errors.append("PEAK_END_HOUR must be 0-23")
             if self.PEAK_START_HOUR >= self.PEAK_END_HOUR:
                 errors.append("PEAK_START_HOUR must be before PEAK_END_HOUR")
+        
+        # Scheduling validation
+        if self.CHECK_INTERVAL_MINUTES < 1:
+            errors.append("CHECK_INTERVAL_MINUTES must be at least 1")
+        if self.CHECK_INTERVAL_MINUTES > 60:
+            errors.append("CHECK_INTERVAL_MINUTES should not exceed 60")
+        if self.PEAK_TRANSITION_BUFFER_MINUTES < 1:
+            errors.append("PEAK_TRANSITION_BUFFER_MINUTES must be at least 1")
+        if self.HOME_MODE not in ('tou', 'self_consumption'):
+            errors.append("HOME_MODE must be 'tou' or 'self_consumption'")
         
         # Weather settings validation
         if self.WEATHER_ENABLED:
@@ -280,6 +300,14 @@ class Config:
             f"  Strategy: {self.CHARGING_STRATEGY}",
         ])
         
+        lines.extend([
+            "",
+            "SCHEDULING:",
+            f"  Check Interval: {self.CHECK_INTERVAL_MINUTES} minutes",
+            f"  Peak Buffer: {self.PEAK_TRANSITION_BUFFER_MINUTES} minutes before/after",
+            f"  Home Mode: {self.HOME_MODE}",
+        ])
+        
         if self.DYNAMIC_PRICING_ENABLED:
             lines.extend([
                 "",
@@ -312,6 +340,11 @@ class Config:
                 'peak_end_hour': self.PEAK_END_HOUR,
                 'peak_days': self.PEAK_DAYS,
             } if self.TOU_ENABLED else None,
+            'scheduling': {
+                'check_interval_minutes': self.CHECK_INTERVAL_MINUTES,
+                'peak_transition_buffer_minutes': self.PEAK_TRANSITION_BUFFER_MINUTES,
+                'home_mode': self.HOME_MODE,
+            },
             'dynamic_pricing': {
                 'provider': self.PRICING_PROVIDER,
                 'threshold_cents': self.PRICE_THRESHOLD_CENTS,

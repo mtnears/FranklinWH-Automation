@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Smart Battery Decision Engine - v3.0
+Smart Battery Decision Engine - v3.2.0
+
+API-native mode management using franklinwh library v1.0.0.
+Reads actual mode from gateway via _status() and switches modes
+directly via set_mode() - no external scripts or state files needed.
 
 Configuration-driven battery automation that supports:
 - Solar-first charging (when SOLAR_ENABLED)
@@ -8,15 +12,24 @@ Configuration-driven battery automation that supports:
 - Dynamic hourly pricing (when DYNAMIC_PRICING_ENABLED)
 - Weather-informed decisions (when WEATHER_ENABLED)
 
-Designed to be run every 15 minutes via scheduler.
+Designed to be run on a configurable interval via scheduler.
 
 Configuration is loaded from environment variables / .env file.
 See .env.example for all options.
+
+Changelog:
+  v3.2.0 - API-native mode management via set_mode()
+         - Universal mode detection via run_status field
+         - Per-battery SOC and enriched status logging
+         - Eliminated external switch scripts and state file dependency
+         - Single API connection for stats + mode + switching
+  v3.1.0 - Docker deployment, mode-aware savings tracking
+  v3.0.0 - Configuration-driven with feature toggles
 """
 import asyncio
 import csv
 from datetime import datetime, timedelta
-from franklinwh import Client, TokenFetcher
+from franklinwh import Client, TokenFetcher, Mode
 
 # Import configuration
 from config import config
@@ -35,6 +48,17 @@ if config.WEATHER_ENABLED:
         config.WEATHER_ENABLED = False
 
 
+# =============================================================================
+# Run status mapping - universal mode type indicator from Franklin API
+# These are consistent regardless of custom schedule names or firmware
+# =============================================================================
+RUN_STATUS_MAP = {
+    1: "emergency_backup",
+    2: "tou",
+    3: "self_consumption",
+}
+
+
 def log_intelligence(message: str):
     """Write to intelligence log with timestamp."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -42,49 +66,17 @@ def log_intelligence(message: str):
         f.write(f"{timestamp} - {message}\n")
 
 
-def get_last_mode() -> str:
-    """Read last mode from state file."""
+def save_mode_log(mode: str):
+    """Write current mode to state file for logging/debugging only.
+    
+    NOTE: As of v3.2.0 this is purely a log artifact.
+    Mode detection is done via the API, not from this file.
+    """
     try:
-        with open(config.STATE_FILE, 'r') as f:
-            return f.read().strip()
-    except:
-        return None
-
-
-def save_mode(mode: str):
-    """Save current mode to state file."""
-    with open(config.STATE_FILE, 'w') as f:
-        f.write(mode)
-
-
-def switch_to_backup():
-    """Switch to Emergency Backup mode (grid charging)."""
-    import subprocess
-    try:
-        log_intelligence("SWITCHING TO EMERGENCY BACKUP MODE (grid charging)")
-        script_path = config.BASE_DIR / 'scripts' / 'switch_to_backup_v2.py'
-        result = subprocess.run(['python3', str(script_path)], capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            log_intelligence(f"Switch script stderr: {result.stderr}")
-        return result.returncode == 0
-    except Exception as e:
-        log_intelligence(f"ERROR switching to backup: {e}")
-        return False
-
-
-def switch_to_tou():
-    """Switch to TOU mode (solar-first)."""
-    import subprocess
-    try:
-        log_intelligence("SWITCHING TO TOU MODE (solar-first)")
-        script_path = config.BASE_DIR / 'scripts' / 'switch_to_tou_v2.py'
-        result = subprocess.run(['python3', str(script_path)], capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            log_intelligence(f"Switch script stderr: {result.stderr}")
-        return result.returncode == 0
-    except Exception as e:
-        log_intelligence(f"ERROR switching to TOU: {e}")
-        return False
+        with open(config.STATE_FILE, 'w') as f:
+            f.write(mode)
+    except Exception:
+        pass  # Non-critical, just logging
 
 
 def get_peak_state() -> str:
@@ -291,15 +283,114 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
     return False, f"Default: maintaining current state (SOC: {soc:.1f}%)"
 
 
-async def get_stats_with_retry(max_retries: int = None, delay: int = None):
+# =============================================================================
+# API interaction - single client for stats, status, and mode control
+# =============================================================================
+
+async def create_client() -> Client:
+    """Create and return a Franklin API client."""
+    fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
+    return Client(fetcher, config.FRANKLIN_GATEWAY_ID)
+
+
+async def get_gateway_status(client: Client) -> dict:
+    """
+    Get raw gateway status including mode, per-battery SOC, and system data.
+    
+    Returns dict with keys like:
+        run_status, mode, name, soc, fhpSoc, fhpSn, fhpPower,
+        t_amb, signal, gridChBat, soChBat, kwh_sun, etc.
+    """
+    return await client._status()
+
+
+def detect_mode(status: dict) -> str:
+    """
+    Detect current operating mode from gateway status.
+    
+    Uses run_status as the universal mode type indicator:
+        1 = emergency_backup (grid charging)
+        2 = tou (time-of-use, user's normal schedule)
+        3 = self_consumption
+    
+    Falls back to name-based detection if run_status is unknown.
+    """
+    run_status = status.get("run_status")
+    mode_name = status.get("name", "")
+    
+    # Primary: use run_status (universal across firmware/configs)
+    if run_status in RUN_STATUS_MAP:
+        return RUN_STATUS_MAP[run_status]
+    
+    # Fallback: name-based detection
+    if "emergency" in mode_name.lower() or "backup" in mode_name.lower():
+        return "emergency_backup"
+    if "tou" in mode_name.lower():
+        return "tou"
+    if "self" in mode_name.lower():
+        return "self_consumption"
+    
+    # Unknown - log it and assume home mode
+    log_intelligence(f"Unknown mode: run_status={run_status}, name='{mode_name}' - assuming home mode")
+    return config.HOME_MODE
+
+
+def get_home_mode_object() -> Mode:
+    """Get the Mode object for the user's configured home mode."""
+    if config.HOME_MODE == 'self_consumption':
+        return Mode.self_consumption(soc=20)
+    else:
+        return Mode.time_of_use(soc=20)
+
+
+async def switch_mode(client: Client, target: str) -> bool:
+    """
+    Switch to the specified mode via API.
+    
+    Args:
+        client: Franklin API client
+        target: "emergency_backup" or "home" (uses HOME_MODE config)
+    
+    Returns: True if switch succeeded
+    """
+    try:
+        if target == "emergency_backup":
+            mode_obj = Mode.emergency_backup(soc=100)
+            mode_label = "Emergency Backup"
+        else:
+            mode_obj = get_home_mode_object()
+            mode_label = config.HOME_MODE.upper().replace('_', ' ')
+        
+        log_intelligence(f"SWITCHING MODE -> {mode_label}")
+        await client.set_mode(mode_obj)
+        
+        # Verify the switch took effect
+        await asyncio.sleep(2)
+        verify_status = await get_gateway_status(client)
+        actual_mode = detect_mode(verify_status)
+        
+        if target == "emergency_backup" and actual_mode == "emergency_backup":
+            log_intelligence(f"Mode switch verified: {mode_label}")
+            return True
+        elif target != "emergency_backup" and actual_mode != "emergency_backup":
+            log_intelligence(f"Mode switch verified: {mode_label}")
+            return True
+        else:
+            log_intelligence(f"WARNING: Mode switch may not have taken effect. "
+                           f"Expected: {target}, Got: {actual_mode}")
+            return False
+            
+    except Exception as e:
+        log_intelligence(f"ERROR switching to {target}: {e}")
+        return False
+
+
+async def get_stats_with_retry(client: Client, max_retries: int = None, delay: int = None):
     """Get stats from Franklin API with retry logic."""
     max_retries = max_retries or config.API_MAX_RETRIES
     delay = delay or config.API_RETRY_DELAY
     
     log_intelligence(f"Attempting to get battery stats (max {max_retries} attempts)...")
-    
-    fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
-    client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
     
     for attempt in range(max_retries):
         try:
@@ -319,6 +410,10 @@ async def get_stats_with_retry(max_retries: int = None, delay: int = None):
                 raise
 
 
+# =============================================================================
+# Main execution
+# =============================================================================
+
 async def main():
     """Main execution."""
     try:
@@ -330,14 +425,44 @@ async def main():
             print(f"Configuration errors: {errors}")
             return 1
         
-        # Get current battery stats
-        stats = await get_stats_with_retry()
+        # Create a single API client for everything
+        client = await create_client()
         
+        # Get battery stats (with retry) and gateway status
+        stats = await get_stats_with_retry(client)
+        status = await get_gateway_status(client)
+        
+        # Extract power flow data from stats
         soc = stats.current.battery_soc
         solar_kw = stats.current.solar_production
         grid_kw = stats.current.grid_use
         battery_kw = stats.current.battery_use
         home_load_kw = stats.current.home_load
+        
+        # Extract enriched data from raw status
+        run_status = status.get("run_status", -1)
+        mode_number = status.get("mode", -1)
+        mode_name = status.get("name", "Unknown")
+        current_mode = detect_mode(status)
+        
+        # Per-battery data
+        battery_socs = status.get("fhpSoc", [])
+        battery_serials = status.get("fhpSn", [])
+        battery_powers = status.get("fhpPower", [])
+        num_batteries = len(battery_socs)
+        
+        # Environment and system data
+        ambient_temp_c = status.get("t_amb", None)
+        cell_signal = status.get("signal", None)
+        grid_charging_kw = status.get("gridChBat", 0)
+        solar_charging_kw = status.get("soChBat", 0)
+        
+        # Today's energy totals from status
+        today_solar_kwh = status.get("kwh_sun", 0)
+        today_grid_import_kwh = status.get("kwh_uti_in", 0)
+        today_load_kwh = status.get("kwh_load", 0)
+        today_bat_charge_kwh = status.get("kwh_fhp_chg", 0)
+        today_bat_discharge_kwh = status.get("kwh_fhp_di", 0)
         
         # Update peak state (returns True if in peak period)
         in_peak = update_peak_state()
@@ -347,8 +472,8 @@ async def main():
         
         # Make charging decision
         should_charge, reason = should_charge_from_grid(soc, solar_kw, hours_to_peak, in_peak)
-        desired_mode = "BACKUP" if should_charge else "TOU"
-        last_mode = get_last_mode()
+        desired_mode = "emergency_backup" if should_charge else "home"
+        desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
         
         # Log decision
         log_intelligence("=" * 70)
@@ -357,6 +482,24 @@ async def main():
         features = config.get_enabled_features()
         log_intelligence(f"Features: {', '.join(features) if features else 'Basic mode'}")
         
+        # Log current mode from API
+        log_intelligence(f"API Mode: {mode_name} (run_status={run_status}, detected={current_mode})")
+        
+        # Log per-battery SOC if multiple batteries
+        if num_batteries > 1:
+            bat_soc_str = ", ".join([f"Bat{i+1}: {s:.1f}%" for i, s in enumerate(battery_socs)])
+            log_intelligence(f"Per-battery SOC: {bat_soc_str} (combined: {soc:.1f}%)")
+        
+        # Log environment data
+        env_parts = []
+        if ambient_temp_c is not None:
+            temp_f = ambient_temp_c * 9 / 5 + 32
+            env_parts.append(f"Temp: {temp_f:.0f}F/{ambient_temp_c:.1f}C")
+        if cell_signal is not None:
+            env_parts.append(f"Signal: {cell_signal}")
+        if env_parts:
+            log_intelligence(f"Environment: {', '.join(env_parts)}")
+        
         # Log dynamic pricing if enabled
         if config.DYNAMIC_PRICING_ENABLED:
             current_price = get_current_price()
@@ -364,28 +507,32 @@ async def main():
                 log_intelligence(f"Grid price: {current_price:.1f}c/kWh (threshold: {config.PRICE_THRESHOLD_CENTS}c)")
         
         peak_status = "IN PEAK" if in_peak else f"{hours_to_peak:.1f}h to peak" if config.TOU_ENABLED else "No TOU"
-        log_intelligence(f"SOC: {soc:.1f}%, Solar: {solar_kw:.3f}kW, Status: {peak_status}")
+        log_intelligence(f"SOC: {soc:.1f}%, Solar: {solar_kw:.3f}kW, Grid->Bat: {grid_charging_kw:.2f}kW, Solar->Bat: {solar_charging_kw:.2f}kW")
+        log_intelligence(f"Status: {peak_status}")
         log_intelligence(f"Decision: {reason}")
-        log_intelligence(f"Action: {'Grid charge' if should_charge else 'Solar-first (TOU mode)'}")
+        log_intelligence(f"Action: {'Grid charge (backup mode)' if should_charge else f'Solar-first ({config.HOME_MODE} mode)'}")
         
-        # Switch modes if needed (only if NOT in peak when TOU enabled)
-        if (not config.TOU_ENABLED or not in_peak) and desired_mode != last_mode:
-            if desired_mode == "BACKUP":
-                success = switch_to_backup()
-            else:
-                success = switch_to_tou()
+        # Determine if mode switch is needed
+        mode_switched = False
+        if not config.TOU_ENABLED or not in_peak:
+            need_backup = should_charge and current_mode != "emergency_backup"
+            need_home = not should_charge and current_mode == "emergency_backup"
             
-            if success:
-                log_intelligence(f"Mode changed: {last_mode} -> {desired_mode}")
-                save_mode(desired_mode)
+            if need_backup:
+                mode_switched = await switch_mode(client, "emergency_backup")
+                log_intelligence(f"Mode changed: {current_mode} -> emergency_backup")
+            elif need_home:
+                mode_switched = await switch_mode(client, "home")
+                log_intelligence(f"Mode changed: emergency_backup -> {config.HOME_MODE}")
             else:
-                log_intelligence(f"Mode switch FAILED - staying in {last_mode}")
-                # Don't update the saved mode since switch failed
+                log_intelligence(f"Mode unchanged: {current_mode} ({desired_mode_label})")
         else:
-            log_intelligence(f"Mode unchanged: {desired_mode}")
-            save_mode(desired_mode)
+            log_intelligence(f"In peak - no mode changes (current: {current_mode})")
         
-        # Log to CSV
+        # Write mode to state file (logging only, not used for decisions)
+        save_mode_log(desired_mode_label)
+        
+        # Log to CSV with enriched data
         now = datetime.now()
         data = {
             'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
@@ -400,8 +547,22 @@ async def main():
             'grid_import_total': f'{stats.totals.grid_import:.3f}',
             'solar_total': f'{stats.totals.solar:.3f}',
             'hours_to_peak': f'{hours_to_peak:.2f}' if config.TOU_ENABLED else 'N/A',
-            'mode': desired_mode
+            'mode': desired_mode_label,
+            'run_status': str(run_status),
+            'mode_name': mode_name,
+            'grid_charging_kw': f'{grid_charging_kw:.3f}',
+            'solar_charging_kw': f'{solar_charging_kw:.3f}',
         }
+        
+        # Add per-battery SOC columns
+        for i, bat_soc in enumerate(battery_socs):
+            data[f'battery_{i+1}_soc'] = f'{bat_soc:.1f}'
+        
+        # Add environment data if available
+        if ambient_temp_c is not None:
+            data['ambient_temp_c'] = f'{ambient_temp_c:.1f}'
+        if cell_signal is not None:
+            data['cell_signal'] = str(cell_signal)
         
         # Add pricing data if enabled
         if config.DYNAMIC_PRICING_ENABLED:
@@ -418,11 +579,16 @@ async def main():
                 writer.writeheader()
             writer.writerow(data)
         
-        print(f"Decision made: {desired_mode} mode ({reason})")
+        # Summary output
+        bat_info = f" ({num_batteries} batteries)" if num_batteries > 1 else ""
+        switch_info = " [SWITCHED]" if mode_switched else ""
+        print(f"Decision: {desired_mode_label} mode ({reason}){bat_info}{switch_info}")
         
     except Exception as e:
         log_intelligence(f"ERROR: {e}")
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
     
     return 0
