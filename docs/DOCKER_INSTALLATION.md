@@ -80,7 +80,7 @@ docker logs franklin-automation 2>&1 | head -25
 ```
 
 You should see:
-- `Scheduler v3.2.0` in the banner
+- `Scheduler v3.3.0` in the banner
 - Your enabled features listed
 - `Pre-peak check: Daily at XX:XX` and `Post-peak check: Daily at XX:XX`
 - Initial smart decision completing successfully
@@ -121,7 +121,7 @@ All tasks run automatically inside the container:
 
 ## Dashboard Features
 
-The built-in dashboard has three tabs:
+The built-in dashboard has five tabs:
 
 ### Live Dashboard
 - Real-time battery status and SOC
@@ -129,6 +129,17 @@ The built-in dashboard has three tabs:
 - Battery states: Charging / Discharging / Standby
 - Savings tracker
 - Peak countdown timer
+
+### System Info
+- Per-battery SOC and power output
+- Environment data (temperature, signal)
+- Today's energy totals and lifetime totals
+- Hardware status (BMS, generator, V2L)
+- Mode override controls
+
+### Settings
+- Read-only display of automation configuration
+- Peak hours, SOC targets, feature toggles
 
 ### Weekly Reports
 - 7-day SOC timeline charts
@@ -404,4 +415,4 @@ Open: `http://YOUR-PI-IP:8100`
 ---
 
 **Last Updated:** February 2026
-**Version:** 3.2.0
+**Version:** 3.3.0

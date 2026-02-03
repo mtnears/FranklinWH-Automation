@@ -17,41 +17,37 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 - **Per-Battery Monitoring** - Individual SOC and power tracking for multi-battery systems
 - **Peak State Tracking** - Prevents mode changes during expensive peak periods
 - **Solar-First Intelligence** - Waits for solar production before grid charging
-- **Dynamic Pricing Support** - Optional ComEd hourly pricing integration
+- **Dynamic Pricing Support** - Optional ComEd hourly pricing with negative price credit capture
 - **Configurable Everything** - All settings via `.env` file, no code edits needed
-- **Web Dashboard** - Real-time monitoring with energy flow visualization
+- **Web Dashboard** - Real-time monitoring with energy flow visualization and system info
 - **Weekly Reports** - Performance charts showing 7-day automation effectiveness
 - **Robust API Handling** - 5-attempt retry logic for Franklin Cloud API
 - **Docker Deployment** - Single command startup with built-in scheduler and dashboard
 
 ---
 
-## What's New in v3.2.0
+## What's New in v3.3.0
 
-### API-Native Mode Management
-- Mode detection reads directly from the gateway's `run_status` field — no more state files
-- Mode switching via direct `set_mode()` API calls — no more external switch scripts
-- Universal mode detection works across firmware versions using `run_status` codes
-- Post-switch verification confirms the mode actually changed
+### Negative Pricing / Solar Override
+- New `SOLAR_OVERRIDE_PRICE_CENTS` setting for dynamic pricing users
+- Charges from grid even when solar is producing — captures utility credits during negative pricing
+- Overrides solar-first preference AND peak protection when grid price is at or below threshold
+- All pricing thresholds now support negative values natively
 
-### Schedule-Aware Timing
-- Pre-peak check pinned to exact time (e.g., 16:55) — guarantees readiness before peak
-- Post-peak check pinned to exact time (e.g., 20:01) — resumes normal operation immediately
-- Configurable polling interval via `CHECK_INTERVAL_MINUTES`
-- Configurable buffer via `PEAK_TRANSITION_BUFFER_MINUTES`
+### Improved Mode Detection
+- Mode detection uses gateway `name` field instead of `run_status` for reliable operation across firmware versions
+- Switch verification with 5s initial check + 8s retry and 10-minute cooldown
 
-### Per-Battery Monitoring
-- Individual SOC tracking for each battery in the system
-- Individual power output per battery
-- Automatic detection of battery count — works with 1, 2, or more batteries
-- Enriched logging: ambient temperature, cellular signal, charging source breakdown
+### Enhanced Dashboard Data
+- Dashboard data generator calls `_status()` API for enriched system information
+- Per-battery SOC, environment data (temperature, signal), energy totals, hardware status
+- Config export for Settings tab display
+- Gateway ID for multi-gateway support
 
-### New Configuration Options
-```bash
-CHECK_INTERVAL_MINUTES=15           # How often to run decisions
-PEAK_TRANSITION_BUFFER_MINUTES=5    # How early to check before peak
-HOME_MODE=tou                       # Normal mode: tou or self_consumption
-```
+### Decision Engine Restructure
+- New Layer 0: Credit/negative price override (highest priority)
+- All price comparisons use `<=` for correct zero and negative handling
+- Removed hardcoded 2.0¢ threshold — all thresholds configurable via `.env`
 
 ---
 
@@ -86,7 +82,7 @@ docker compose up -d
 docker logs franklin-automation 2>&1 | head -25
 ```
 
-You should see the v3.2.0 banner with your configured features and scheduled tasks.
+You should see the v3.3.0 banner with your configured features and scheduled tasks.
 
 ### 4. Access Dashboard
 Open `http://YOUR-SERVER-IP:8100` in your browser.
@@ -101,8 +97,10 @@ Every 15 minutes (configurable), plus pinned checks at peak boundaries:
 
 ```
 ┌─ Get battery stats via Franklin API (with retry logic)
-├─ Detect current mode from API (run_status field)
+├─ Detect current mode from API (name field)
 ├─ Check enabled features
+├─ Layer 0: Price Override (if DYNAMIC_PRICING + SOLAR_OVERRIDE configured)
+│   └─ Grid credit/negative pricing overrides everything
 ├─ Layer 1: Peak Protection (if TOU_ENABLED)
 │   └─ NO ACTION during peak period
 ├─ Layer 2: Solar Assessment (if SOLAR_ENABLED)
@@ -111,7 +109,7 @@ Every 15 minutes (configurable), plus pinned checks at peak boundaries:
 │   └─ Charge when price is cheap
 ├─ Layer 4: Time-Based Logic
 │   └─ Ensure ready for peak
-└─ Execute mode switch via API if needed (with verification)
+└─ Execute mode switch via API if needed (with verification + cooldown)
 ```
 
 ### Peak Protection
@@ -203,7 +201,7 @@ See [WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md) for details.
 - **Utility:** PG&E E-TOU-D with CARE discount
 - **Location:** Georgetown, CA
 
-### Performance (v3.2.0)
+### Performance (v3.3.0)
 - **Peak Protection:** 100% success rate
 - **API Reliability:** 99.5% uptime
 - **Target SOC Achievement:** 91-94% before peak

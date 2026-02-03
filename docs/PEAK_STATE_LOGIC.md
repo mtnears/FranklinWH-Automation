@@ -219,12 +219,12 @@ No mode changes occur, just state file date updates.
 
 ### Adjusting Peak Hours
 
-Edit `smart_decision.py`:
+Set in your `.env` file:
 
-```python
+```bash
 # For 4 PM - 9 PM peak period
-PEAK_START_HOUR = 16  # 4 PM
-PEAK_END_HOUR = 21    # 9 PM
+PEAK_START_HOUR=16
+PEAK_END_HOUR=21
 ```
 
 ### Multiple Peak Periods
@@ -324,5 +324,5 @@ Potential improvements to peak state logic:
 
 ---
 
-**Last Updated:** January 3, 2026  
-**Version:** 2.0
+**Last Updated:** February 2026  
+**Version:** 3.3.0

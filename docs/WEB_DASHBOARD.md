@@ -14,6 +14,20 @@ The FranklinWH Automation includes a web-based dashboard for real-time monitorin
 - **Savings Tracker**: Daily, monthly, and projected annual savings
 - **Auto-Refresh**: Dashboard updates every 15 seconds
 
+### System Info Tab
+- **Per-Battery SOC**: Individual state of charge for each battery in the system
+- **Environment**: Ambient temperature, cellular signal strength, WiFi signal
+- **Energy Totals**: Today's solar generation, grid import/export, load, battery charge/discharge
+- **Lifetime Totals**: Cumulative energy by source (battery, grid, solar, generator)
+- **Charging Breakdown**: Grid-to-battery vs solar-to-battery rates
+- **Hardware Status**: BMS, power electronics, main switch, generator, V2L mode
+- **Mode Override Controls**: Manual Self Consumption / Emergency Backup with duration selection
+
+### Settings Tab
+- **Automation Config**: Read-only display of current `.env` settings
+- **Peak hours, SOC targets, charge rates, feature toggles**
+- **Dynamic pricing thresholds** (if enabled)
+
 ### Weekly Reports Tab
 - **SOC Timeline**: 7-day battery state of charge history
 - **Daily Summary**: Charging/discharging patterns by day
@@ -110,7 +124,7 @@ Open in your browser:
 | Battery Status | SOC percentage, mode (TOU/Backup), charging state |
 | Current Power | Real-time charge/discharge rate in kW |
 | Available Energy | Usable kWh remaining |
-| Peak Countdown | Minutes until peak period starts |
+| Peak Countdown | Minutes until peak period starts (or "PEAK ACTIVE") |
 | Energy Flow | Visual diagram of power flow between components |
 | Savings Tracker | Financial impact of automation |
 
@@ -120,6 +134,26 @@ Open in your browser:
 - **Charging (Mixed)** — Both solar and grid charging
 - **Discharging** — Battery powering home load
 - **Standby** — Battery idle, neither charging nor discharging
+
+### System Info
+
+| Section | Information |
+|---------|-------------|
+| Per-Battery SOC | Individual battery state of charge and power |
+| Environment | Ambient temperature, cell signal, WiFi signal |
+| Today's Energy | Solar, grid in/out, load, battery charge/discharge, generator |
+| Lifetime Totals | Cumulative kWh by source |
+| Charging Source | Grid-to-battery vs solar-to-battery breakdown |
+| Hardware | BMS status, power electronics, main switch, generator, V2L |
+| Mode Overrides | Manual mode control with duration selection |
+
+### Settings
+
+Displays current automation configuration (read-only):
+- Peak SOC target, minimum reserve, charge rate
+- Peak period hours, TOU settings
+- Feature toggle status
+- Dynamic pricing thresholds (if enabled)
 
 ### Weekly Reports
 
@@ -215,4 +249,4 @@ For remote access, consider: VPN, Tailscale, or a reverse proxy with authenticat
 ---
 
 **Last Updated:** February 2026
-**Version:** 3.2.0
+**Version:** 3.3.0

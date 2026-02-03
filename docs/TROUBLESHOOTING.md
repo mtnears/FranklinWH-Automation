@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-**Common issues and solutions for FranklinWH Battery Automation v3.2.0**
+**Common issues and solutions for FranklinWH Battery Automation v3.3.0**
 
 ---
 
@@ -151,7 +151,7 @@ grep "FRANKLIN_GATEWAY_ID" .env
 
 ### Mode not switching when expected
 
-v3.2.0 reads the current mode directly from the API's `run_status` field. Check what the system sees:
+v3.3.0 detects the current mode from the API's `name` field (e.g., "Emergency Backup", "Self Consumption"). This replaced `run_status` which could report incorrect values on some firmware versions. Check what the system sees:
 
 ```bash
 # Check recent mode detection
@@ -160,15 +160,15 @@ docker exec franklin-automation grep "API Mode\|Mode unchanged\|Mode changed\|SW
 
 **Expected log format:**
 ```
-API Mode: TOU-B (run_status=2, detected=tou)
+API Mode: TOU (name=Time of Use, detected=tou)
 Mode unchanged: tou (TOU)
 ```
 
-The `run_status` codes are: 1 = Emergency Backup, 2 = TOU, 3 = Self Consumption.
+Mode detection mapping: "Emergency Backup" → backup, "Self Consumption" → self_consumption, anything else → home mode (tou).
 
 ### Mode switch not verified
 
-v3.2.0 verifies mode changes after switching. If you see warning messages:
+v3.3.0 verifies mode changes with a 5-second initial check and 8-second retry. A 10-minute cooldown prevents repeated switching on consecutive cycles. If you see warning messages:
 
 ```bash
 docker exec franklin-automation grep "WARNING.*mode" /app/logs/solar_intelligence.log | tail -5
@@ -234,7 +234,7 @@ Set to `tou` if you use Time-of-Use mode, or `self_consumption` if you use Self 
 
 ### Battery data not showing
 
-v3.2.0 automatically detects the number of batteries. Check:
+The system automatically detects the number of batteries. Check:
 
 ```bash
 docker exec franklin-automation grep "Per-battery" /app/logs/solar_intelligence.log | tail -3
@@ -251,7 +251,7 @@ If missing, the system may be running an older version. Check:
 docker logs franklin-automation 2>&1 | head -3
 ```
 
-Should show `Scheduler v3.2.0`.
+Should show `Scheduler v3.3.0`.
 
 ### Large SOC difference between batteries
 
@@ -261,7 +261,7 @@ A small difference (< 2%) is normal. If batteries diverge significantly, this co
 
 ## Log Analysis
 
-### Understanding v3.2.0 log entries
+### Understanding v3.3.0 log entries
 
 A complete decision cycle looks like:
 
@@ -271,7 +271,7 @@ A complete decision cycle looks like:
 2026-02-02 14:15:26 - Success on first attempt
 2026-02-02 14:15:26 - ======================================================================
 2026-02-02 14:15:26 - Features: Solar, TOU (17:00-20:00), PVOutput
-2026-02-02 14:15:26 - API Mode: TOU-B (run_status=2, detected=tou)
+2026-02-02 14:15:26 - API Mode: TOU (name=Time of Use, detected=tou)
 2026-02-02 14:15:26 - Per-battery SOC: Bat1: 78.3%, Bat2: 78.4% (combined: 76.1%)
 2026-02-02 14:15:26 - Environment: Temp: 55F/12.8C, Signal: 30
 2026-02-02 14:15:26 - SOC: 76.1%, Solar: 4.2kW, Grid->Bat: 0.0kW, Solar->Bat: 4.2kW
@@ -353,4 +353,4 @@ grep -v "PASSWORD\|USERNAME" .env
 ---
 
 **Last Updated:** February 2026
-**Version:** 3.2.0
+**Version:** 3.3.0

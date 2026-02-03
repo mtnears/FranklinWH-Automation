@@ -3,17 +3,18 @@
 Generate dashboard data JSON file from Franklin battery, solar, and savings data.
 
 This script collects data from:
-- Franklin WH API (battery status, power flow)
+- Franklin WH API (battery status, power flow, raw gateway status)
 - continuous_monitoring.csv (historical data)
 - daily_savings.csv (savings tracking)
 - System logs (automation health)
 
 Outputs: power_dashboard_data.json to WEB_DIR
 
-Usage:
-    python generate_dashboard_data.py
-    
-Schedule via Task Scheduler every 1 minute for near-real-time updates.
+Designed to run inside Docker container via internal scheduler (every 1 minute).
+Can also run standalone for testing.
+
+v3.4 - Added extended status block with per-battery SOC, environment data,
+       energy totals, mode detection via name field, and config export.
 """
 
 import json
@@ -28,7 +29,6 @@ try:
     CONFIG_AVAILABLE = True
 except ImportError:
     CONFIG_AVAILABLE = False
-    # Fallback defaults
     class FallbackConfig:
         FRANKLIN_USERNAME = ""
         FRANKLIN_PASSWORD = ""
@@ -37,6 +37,15 @@ except ImportError:
         DATA_DIR = Path("/app/data")
         WEB_DIR = Path("/app/web")
         BATTERY_CAPACITY_KWH = 30.0
+        TARGET_SOC = 95.0
+        PEAK_START_HOUR = 17
+        PEAK_END_HOUR = 20
+        MIN_SOC_RESERVE = 20
+        CHARGE_RATE_PER_HOUR = 10.0
+        TOU_ENABLED = True
+        SOLAR_ENABLED = True
+        DYNAMIC_PRICING_ENABLED = False
+        HOME_MODE = "tou"
         LOG_FILE = LOG_DIR / "continuous_monitoring.csv"
         INTELLIGENCE_LOG = LOG_DIR / "solar_intelligence.log"
     config = FallbackConfig()
@@ -51,8 +60,17 @@ except ImportError:
     FRANKLIN_AVAILABLE = False
 
 
+# =============================================================================
+# Franklin API data collection
+# =============================================================================
+
 async def get_franklin_data():
-    """Get data from Franklin API using async client."""
+    """
+    Get comprehensive data from Franklin API using async client.
+    
+    Returns both stats (power flow, SOC) and raw gateway status
+    (per-battery, environment, energy totals, mode info).
+    """
     if not config.FRANKLIN_USERNAME or not config.FRANKLIN_PASSWORD:
         return None
         
@@ -60,6 +78,8 @@ async def get_franklin_data():
         fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
         client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
         
+        # Get stats with retry
+        stats = None
         for attempt in range(3):
             try:
                 stats = await client.get_stats()
@@ -70,24 +90,142 @@ async def get_franklin_data():
                 else:
                     raise
         
-        return {
+        # Get raw gateway status for extended data
+        status = None
+        try:
+            status = await client._status()
+        except Exception as e:
+            print(f"Warning: Could not get gateway status: {e}")
+        
+        # Build basic data from stats
+        result = {
             'soc': stats.current.battery_soc,
-            'mode': 'TOU',  # Could enhance by checking actual mode
-            'grid_status': 'NORMAL',
+            'grid_status': stats.current.grid_status.name if hasattr(stats.current.grid_status, 'name') else 'NORMAL',
             'battery_power': stats.current.battery_use,
             'solar_power': stats.current.solar_production,
             'grid_power': stats.current.grid_use,
             'home_load': stats.current.home_load,
             'battery_capacity': config.BATTERY_CAPACITY_KWH,
-            'available_energy': stats.current.battery_soc / 100 * config.BATTERY_CAPACITY_KWH
+            'available_energy': stats.current.battery_soc / 100 * config.BATTERY_CAPACITY_KWH,
+            # Totals from stats
+            'battery_charge_total': getattr(stats.totals, 'battery_charge', 0),
+            'battery_discharge_total': getattr(stats.totals, 'battery_discharge', 0),
+            'grid_import_total': getattr(stats.totals, 'grid_import', 0),
+            'grid_export_total': getattr(stats.totals, 'grid_export', 0),
+            'solar_total': getattr(stats.totals, 'solar', 0),
         }
+        
+        # Detect mode from status using name field (reliable across firmware)
+        mode_name = "Unknown"
+        detected_mode = "unknown"
+        if status:
+            mode_name = status.get("name", "Unknown")
+            name_lower = mode_name.lower()
+            if "emergency" in name_lower or "backup" in name_lower:
+                detected_mode = "emergency_backup"
+            elif "self" in name_lower and "consumption" in name_lower:
+                detected_mode = "self_consumption"
+            else:
+                # TOU-B, custom schedules, etc. -> user's home mode
+                detected_mode = getattr(config, 'HOME_MODE', 'tou')
+        
+        # Map to display mode
+        mode_display_map = {
+            'emergency_backup': 'BACKUP',
+            'self_consumption': 'SELF_CONSUMPTION',
+            'tou': 'TOU',
+        }
+        result['mode'] = mode_display_map.get(detected_mode, detected_mode.upper())
+        
+        # Build extended data from raw gateway status
+        if status:
+            result['extended'] = build_extended_status(status, mode_name)
+        
+        return result
     except Exception as e:
         print(f"Error getting Franklin data: {e}")
         return None
 
 
+def build_extended_status(status, mode_name):
+    """
+    Build the extended status block from raw gateway _status() response.
+    
+    This populates all the fields the dashboard System Info tab expects:
+    - Per-battery SOC, power, and serial numbers
+    - Environment (temperature, cell signal, wifi)
+    - Energy totals (today's kWh for solar, grid, load, battery)
+    - Lifetime totals
+    - Mode info (run_status, name)
+    - Switch states, generator status, V2L, etc.
+    """
+    ext = {}
+    
+    # Mode info
+    ext['run_status'] = status.get('run_status', -1)
+    ext['mode_name'] = mode_name
+    
+    # Per-battery data
+    battery_socs = status.get('fhpSoc', [])
+    battery_powers = status.get('fhpPower', [])
+    battery_serials = status.get('fhpSn', [])
+    
+    if battery_socs:
+        ext['per_battery_soc'] = battery_socs
+        ext['battery_count'] = len(battery_socs)
+    if battery_powers:
+        ext['per_battery_power'] = battery_powers
+    if battery_serials:
+        ext['battery_serials'] = battery_serials
+    
+    # Charging breakdown
+    ext['gridChBat'] = status.get('gridChBat', 0)
+    ext['soChBat'] = status.get('soChBat', 0)
+    
+    # Today's energy totals (kWh)
+    ext['kwh_sun'] = status.get('kwh_sun', 0)
+    ext['kwh_uti_in'] = status.get('kwh_uti_in', 0)
+    ext['kwh_uti_out'] = status.get('kwh_uti_out', 0)
+    ext['kwh_load'] = status.get('kwh_load', 0)
+    ext['kwh_fhp_chg'] = status.get('kwh_fhp_chg', 0)
+    ext['kwh_fhp_di'] = status.get('kwh_fhp_di', 0)
+    ext['kwh_gen'] = status.get('kwh_gen', 0)
+    
+    # Lifetime totals
+    ext['kwhFhpLoad'] = status.get('kwhFhpLoad')
+    ext['kwhGridLoad'] = status.get('kwhGridLoad')
+    ext['kwhSolarLoad'] = status.get('kwhSolarLoad')
+    ext['kwhGenLoad'] = status.get('kwhGenLoad')
+    
+    # Environment
+    ext['t_amb'] = status.get('t_amb')
+    ext['signal'] = status.get('signal')
+    ext['wifiSignal'] = status.get('wifiSignal')
+    
+    # Gateway info
+    ext['gateway_sn'] = status.get('sn', '')
+    
+    # Switch states and protected loads
+    ext['main_sw'] = status.get('main_sw')
+    ext['pro_load'] = status.get('pro_load')
+    
+    # Generator and V2L
+    ext['genStat'] = status.get('genStat')
+    ext['v2lModeEnable'] = status.get('v2lModeEnable', False)
+    
+    # BMS and PE status
+    ext['bms_work'] = status.get('bms_work')
+    ext['pe_stat'] = status.get('pe_stat')
+    
+    return ext
+
+
+# =============================================================================
+# Data source helpers
+# =============================================================================
+
 def get_battery_status():
-    """Get current battery status from Franklin API or CSV."""
+    """Get current battery status from Franklin API or CSV fallback."""
     if FRANKLIN_AVAILABLE and config.FRANKLIN_USERNAME:
         try:
             loop = asyncio.new_event_loop()
@@ -108,11 +246,20 @@ def get_peak_countdown():
     """Calculate time until peak period starts."""
     now = datetime.now()
     
-    # Get peak hour from config or default
     peak_hour = getattr(config, 'PEAK_START_HOUR', 17)
+    peak_end_hour = getattr(config, 'PEAK_END_HOUR', 20)
     peak_start = now.replace(hour=peak_hour, minute=0, second=0, microsecond=0)
+    peak_end = now.replace(hour=peak_end_hour, minute=0, second=0, microsecond=0)
     
-    if now >= peak_start:
+    # Currently in peak
+    if peak_start <= now < peak_end:
+        return {
+            'minutes': 0,
+            'time': peak_start.strftime('%I:%M %p')
+        }
+    
+    # Past today's peak, calculate to tomorrow
+    if now >= peak_end:
         peak_start = peak_start + timedelta(days=1)
     
     delta = peak_start - now
@@ -146,7 +293,12 @@ def get_latest_monitoring_data():
                     'grid_power': float(latest.get('grid_kw', 0)),
                     'home_load': float(latest.get('home_load_kw', 0)),
                     'battery_capacity': config.BATTERY_CAPACITY_KWH,
-                    'available_energy': soc / 100 * config.BATTERY_CAPACITY_KWH
+                    'available_energy': soc / 100 * config.BATTERY_CAPACITY_KWH,
+                    # CSV enriched fields (v3.2.0+)
+                    'grid_charging_kw': float(latest.get('grid_charging_kw', 0)),
+                    'solar_charging_kw': float(latest.get('solar_charging_kw', 0)),
+                    'mode_name': latest.get('mode_name', ''),
+                    'run_status': latest.get('run_status', ''),
                 }
     except Exception as e:
         print(f"Error reading monitoring data: {e}")
@@ -155,7 +307,7 @@ def get_latest_monitoring_data():
 
 
 def get_today_stats():
-    """Get today's charging and solar stats."""
+    """Get today's charging and solar stats from CSV."""
     monitoring_file = config.LOG_FILE
     
     if not monitoring_file.exists():
@@ -180,24 +332,29 @@ def get_today_stats():
         
         last_row = today_rows[-1]
         
-        # Get baseline (minimum values after midnight reset)
+        # Calculate totals from deltas
         charge_values = [float(row.get('battery_charge_total', 0)) for row in today_rows]
+        discharge_values = [float(row.get('battery_discharge_total', 0)) for row in today_rows]
         solar_values = [float(row.get('solar_total', 0)) for row in today_rows]
         
         min_charge = min(charge_values) if charge_values else 0
+        min_discharge = min(discharge_values) if discharge_values else 0
         min_solar = min(solar_values) if solar_values else 0
         
         current_charge = float(last_row.get('battery_charge_total', 0))
+        current_discharge = float(last_row.get('battery_discharge_total', 0))
         current_solar = float(last_row.get('solar_total', 0))
         
         total_charged = current_charge - min_charge
+        total_discharged = current_discharge - min_discharge
         solar_generated = current_solar - min_solar
         
         solar_ratio = (solar_generated / total_charged * 100) if total_charged > 0 else 0
         
         return {
-            'total_charged': round(total_charged, 1),
-            'solar_generated': round(solar_generated, 1),
+            'total_charged': round(total_charged, 2),
+            'total_discharged': round(total_discharged, 2),
+            'solar_generated': round(solar_generated, 2),
             'solar_ratio': round(solar_ratio, 1)
         }
     except Exception as e:
@@ -276,7 +433,7 @@ def get_system_health():
         'generator': 'standby'
     }
     
-    # Check if automation is running
+    # Check if automation is running (intelligence log fresh?)
     log_file = config.INTELLIGENCE_LOG
     if log_file.exists():
         try:
@@ -292,6 +449,26 @@ def get_system_health():
     return health
 
 
+def get_config_info():
+    """Export relevant config settings for the dashboard Settings tab."""
+    return {
+        'peak_soc_target': getattr(config, 'TARGET_SOC', 95),
+        'min_soc_reserve': getattr(config, 'MIN_SOC_RESERVE', 20),
+        'charge_rate_kw': getattr(config, 'CHARGE_RATE_PER_HOUR', 10),
+        'peak_start_hour': getattr(config, 'PEAK_START_HOUR', 17),
+        'peak_end_hour': getattr(config, 'PEAK_END_HOUR', 20),
+        'battery_capacity_kwh': config.BATTERY_CAPACITY_KWH,
+        'tou_enabled': getattr(config, 'TOU_ENABLED', True),
+        'solar_enabled': getattr(config, 'SOLAR_ENABLED', True),
+        'dynamic_pricing_enabled': getattr(config, 'DYNAMIC_PRICING_ENABLED', False),
+        'home_mode': getattr(config, 'HOME_MODE', 'tou'),
+    }
+
+
+# =============================================================================
+# Main data assembly
+# =============================================================================
+
 def generate_dashboard_data():
     """Generate complete dashboard data structure."""
     print(f"Generating dashboard data at {datetime.now()}")
@@ -302,6 +479,7 @@ def generate_dashboard_data():
     savings_data = get_savings_data()
     true_up_data = get_true_up_projection()
     system_health = get_system_health()
+    config_info = get_config_info()
     
     # Use battery status or defaults
     if battery_status:
@@ -319,6 +497,7 @@ def generate_dashboard_data():
     
     dashboard_data = {
         'timestamp': datetime.now().isoformat(),
+        'gateway_id': getattr(config, 'FRANKLIN_GATEWAY_ID', ''),
         'battery': {
             'soc': current_data.get('soc', 0),
             'mode': current_data.get('mode', 'UNKNOWN'),
@@ -337,6 +516,7 @@ def generate_dashboard_data():
         },
         'today': {
             'charged': today_stats['total_charged'] if today_stats else 0,
+            'discharged': today_stats['total_discharged'] if today_stats else 0,
             'solar_generated': today_stats['solar_generated'] if today_stats else 0,
             'solar_ratio': today_stats['solar_ratio'] if today_stats else 0
         },
@@ -349,8 +529,13 @@ def generate_dashboard_data():
             'true_up_projection': true_up_data['projected_true_up'] if true_up_data else 0,
             'improvement_percent': true_up_data['improvement_percent'] if true_up_data else 0
         },
-        'system_health': system_health
+        'system_health': system_health,
+        'config': config_info,
     }
+    
+    # Add extended block if API provided it
+    if battery_status and 'extended' in battery_status:
+        dashboard_data['extended'] = battery_status['extended']
     
     return dashboard_data
 

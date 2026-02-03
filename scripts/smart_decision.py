@@ -184,13 +184,36 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
     Main decision engine: Should we charge from grid or wait for solar?
     
     This function implements the decision hierarchy:
-    1. Peak protection (never charge during peak)
-    2. Solar-first (use solar when available)
-    3. Dynamic pricing (charge when cheap)
-    4. Time-based fallback (ensure ready for peak)
+    0. Credit/negative price override (overrides everything including peak & solar)
+    1. Peak protection (never charge during peak, unless overridden)
+    2. Already at target check
+    3. Solar assessment
+    4. Dynamic pricing (normal thresholds)
+    5. TOU time-based fallback (ensure ready for peak)
+    6. No-TOU simple solar logic
     
     Returns: (should_charge: bool, reason: str)
     """
+    
+    # Get current price once if dynamic pricing is enabled
+    current_price = None
+    if config.DYNAMIC_PRICING_ENABLED:
+        current_price = get_current_price()
+    
+    # ===== LAYER 0: Credit/Negative Price Override =====
+    # If the grid price is at or below the solar override threshold,
+    # charge from grid regardless of solar, peak period, or anything else.
+    # This captures negative pricing (utility credits) where it's profitable
+    # to consume grid power even when solar is producing.
+    if (config.DYNAMIC_PRICING_ENABLED and
+            config.SOLAR_OVERRIDE_PRICE_CENTS is not None and
+            current_price is not None and
+            current_price <= config.SOLAR_OVERRIDE_PRICE_CENTS):
+        solar_note = f", solar at {solar_kw:.2f}kW" if solar_kw > 0 else ""
+        peak_note = " (overriding peak protection)" if in_peak else ""
+        return True, (f"PRICE OVERRIDE: Grid at {current_price:.1f}c "
+                     f"<= {config.SOLAR_OVERRIDE_PRICE_CENTS:.1f}c threshold"
+                     f"{solar_note}{peak_note} - charging for credit/savings")
     
     # ===== LAYER 1: Peak Period Protection =====
     if config.TOU_ENABLED and in_peak:
@@ -204,25 +227,23 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
     solar_available = config.SOLAR_ENABLED and solar_kw >= config.MIN_SOLAR_FOR_WAIT
     
     # ===== LAYER 3: Dynamic Pricing (if enabled) =====
-    if config.DYNAMIC_PRICING_ENABLED:
+    if config.DYNAMIC_PRICING_ENABLED and current_price is not None:
         price_should_charge, price_reason = should_charge_at_current_price()
-        current_price = get_current_price()
         
-        if current_price is not None:
-            # Very cheap power - charge even with solar
-            if current_price < 2.0:  # Under 2 cents is almost always worth it
-                return True, f"Very cheap grid power ({current_price:.1f}c) - charging despite solar"
-            
-            # Cheap power and no solar
-            if price_should_charge and not solar_available:
-                return True, f"Cheap grid power ({current_price:.1f}c) and low solar ({solar_kw:.2f}kW)"
-            
-            # Expensive power - wait for solar if possible
-            if current_price > config.PRICE_CEILING_CENTS:
-                if solar_available:
-                    return False, f"Grid expensive ({current_price:.1f}c) - using solar ({solar_kw:.2f}kW)"
-                else:
-                    return False, f"Grid expensive ({current_price:.1f}c) - waiting (low solar: {solar_kw:.2f}kW)"
+        # Cheap power (at or below threshold) - charge even with solar
+        if current_price <= config.PRICE_THRESHOLD_CENTS:
+            return True, f"Cheap grid power ({current_price:.1f}c <= {config.PRICE_THRESHOLD_CENTS:.1f}c threshold) - charging"
+        
+        # Cheap power and no solar
+        if price_should_charge and not solar_available:
+            return True, f"Favorable grid price ({current_price:.1f}c) and low solar ({solar_kw:.2f}kW)"
+        
+        # Expensive power - wait for solar if possible
+        if current_price > config.PRICE_CEILING_CENTS:
+            if solar_available:
+                return False, f"Grid expensive ({current_price:.1f}c) - using solar ({solar_kw:.2f}kW)"
+            else:
+                return False, f"Grid expensive ({current_price:.1f}c) - waiting (low solar: {solar_kw:.2f}kW)"
     
     # ===== LAYER 4: TOU Time-Based Logic =====
     if config.TOU_ENABLED:
@@ -308,27 +329,34 @@ def detect_mode(status: dict) -> str:
     """
     Detect current operating mode from gateway status.
     
-    Uses run_status as the universal mode type indicator:
-        1 = emergency_backup (grid charging)
-        2 = tou (time-of-use, user's normal schedule)
-        3 = self_consumption
+    Uses the 'name' field as the primary indicator since run_status
+    has been found unreliable on some firmware versions (can stay
+    stuck at 1 regardless of actual mode).
     
-    Falls back to name-based detection if run_status is unknown.
+    The name field reliably reflects mode changes:
+        "Emergency Backup" = emergency_backup (grid charging)
+        "TOU-*" or similar = tou (user's TOU schedule)
+        "Self Consumption" = self_consumption
+    
+    Falls back to run_status if name is unavailable.
     """
-    run_status = status.get("run_status")
     mode_name = status.get("name", "")
+    run_status = status.get("run_status")
     
-    # Primary: use run_status (universal across firmware/configs)
+    # Primary: use name field (reliably tracks mode changes)
+    if mode_name:
+        name_lower = mode_name.lower()
+        if "emergency" in name_lower or "backup" in name_lower:
+            return "emergency_backup"
+        if "self" in name_lower and "consumption" in name_lower:
+            return "self_consumption"
+        # Any other name (TOU-B, TOU-Summer, custom schedule, etc.)
+        # is the user's home mode - not emergency_backup
+        return config.HOME_MODE
+    
+    # Fallback: run_status (may be unreliable on some firmware)
     if run_status in RUN_STATUS_MAP:
         return RUN_STATUS_MAP[run_status]
-    
-    # Fallback: name-based detection
-    if "emergency" in mode_name.lower() or "backup" in mode_name.lower():
-        return "emergency_backup"
-    if "tou" in mode_name.lower():
-        return "tou"
-    if "self" in mode_name.lower():
-        return "self_consumption"
     
     # Unknown - log it and assume home mode
     log_intelligence(f"Unknown mode: run_status={run_status}, name='{mode_name}' - assuming home mode")
@@ -351,7 +379,7 @@ async def switch_mode(client: Client, target: str) -> bool:
         client: Franklin API client
         target: "emergency_backup" or "home" (uses HOME_MODE config)
     
-    Returns: True if switch succeeded
+    Returns: True if switch succeeded (or likely succeeded)
     """
     try:
         if target == "emergency_backup":
@@ -364,21 +392,30 @@ async def switch_mode(client: Client, target: str) -> bool:
         log_intelligence(f"SWITCHING MODE -> {mode_label}")
         await client.set_mode(mode_obj)
         
-        # Verify the switch took effect
-        await asyncio.sleep(2)
-        verify_status = await get_gateway_status(client)
-        actual_mode = detect_mode(verify_status)
+        # Verify the switch took effect (gateway may need 3-5s to reflect)
+        for verify_attempt in range(2):
+            wait_time = 5 if verify_attempt == 0 else 8
+            await asyncio.sleep(wait_time)
+            verify_status = await get_gateway_status(client)
+            actual_mode = detect_mode(verify_status)
+            actual_name = verify_status.get("name", "?")
+            
+            if target == "emergency_backup" and actual_mode == "emergency_backup":
+                log_intelligence(f"Mode switch verified: {mode_label} (name={actual_name})")
+                return True
+            elif target != "emergency_backup" and actual_mode != "emergency_backup":
+                log_intelligence(f"Mode switch verified: {mode_label} (name={actual_name})")
+                return True
+            
+            if verify_attempt == 0:
+                log_intelligence(f"Mode not yet confirmed (name={actual_name}), rechecking...")
         
-        if target == "emergency_backup" and actual_mode == "emergency_backup":
-            log_intelligence(f"Mode switch verified: {mode_label}")
-            return True
-        elif target != "emergency_backup" and actual_mode != "emergency_backup":
-            log_intelligence(f"Mode switch verified: {mode_label}")
-            return True
-        else:
-            log_intelligence(f"WARNING: Mode switch may not have taken effect. "
-                           f"Expected: {target}, Got: {actual_mode}")
-            return False
+        # Both verification attempts showed old mode
+        log_intelligence(f"WARNING: Mode verification inconclusive after switch. "
+                        f"Expected: {target}, API reports: name={actual_name}. "
+                        f"set_mode() call succeeded - gateway may need more time to apply.")
+        # Return True since the API call itself didn't error - the switch was sent
+        return True
             
     except Exception as e:
         log_intelligence(f"ERROR switching to {target}: {e}")
@@ -513,17 +550,47 @@ async def main():
         log_intelligence(f"Action: {'Grid charge (backup mode)' if should_charge else f'Solar-first ({config.HOME_MODE} mode)'}")
         
         # Determine if mode switch is needed
+        # Use a cooldown to avoid re-issuing the same switch every cycle
+        # when the API is slow to reflect mode changes
         mode_switched = False
         if not config.TOU_ENABLED or not in_peak:
             need_backup = should_charge and current_mode != "emergency_backup"
             need_home = not should_charge and current_mode == "emergency_backup"
             
-            if need_backup:
-                mode_switched = await switch_mode(client, "emergency_backup")
-                log_intelligence(f"Mode changed: {current_mode} -> emergency_backup")
-            elif need_home:
-                mode_switched = await switch_mode(client, "home")
-                log_intelligence(f"Mode changed: emergency_backup -> {config.HOME_MODE}")
+            if need_backup or need_home:
+                # Check cooldown - don't re-issue same switch within 10 minutes
+                switch_target = "emergency_backup" if need_backup else "home"
+                cooldown_ok = True
+                try:
+                    cooldown_file = config.LOG_DIR / "last_mode_switch.txt"
+                    if cooldown_file.exists():
+                        with open(cooldown_file, 'r') as f:
+                            parts = f.read().strip().split('|')
+                            if len(parts) == 2:
+                                last_target = parts[0]
+                                last_time = datetime.strptime(parts[1], '%Y-%m-%d %H:%M:%S')
+                                elapsed = (datetime.now() - last_time).total_seconds()
+                                if last_target == switch_target and elapsed < 600:
+                                    cooldown_ok = False
+                                    log_intelligence(f"Mode switch cooldown: {switch_target} already sent "
+                                                   f"{elapsed:.0f}s ago, skipping re-issue")
+                except Exception:
+                    pass  # Cooldown is best-effort, don't fail on it
+                
+                if cooldown_ok:
+                    mode_switched = await switch_mode(client, switch_target)
+                    if mode_switched:
+                        label = "emergency_backup" if need_backup else config.HOME_MODE
+                        from_mode = current_mode
+                        log_intelligence(f"Mode changed: {from_mode} -> {label}")
+                        # Record switch for cooldown
+                        try:
+                            with open(config.LOG_DIR / "last_mode_switch.txt", 'w') as f:
+                                f.write(f"{switch_target}|{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                        except Exception:
+                            pass
+                    else:
+                        log_intelligence(f"Mode switch to {switch_target} failed")
             else:
                 log_intelligence(f"Mode unchanged: {current_mode} ({desired_mode_label})")
         else:

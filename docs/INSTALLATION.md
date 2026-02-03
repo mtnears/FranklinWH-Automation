@@ -145,7 +145,7 @@ After 24 hours, check the system is working:
 # Count decisions (should be ~96 per day)
 grep "$(date +%Y-%m-%d)" logs/solar_intelligence.log | grep "======" | wc -l
 
-# Check for API mode detection (v3.2.0)
+# Check for API mode detection (v3.3.0)
 grep "API Mode" logs/solar_intelligence.log | tail -3
 
 # Verify no mode changes during peak
@@ -175,4 +175,4 @@ Check the [CHANGELOG.md](CHANGELOG.md) for any new `.env` settings to add.
 ---
 
 **Last Updated:** February 2026
-**Version:** 3.2.0
+**Version:** 3.3.0

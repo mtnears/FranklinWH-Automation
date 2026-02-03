@@ -66,6 +66,22 @@ def get_list(key: str, default: str = '') -> List[str]:
     return [item.strip() for item in value.split(',') if item.strip()]
 
 
+def get_optional_float(key: str) -> Optional[float]:
+    """Parse optional float from environment variable.
+    
+    Returns None if the variable is not set or empty.
+    This distinguishes between "disabled" (not set) and "set to 0"
+    which is important for thresholds that accept negative values.
+    """
+    value = os.getenv(key)
+    if value is None or value.strip() == '':
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 @dataclass
 class Config:
     """
@@ -109,6 +125,12 @@ class Config:
     PRICING_PROVIDER: str = field(default_factory=lambda: os.getenv('PRICING_PROVIDER', 'comed'))
     PRICE_THRESHOLD_CENTS: float = field(default_factory=lambda: get_float('PRICE_THRESHOLD_CENTS', 4.0))
     PRICE_CEILING_CENTS: float = field(default_factory=lambda: get_float('PRICE_CEILING_CENTS', 10.0))
+    
+    # Solar override: when grid price is at or below this, charge from grid
+    # even when solar is producing. Captures negative pricing credits.
+    # None = disabled (default), 0 = grab free/negative, -2 = only below -2c
+    SOLAR_OVERRIDE_PRICE_CENTS: Optional[float] = field(
+        default_factory=lambda: get_optional_float('SOLAR_OVERRIDE_PRICE_CENTS'))
     
     # ===== Solar Settings =====
     SOLAR_CAPACITY_KW: float = field(default_factory=lambda: get_float('SOLAR_CAPACITY_KW', 0.0))
@@ -240,6 +262,15 @@ class Config:
             if not self.PVOUTPUT_SYSTEM_IDS:
                 errors.append("PVOUTPUT_SYSTEM_IDS required when PVOUTPUT_ENABLED=true")
         
+        # Dynamic pricing validation
+        if self.DYNAMIC_PRICING_ENABLED:
+            if self.PRICE_THRESHOLD_CENTS >= self.PRICE_CEILING_CENTS:
+                errors.append("PRICE_THRESHOLD_CENTS must be less than PRICE_CEILING_CENTS")
+            if (self.SOLAR_OVERRIDE_PRICE_CENTS is not None and
+                    self.SOLAR_OVERRIDE_PRICE_CENTS > self.PRICE_THRESHOLD_CENTS):
+                errors.append("SOLAR_OVERRIDE_PRICE_CENTS should be <= PRICE_THRESHOLD_CENTS "
+                            "(override should only trigger at more aggressive prices)")
+        
         return errors
     
     def get_enabled_features(self) -> List[str]:
@@ -315,6 +346,9 @@ class Config:
                 f"  Provider: {self.PRICING_PROVIDER}",
                 f"  Charge Threshold: {self.PRICE_THRESHOLD_CENTS} cents/kWh",
                 f"  Price Ceiling: {self.PRICE_CEILING_CENTS} cents/kWh",
+                f"  Solar Override: {self.SOLAR_OVERRIDE_PRICE_CENTS} cents/kWh"
+                    if self.SOLAR_OVERRIDE_PRICE_CENTS is not None
+                    else "  Solar Override: disabled (solar-first always preferred)",
             ])
         
         lines.append("=" * 60)
@@ -349,6 +383,7 @@ class Config:
                 'provider': self.PRICING_PROVIDER,
                 'threshold_cents': self.PRICE_THRESHOLD_CENTS,
                 'ceiling_cents': self.PRICE_CEILING_CENTS,
+                'solar_override_cents': self.SOLAR_OVERRIDE_PRICE_CENTS,
             } if self.DYNAMIC_PRICING_ENABLED else None,
             'solar': {
                 'capacity_kw': self.SOLAR_CAPACITY_KW,

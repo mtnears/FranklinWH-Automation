@@ -4,6 +4,64 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v3.3.0 — February 2026
+
+### Mode Detection Fix
+- Mode detection now uses the gateway `name` field instead of `run_status`
+- Resolves firmware issue where `run_status` could report incorrect values
+- Name-based detection is reliable across all firmware versions:
+  "Emergency Backup" → backup, "Self Consumption" → self_consumption, else → home mode
+
+### Negative Pricing / Solar Override
+- New `SOLAR_OVERRIDE_PRICE_CENTS` setting for dynamic pricing users
+- When grid price drops to or below the threshold, charges from grid even when solar is producing
+- Overrides both solar-first preference AND peak period protection
+- Use case: ComEd and similar utilities with negative pricing periods where the grid pays you to consume
+- All pricing thresholds now support negative values natively
+- Removed hardcoded 2.0¢ "very cheap" threshold — all thresholds are now configurable
+
+### Decision Engine Restructure
+- New Layer 0: Credit/negative price override (highest priority, supersedes peak protection)
+- Layer 1–5 unchanged: Peak protection → Solar → Dynamic pricing → TOU → Fallback
+- All price comparisons use `<=` for correct handling of zero and negative values
+
+### Enhanced Dashboard Data
+- Dashboard data generator now calls `_status()` API for enriched system data
+- New `extended` block in JSON with per-battery SOC, power, and serial numbers
+- Environment data: ambient temperature, cellular signal strength, WiFi signal
+- Energy totals: today's solar, grid import/export, load, battery charge/discharge, generator
+- Lifetime totals: cumulative energy by source (battery, grid, solar, generator)
+- Charging breakdown: grid-to-battery vs solar-to-battery rates
+- Hardware status: BMS, power electronics, main switch, generator, V2L
+- New `config` block exports automation settings for the Settings tab
+- Gateway ID included as top-level field for multi-gateway support
+- Mode detection via name field matches decision engine logic
+
+### Switch Reliability
+- 5-second initial verification + 8-second retry for mode switches
+- 10-minute switch cooldown prevents repeated switching on consecutive cycles
+- Verification logging shows `name=` field for accurate confirmation
+- "Mode changed" log only appears on verified successful switches
+
+### New Configuration
+```bash
+# Optional — only for dynamic pricing users
+SOLAR_OVERRIDE_PRICE_CENTS=0    # Grab free/negative pricing (leave unset to disable)
+```
+
+### Upgrade Notes
+If you use dynamic pricing, optionally add `SOLAR_OVERRIDE_PRICE_CENTS` to your `.env`.
+If you don't use dynamic pricing, no `.env` changes are needed.
+
+```bash
+git pull
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+---
+
 ## v3.2.0 — February 2026
 
 ### API-Native Mode Management

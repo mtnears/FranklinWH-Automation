@@ -1,6 +1,6 @@
 # Configuration Reference
 
-**Complete guide to configuring FranklinWH Battery Automation v3.2.0**
+**Complete guide to configuring FranklinWH Battery Automation v3.3.0**
 
 All configuration is done via the `.env` file. You never need to edit Python scripts directly.
 
@@ -131,10 +131,31 @@ These control when and how often the automation runs.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PRICING_PROVIDER` | `comed` | Pricing API provider |
-| `PRICE_THRESHOLD_CENTS` | `4.0` | Charge from grid below this price |
+| `PRICE_THRESHOLD_CENTS` | `4.0` | Charge from grid at or below this price |
 | `PRICE_CEILING_CENTS` | `10.0` | Never charge above this price |
+| `SOLAR_OVERRIDE_PRICE_CENTS` | (disabled) | Override solar-first when price is at or below this |
+
+All pricing thresholds support negative values for markets with negative pricing.
 
 When enabled, the system checks current electricity prices and charges from the grid during cheap periods, regardless of solar availability.
+
+### Solar Override (Negative Pricing)
+
+The `SOLAR_OVERRIDE_PRICE_CENTS` setting captures utility credits during negative pricing periods. When the grid price drops to or below this threshold, the system charges from grid even when solar is producing, and even during peak periods.
+
+**Threshold ordering (most aggressive → least aggressive):**
+```
+SOLAR_OVERRIDE_PRICE_CENTS  ≤  PRICE_THRESHOLD_CENTS  <  PRICE_CEILING_CENTS
+         (optional)                    (charge)               (never charge)
+```
+
+**Examples:**
+```bash
+SOLAR_OVERRIDE_PRICE_CENTS=0      # Grab any free or negative pricing
+SOLAR_OVERRIDE_PRICE_CENTS=-2     # Only grab credits below -2 cents
+SOLAR_OVERRIDE_PRICE_CENTS=1      # Override solar when grid under 1 cent
+# (leave unset to disable — solar-first always preferred)
+```
 
 ---
 
@@ -225,7 +246,7 @@ The startup banner shows all enabled features and scheduled tasks.
 docker exec franklin-automation tail -15 /app/logs/solar_intelligence.log
 ```
 
-v3.2.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines.
+v3.3.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines.
 
 ---
 
@@ -243,4 +264,4 @@ v3.2.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines
 ---
 
 **Last Updated:** February 2026
-**Version:** 3.2.0
+**Version:** 3.3.0
