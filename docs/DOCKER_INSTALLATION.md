@@ -1,6 +1,6 @@
 # Docker Installation Guide
 
-**The easiest way to run FranklinWH Automation - single command startup with everything included.**
+**The easiest way to run FranklinWH Automation — single command startup with everything included.**
 
 ---
 
@@ -8,11 +8,13 @@
 
 The Docker setup provides a complete, self-contained package:
 
-- ✅ **Automated battery management** - Runs every 15 minutes
-- ✅ **Built-in web dashboard** - No separate web server needed
-- ✅ **Scheduler included** - All tasks run automatically
-- ✅ **Dashboard with 3 tabs** - Live view, Weekly Reports, System Logs
-- ✅ **Configurable port** - Default 8100, customizable via `.env`
+- ✅ **Automated battery management** with API-native mode control
+- ✅ **Schedule-aware timing** with peak-pinned checks
+- ✅ **Per-battery monitoring** for multi-battery systems
+- ✅ **Built-in web dashboard** — no separate web server needed
+- ✅ **Internal scheduler** — no external cron or Task Scheduler needed
+- ✅ **Dashboard with 3 tabs** — Live view, Weekly Reports, System Logs
+- ✅ **Configurable everything** via `.env` file
 
 ---
 
@@ -49,6 +51,15 @@ BATTERY_CAPACITY_KWH=30
 CHARGE_RATE_PER_HOUR=32
 ```
 
+**Set your scheduling preferences:**
+```bash
+CHECK_INTERVAL_MINUTES=15
+PEAK_TRANSITION_BUFFER_MINUTES=5
+HOME_MODE=tou
+```
+
+If you run Self Consumption as your normal mode instead of TOU, set `HOME_MODE=self_consumption`.
+
 ### 3. Create Data Directories
 
 ```bash
@@ -62,14 +73,23 @@ docker compose build
 docker compose up -d
 ```
 
-### 5. Access Dashboard
+### 5. Verify
+
+```bash
+docker logs franklin-automation 2>&1 | head -25
+```
+
+You should see:
+- `Scheduler v3.2.0` in the banner
+- Your enabled features listed
+- `Pre-peak check: Daily at XX:XX` and `Post-peak check: Daily at XX:XX`
+- Initial smart decision completing successfully
+
+### 6. Access Dashboard
 
 Open in browser: `http://YOUR-SERVER-IP:8100`
 
-To use a different port, add to your `.env` file:
-```bash
-DASHBOARD_PORT=8080
-```
+To use a different port, set `DASHBOARD_PORT` in your `.env` file.
 
 ---
 
@@ -86,14 +106,16 @@ The Docker setup runs two containers:
 
 All tasks run automatically inside the container:
 
-| Task | Frequency |
-|------|-----------|
-| Smart Decision | Every 15 minutes |
-| Dashboard Data | Every 1 minute |
-| Weather Collection | Every 15 minutes (if enabled) |
-| PVOutput Collection | Hourly (if enabled) |
-| Daily Status Report | 4:30 PM (if email enabled) |
-| Weekly Charts | Sunday 2:00 AM |
+| Task | Frequency | Description |
+|------|-----------|-------------|
+| Smart Decision | Every 15 min (configurable) | Core battery management |
+| Pre-peak Check | Daily (e.g., 16:55) | Guaranteed check before peak |
+| Post-peak Check | Daily (e.g., 20:01) | Resume normal mode after peak |
+| Dashboard Data | Every 1 minute | Updates live dashboard |
+| Weather Collection | Every 15 minutes (if enabled) | Weather data logging |
+| PVOutput Collection | Hourly (if enabled) | Solar production tracking |
+| Daily Savings | Daily at 11:55 PM | Savings calculation |
+| Weekly Charts | Sunday 2:00 AM | Performance visualization |
 
 ---
 
@@ -127,14 +149,14 @@ The built-in dashboard has three tabs:
 ### View Logs
 
 ```bash
-# All container logs
-docker compose logs -f
+# Container scheduler logs
+docker logs franklin-automation -f
 
-# Just automation logs
-docker compose logs -f franklin-automation
+# Intelligence log (decision details)
+docker exec franklin-automation tail -30 /app/logs/solar_intelligence.log
 
-# Last 100 lines
-docker compose logs --tail 100 franklin-automation
+# Last 100 lines of container logs
+docker logs --tail 100 franklin-automation
 ```
 
 ### Check Status
@@ -160,9 +182,11 @@ docker compose down
 ```bash
 git pull
 docker compose down
-docker compose build
+docker compose build --no-cache
 docker compose up -d
 ```
+
+**Important:** Since scripts are built into the Docker image (not volume-mounted), you must rebuild with `--no-cache` when updating to pick up script changes. A simple `docker restart` is not sufficient for code updates.
 
 ---
 
@@ -179,6 +203,14 @@ DYNAMIC_PRICING_ENABLED=false
 WEATHER_ENABLED=false
 PVOUTPUT_ENABLED=false
 EMAIL_ENABLED=false
+```
+
+### Scheduling
+
+```bash
+CHECK_INTERVAL_MINUTES=15           # Decision frequency (1-60 min)
+PEAK_TRANSITION_BUFFER_MINUTES=5    # Minutes before peak to check
+HOME_MODE=tou                       # Normal mode: tou or self_consumption
 ```
 
 ### TOU Peak Period
@@ -207,12 +239,14 @@ PRICE_THRESHOLD_CENTS=4.0
 
 ## File Locations
 
-| Path | Contents |
-|------|----------|
-| `./logs/` | Log files, scheduler output, weekly charts |
-| `./data/` | Savings data and projections |
-| `./web/` | Dashboard HTML and JSON data |
-| `./.env` | Your configuration (not committed to git) |
+| Host Path | Container Path | Contents |
+|-----------|---------------|----------|
+| `./logs/` | `/app/logs/` | Log files, charts, CSV data |
+| `./data/` | `/app/data/` | Savings data and projections |
+| `./web/` | `/app/web/` | Dashboard HTML and JSON data |
+| `./.env` | (loaded at build) | Configuration (not in git) |
+
+**Note:** The `logs`, `data`, and `web` directories are volume-mounted, so data persists across container restarts. The `scripts` directory is built into the image — see "Update to Latest Version" above.
 
 ---
 
@@ -222,20 +256,30 @@ PRICE_THRESHOLD_CENTS=4.0
 
 ```bash
 # Check logs for errors
-docker compose logs franklin-automation
+docker logs franklin-automation
 
 # Verify .env file exists and has required values
 cat .env | grep FRANKLIN
+```
+
+### Scripts not updating after git pull
+
+Scripts are built into the Docker image, not volume-mounted. You must rebuild:
+
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 ```
 
 ### Dashboard shows "Loading..."
 
 ```bash
 # Check if data file exists
-ls -la web/power_dashboard_data.json
+docker exec franklin-automation ls -la /app/web/power_dashboard_data.json
 
 # Check automation logs
-docker compose logs --tail 50 franklin-automation | grep Dashboard
+docker logs --tail 50 franklin-automation | grep Dashboard
 ```
 
 ### Dashboard not accessible
@@ -255,17 +299,17 @@ curl http://localhost:8100/health
 
 ```bash
 # Check logs are being written
-ls -la logs/
+docker exec franklin-automation ls -la /app/logs/
 
-# Verify scheduler log exists (created after first run)
-cat logs/scheduler.log
+# Check intelligence log exists
+docker exec franklin-automation tail -5 /app/logs/solar_intelligence.log
 ```
 
 ### API connection errors
 
 ```bash
-# Test config loads correctly
-docker compose exec franklin-automation python -c "from scripts.config import config; print(config.get_config_summary())"
+# Check recent decisions for retry patterns
+docker exec franklin-automation tail -20 /app/logs/solar_intelligence.log
 ```
 
 ### Permission errors
@@ -273,16 +317,7 @@ docker compose exec franklin-automation python -c "from scripts.config import co
 The container runs as root to avoid permission issues. If you still have problems:
 
 ```bash
-# Fix ownership of data directories
 chmod -R 777 logs data web
-```
-
-### Status shows wrong state (Charging when idle)
-
-The dashboard uses ±0.1 kW threshold. If battery power is between -0.1 and +0.1 kW, it shows "Standby". Check the actual value:
-
-```bash
-cat web/power_dashboard_data.json | grep current_power
 ```
 
 ---
@@ -299,14 +334,14 @@ cat web/power_dashboard_data.json | grep current_power
 ```bash
 ssh admin@YOUR-NAS-IP
 sudo -i
-cd /volume1/docker
 ```
 
 ### Clone and Setup
 
 ```bash
-git clone https://github.com/mtnears/FranklinWH-Automation.git franklin
-cd franklin
+cd /volume1/docker
+git clone https://github.com/mtnears/FranklinWH-Automation.git franklin-git
+cd franklin-git
 cp .env.example .env
 nano .env  # Configure your settings
 mkdir -p logs data web
@@ -323,7 +358,7 @@ Open: `http://YOUR-NAS-IP:8100`
 If you previously used native installation, disable those tasks:
 1. Control Panel → Task Scheduler
 2. Uncheck all Franklin-related tasks
-3. Click away from the page and save when prompted
+3. Docker's internal scheduler handles everything now
 
 ---
 
@@ -355,46 +390,9 @@ Open: `http://YOUR-PI-IP:8100`
 
 ---
 
-## Migrating from Native Installation
-
-If you were running the native (non-Docker) installation:
-
-1. **Backup your data:**
-   ```bash
-   cp -r /volume1/docker/franklin/logs /volume1/docker/franklin-backup/
-   cp -r /volume1/docker/franklin/data /volume1/docker/franklin-backup/
-   ```
-
-2. **Disable Task Scheduler jobs** (see Synology notes above)
-
-3. **Copy your existing `.env`** to the new Docker directory
-
-4. **Update paths in `.env`:**
-   ```bash
-   # Change from:
-   BASE_DIR=/volume1/docker/franklin
-   LOG_DIR=/volume1/docker/franklin/logs
-   
-   # To (Docker defaults):
-   BASE_DIR=/app
-   LOG_DIR=/app/logs
-   DATA_DIR=/app/data
-   WEB_DIR=/app/web
-   ```
-
-5. **Build and start Docker**
-
-6. **Optionally restore historical data:**
-   ```bash
-   cp /volume1/docker/franklin-backup/logs/*.csv ./logs/
-   cp /volume1/docker/franklin-backup/logs/*.log ./logs/
-   ```
-
----
-
 ## Support
 
-- Check container logs first: `docker compose logs -f`
+- Check container logs first: `docker logs franklin-automation -f`
 - Review [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 - Check the System Logs tab in the dashboard
 - Open GitHub issue with log excerpts
@@ -405,5 +403,5 @@ If you were running the native (non-Docker) installation:
 
 ---
 
-**Last Updated:** February 2026  
-**Version:** 3.0
+**Last Updated:** February 2026
+**Version:** 3.2.0

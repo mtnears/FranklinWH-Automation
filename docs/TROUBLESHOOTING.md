@@ -1,722 +1,356 @@
 # Troubleshooting Guide
 
-**Common issues and solutions for Franklin WH Battery Automation**
-
----
-
-## Table of Contents
-
-- [Quick Diagnostics](#quick-diagnostics)
-- [Installation Issues](#installation-issues)
-- [API Connection Problems](#api-connection-problems)
-- [Task Scheduler Issues](#task-scheduler-issues)
-- [Peak State Problems](#peak-state-problems)
-- [Mode Switching Issues](#mode-switching-issues)
-- [Log Analysis](#log-analysis)
-- [Getting Help](#getting-help)
+**Common issues and solutions for FranklinWH Battery Automation v3.2.0**
 
 ---
 
 ## Quick Diagnostics
 
-### Run These Commands First
+Run these commands first to understand the current state:
 
 ```bash
-# Change to your installation directory
-cd /volume1/docker/franklin  # or /opt/franklin
+# Check container is running and version
+docker logs franklin-automation 2>&1 | head -5
 
-# Check Python environment
-source venv311/bin/activate
-python --version  # Should be 3.11+
+# Check recent decisions
+docker exec franklin-automation tail -20 /app/logs/solar_intelligence.log
 
-# Test core script manually
-./scripts/smart_decision.py
+# Check scheduler activity
+docker logs --tail 20 franklin-automation
 
-# Check recent logs
-tail -50 logs/solar_intelligence.log
-
-# Verify peak state
-cat logs/peak_state.txt
-
-# Check last mode
-cat logs/last_mode.txt
+# Verify configuration loaded
+docker logs franklin-automation 2>&1 | grep "Enabled features" -A 10
 ```
 
 ---
 
-## Installation Issues
+## Docker Issues
 
-### "ModuleNotFoundError: No module named 'franklinwh'"
+### Container won't start
 
-**Cause:** Virtual environment not activated or franklinwh not installed
-
-**Solution:**
 ```bash
-cd /volume1/docker/franklin
-source venv311/bin/activate
-pip list | grep franklinwh
+# Check for errors
+docker logs franklin-automation
 
-# If not listed:
-pip install --break-system-packages franklinwh requests
+# Verify .env file exists and has required values
+cat .env | grep FRANKLIN
+
+# Verify directories exist
+ls -la logs/ data/ web/
 ```
 
-### "Permission denied" when running scripts
+### Scripts not updating after git pull
 
-**Cause:** Scripts not executable
+Scripts are built into the Docker image, not volume-mounted. A simple `docker restart` does NOT pick up code changes.
 
-**Solution:**
 ```bash
-chmod +x scripts/*.py
-chmod +x scripts/*.sh
-
-# Verify
-ls -la scripts/
-# Should show: -rwxr-xr-x
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 ```
 
-### "python3: command not found"
+### Dashboard not accessible
 
-**Cause:** Python not installed or not in PATH
-
-**Solution:**
 ```bash
-# Synology - Install Python 3.11 via Package Center
+# Check both containers are running
+docker compose ps
 
-# Raspberry Pi/Linux
-sudo apt install python3.11 python3.11-venv
+# Check dashboard container
+docker compose logs franklin-dashboard
 
-# Find Python location
-which python3
-# Use full path in scripts if needed
+# Test health endpoint
+curl http://localhost:8100/health
+
+# Check firewall allows the port
 ```
 
-### "pip install" fails on Synology
+### Dashboard shows "Loading..."
 
-**Cause:** DSM 7.2+ externally managed environment
-
-**Solution:**
 ```bash
-# Always use --break-system-packages flag on Synology
-pip install --break-system-packages -r requirements.txt
+# Check data file is being generated
+docker exec franklin-automation ls -la /app/web/power_dashboard_data.json
 
-# Or create virtual environment (recommended)
-python3 -m venv venv311
-source venv311/bin/activate
-pip install -r requirements.txt
+# Check dashboard data generator is running
+docker logs --tail 50 franklin-automation | grep Dashboard
+```
+
+### Logs tab shows "Unable to load log file"
+
+```bash
+# Check logs directory inside container
+docker exec franklin-automation ls -la /app/logs/
+
+# Verify intelligence log exists and has content
+docker exec franklin-automation tail -5 /app/logs/solar_intelligence.log
+```
+
+### Wrong log file location
+
+The Docker container writes logs to `/app/logs/` which maps to `./logs/` on the host (relative to your `docker-compose.yml` location). If you have an older installation, you may have logs in a different directory. Check:
+
+```bash
+# Container's actual log location
+docker exec franklin-automation tail -1 /app/logs/solar_intelligence.log
+
+# Host-side locations to check
+ls -la logs/solar_intelligence.log
 ```
 
 ---
 
 ## API Connection Problems
 
-### "Device response timed out" - Frequent Timeouts
+### "Device response timed out" — Frequent Timeouts
 
-**Cause:** Franklin Cloud API is slow/unreliable
+The Franklin Cloud API can be slow. The system retries 5 times with 10-second delays.
 
-**Current Behavior:** Script retries 5 times with 10-second delays
-
-**Check retry attempts in logs:**
 ```bash
-grep "Attempt" logs/solar_intelligence.log | tail -20
+# Check retry patterns
+docker exec franklin-automation grep "Attempt" /app/logs/solar_intelligence.log | tail -10
 ```
 
 **Good output (successful retry):**
 ```
 Attempt 1 starting...
-✗ Attempt 1 failed: Device response timed out, retrying in 10s...
+Attempt 1 failed: Device response timed out, retrying in 10s...
 Attempt 2 starting...
-✓ Success on attempt 2
+Success on attempt 2
 ```
 
-**If all 5 attempts fail repeatedly:**
+**If all 5 attempts consistently fail:**
 1. Check Franklin WH system status in mobile app
-2. Verify internet connection
-3. Test API directly:
-   ```bash
-   ./scripts/get_battery_status.py
-   ```
-4. Check Franklin WH service status (may be maintenance)
-5. Wait 1 hour and retry
+2. Verify internet connection on your server
+3. Check if Franklin is having service issues (common during updates)
+4. Wait 1 hour and check if it resolves
 
 ### "Authentication failed"
 
-**Cause:** Incorrect username or password
-
-**Solution:**
 ```bash
-# Verify credentials in scripts
-grep "USERNAME\|PASSWORD" scripts/smart_decision.py
-
-# Should match Franklin WH mobile app credentials
-# Test login in Franklin WH app first
+# Check credentials in .env
+grep "FRANKLIN_USERNAME\|FRANKLIN_PASSWORD" .env
 ```
 
-**Still failing?**
-- Password may have special characters that need escaping
-- Try resetting password in Franklin WH app
-- Ensure username is full email address
+- Verify you can log into the Franklin WH mobile app with the same credentials
+- Check for special characters in password that may need escaping
+- Try resetting your Franklin WH password
 
-### "Gateway not found" or "Invalid gateway ID"
-
-**Cause:** Wrong GATEWAY_ID
-
-**Solution:**
-```bash
-# Find Gateway ID in Franklin WH mobile app:
-# Settings → System Info → Gateway ID
-
-# Verify in script
-grep "GATEWAY_ID" scripts/smart_decision.py
-
-# Format should be: 10060005A02X24470437 (20 characters)
-```
-
-### "SSL Certificate verification failed"
-
-**Cause:** System time/date incorrect or missing CA certificates
-
-**Solution:**
-```bash
-# Check system time
-date
-# Should be current time in your timezone
-
-# Update system time (if wrong)
-sudo ntpdate -s time.nist.gov
-
-# Install CA certificates (Linux)
-sudo apt install ca-certificates
-sudo update-ca-certificates
-```
-
----
-
-## Task Scheduler Issues
-
-### Task Not Running
-
-**Synology:**
-
-1. **Check task is enabled:**
-   ```bash
-   sudo /usr/syno/bin/synoschedtask --get | grep -A 5 "Smart Battery"
-   ```
-   Should show `State: [enabled]`
-
-2. **Check task history:**
-   - Control Panel → Task Scheduler
-   - Select task → Action → View Result
-   - Should show recent runs with exit code 0
-
-3. **Test manually:**
-   ```bash
-   # Run as root
-   sudo -i
-   cd /volume1/docker/franklin
-   /volume1/docker/franklin/scripts/run_smart_decision.sh
-   ```
-
-4. **Check script path:**
-   - Task must use absolute paths
-   - `/volume1/docker/franklin/...` not `./...`
-
-**Linux/Cron:**
-
-1. **Verify cron is running:**
-   ```bash
-   sudo systemctl status cron
-   ```
-
-2. **Check crontab:**
-   ```bash
-   crontab -l
-   # Should show your scheduled task
-   ```
-
-3. **View cron logs:**
-   ```bash
-   grep CRON /var/log/syslog | tail -30
-   # or
-   journalctl -u cron | grep franklin | tail -30
-   ```
-
-4. **Test cron entry manually:**
-   ```bash
-   # Copy exact command from crontab and run it
-   cd /opt/franklin && /opt/franklin/scripts/run_smart_decision.sh
-   ```
-
-### Task Runs But Script Fails
-
-**Check exit code:**
-- Synology: Task history shows exit code
-- Linux: Check logs
-
-**Exit codes:**
-- `0` = Success
-- `1` = General error
-- `127` = Command not found
-- `126` = Permission denied
-
-**Common fixes:**
+### "Gateway not found"
 
 ```bash
-# Activate virtual environment in wrapper script
-# Edit run_smart_decision.sh:
-#!/bin/bash
-cd /volume1/docker/franklin || exit 1
-source venv311/bin/activate  # Add this line
-exec /volume1/docker/franklin/venv311/bin/python3 /volume1/docker/franklin/scripts/smart_decision.py
+# Check gateway ID
+grep "FRANKLIN_GATEWAY_ID" .env
 ```
 
-### Task Runs at Wrong Times
-
-**Synology:**
-- Verify "Repeat every 15 minutes" setting
-- Check "Last run time" is 23:45 (not 23:59)
-- "First run time" should be 00:00
-
-**Linux/Cron:**
-- Test cron syntax: https://crontab.guru/
-- Verify: `*/15 * * * *` (every 15 minutes)
-- Not: `15 * * * *` (every hour at :15)
-
----
-
-## Peak State Problems
-
-### Peak State File Not Created
-
-**Check:**
-```bash
-ls -la logs/peak_state.txt
-```
-
-**If missing:**
-```bash
-# Create manually (system will update it)
-mkdir -p logs
-echo "OffPeak-$(date +%Y-%m-%d)" > logs/peak_state.txt
-```
-
-**Verify directory permissions:**
-```bash
-ls -ld logs/
-# Should be writable by root/user running scripts
-```
-
-### Peak Period Not Being Detected
-
-**Symptoms:**
-- No "Peak period started" log messages at 5 PM
-- No "Peak period ended" messages at 8 PM
-- Mode changes happening during peak hours
-
-**Check configuration:**
-```bash
-grep "PEAK_START_HOUR\|PEAK_END_HOUR" scripts/smart_decision.py
-```
-
-Should match your TOU schedule:
-- PG&E E-TOU-D: `PEAK_START_HOUR = 17` (5 PM), `PEAK_END_HOUR = 20` (8 PM)
-
-**Check system time:**
-```bash
-date
-# Should be current local time in correct timezone
-```
-
-**View peak transitions:**
-```bash
-grep "Peak period" logs/solar_intelligence.log | tail -10
-```
-
-Should show:
-```
-2026-01-04 17:00:XX - 📊 Peak period started: Peak-2026-01-04
-2026-01-04 20:00:XX - 📊 Peak period ended: OffPeak-2026-01-04
-```
-
-### Mode Changed During Peak Period
-
-**This is a BUG - should never happen**
-
-**Investigate:**
-```bash
-# Find any mode changes during peak hours (5-8 PM)
-grep "SWITCHING" logs/solar_intelligence.log | grep " 1[7-9]:\| 20:0[0-7]"
-```
-
-**Should return NOTHING.** If you see output:
-
-1. Check peak state configuration
-2. Verify system time/timezone
-3. Review code logic in `smart_decision.py`
-4. Open GitHub issue with log excerpts
-
-**Expected during peak:**
-```
-17:15:XX - Decision: IN PEAK PERIOD - no charging decisions (SOC: 92.3%)
-17:15:XX - Mode unchanged: TOU
-```
-
-### System Charging After 8 PM
-
-**After 8 PM, charging is allowed if needed**
-
-**Check if this is emergency charging:**
-```bash
-grep "2026-01-04 2[0-3]:" logs/solar_intelligence.log | grep -i "emergency\|out of time"
-```
-
-**Normal post-peak behavior:**
-- 8:00 PM: Peak ends, system resumes decisions
-- 8:00-11:59 PM: Will charge if SOC low and peak tomorrow imminent
-- This is correct if SOC is below target
-
-**Abnormal:**
-- Emergency charging immediately after 8 PM with high SOC
-- This was the bug in V1 that V2 fixes
+- Find Gateway ID in Franklin WH app: Settings → System Info
+- Should be exactly 20 characters
+- Check for extra spaces or missing characters
 
 ---
 
 ## Mode Switching Issues
 
-### Modes Not Switching When Expected
+### Mode not switching when expected
 
-**Verify modes are actually different:**
+v3.2.0 reads the current mode directly from the API's `run_status` field. Check what the system sees:
+
 ```bash
-cat logs/last_mode.txt
-# Should show: BACKUP or TOU
+# Check recent mode detection
+docker exec franklin-automation grep "API Mode\|Mode unchanged\|Mode changed\|SWITCHING" /app/logs/solar_intelligence.log | tail -10
 ```
 
-**Check recent decisions:**
+**Expected log format:**
+```
+API Mode: TOU-B (run_status=2, detected=tou)
+Mode unchanged: tou (TOU)
+```
+
+The `run_status` codes are: 1 = Emergency Backup, 2 = TOU, 3 = Self Consumption.
+
+### Mode switch not verified
+
+v3.2.0 verifies mode changes after switching. If you see warning messages:
+
 ```bash
-tail -50 logs/solar_intelligence.log | grep "Decision:\|Mode"
+docker exec franklin-automation grep "WARNING.*mode" /app/logs/solar_intelligence.log | tail -5
 ```
 
-**Expected patterns:**
+This could indicate the API accepted the command but the gateway hasn't applied it yet. The system will detect the correct mode on the next cycle.
 
-**Switching to grid charging:**
-```
-Decision: Out of time! Must start now (need 2.1h, have 1.8h)
-Action: Grid charge
-🔌 SWITCHING TO EMERGENCY BACKUP MODE (grid charging)
-Mode changed: TOU → BACKUP
-```
+### Battery charging during peak hours
 
-**Staying on solar:**
-```
-Decision: Solar can provide ~18.7% (need 15.3%), 3.245kW looks promising
-Action: Solar-first (TOU mode)
-Mode unchanged: TOU
-```
+This should never happen. Check:
 
-### Switch Scripts Fail
-
-**Test mode switching manually:**
 ```bash
-cd /volume1/docker/franklin
-source venv311/bin/activate
-
-# Try switching to BACKUP
-./scripts/switch_to_backup_v2.py
-
-# Expected output:
-# Authenticating with Franklin WH...
-# Creating client...
-# Switching to Emergency Backup mode...
-# ✓ Successfully switched to Emergency Backup mode
+# Look for any mode changes during peak (5-8 PM)
+docker exec franklin-automation grep "SWITCHING" /app/logs/solar_intelligence.log | grep " 1[7-9]:\| 20:0[0-7]"
 ```
 
-**If it fails:**
-1. Check API credentials
-2. Verify internet connection
-3. Test with `get_battery_status.py` first
-4. Check Franklin WH app shows system online
+This should return nothing. If you see mode switches during peak:
+1. Verify `PEAK_START_HOUR` and `PEAK_END_HOUR` in `.env`
+2. Check system timezone: `docker exec franklin-automation date`
+3. Open a GitHub issue with log excerpts
 
-**Switch back:**
+---
+
+## Scheduling Issues
+
+### Pre-peak check not running
+
 ```bash
-./scripts/switch_to_tou_v2.py
+# Verify it's scheduled
+docker logs franklin-automation 2>&1 | grep "Pre-peak\|Post-peak"
 ```
 
-### Battery Not Charging in BACKUP Mode
+Should show:
+```
+Pre-peak check: Daily at 16:55 (5min before peak)
+Post-peak check: Daily at 20:01 (1min after peak ends)
+```
 
-**Verify mode in Franklin WH app:**
-- Open Franklin WH mobile app
-- Check current mode setting
-- Should show "Emergency Backup" when BACKUP mode
+If not visible, check that `PEAK_TRANSITION_BUFFER_MINUTES` is set in `.env` and rebuild the container.
 
-**If mode switch succeeded but battery not charging:**
-1. Check battery SOC - may already be at target
-2. Check time - may be in off-peak period with solar available
-3. Verify battery system is functioning (check app for errors)
-4. Check grid connection is active
+### Decision running at wrong intervals
+
+```bash
+# Check configured interval
+docker logs franklin-automation 2>&1 | grep "Smart Decision"
+```
+
+Should show `Smart Decision: Every XX minutes` matching your `CHECK_INTERVAL_MINUTES` setting.
+
+### Wrong HOME_MODE
+
+If the system returns to the wrong mode after peak:
+
+```bash
+grep "HOME_MODE" .env
+```
+
+Set to `tou` if you use Time-of-Use mode, or `self_consumption` if you use Self Consumption mode. This must match what you've configured in the Franklin app.
+
+---
+
+## Per-Battery Monitoring
+
+### Battery data not showing
+
+v3.2.0 automatically detects the number of batteries. Check:
+
+```bash
+docker exec franklin-automation grep "Per-battery" /app/logs/solar_intelligence.log | tail -3
+```
+
+Expected:
+```
+Per-battery SOC: Bat1: 65.1%, Bat2: 65.2% (combined: 63.3%)
+```
+
+If missing, the system may be running an older version. Check:
+
+```bash
+docker logs franklin-automation 2>&1 | head -3
+```
+
+Should show `Scheduler v3.2.0`.
+
+### Large SOC difference between batteries
+
+A small difference (< 2%) is normal. If batteries diverge significantly, this could indicate a cell issue in one battery. Monitor over several days — the BMS should balance them over time.
 
 ---
 
 ## Log Analysis
 
-### Understanding Log Entries
+### Understanding v3.2.0 log entries
 
-**Normal decision log entry:**
+A complete decision cycle looks like:
+
 ```
-2026-01-04 10:45:23 - ======================================================================
-2026-01-04 10:45:23 - SOC: 67.3%, Solar: 3.245kW, Status: 6.2h to peak
-2026-01-04 10:45:23 - Decision: Solar can provide ~18.7% (need 27.7%), 3.245kW looks promising
-2026-01-04 10:45:23 - Action: Solar-first (TOU mode)
-2026-01-04 10:45:23 - Mode unchanged: TOU
+2026-02-02 14:15:23 - Attempting to get battery stats (max 5 attempts)...
+2026-02-02 14:15:23 - Attempt 1 starting...
+2026-02-02 14:15:26 - Success on first attempt
+2026-02-02 14:15:26 - ======================================================================
+2026-02-02 14:15:26 - Features: Solar, TOU (17:00-20:00), PVOutput
+2026-02-02 14:15:26 - API Mode: TOU-B (run_status=2, detected=tou)
+2026-02-02 14:15:26 - Per-battery SOC: Bat1: 78.3%, Bat2: 78.4% (combined: 76.1%)
+2026-02-02 14:15:26 - Environment: Temp: 55F/12.8C, Signal: 30
+2026-02-02 14:15:26 - SOC: 76.1%, Solar: 4.2kW, Grid->Bat: 0.0kW, Solar->Bat: 4.2kW
+2026-02-02 14:15:26 - Status: 2.7h to peak
+2026-02-02 14:15:26 - Decision: Solar can provide ~18.7% (need 18.9%), looking promising
+2026-02-02 14:15:26 - Action: Solar-first (tou mode)
+2026-02-02 14:15:26 - Mode unchanged: tou (TOU)
 ```
 
-**Components:**
-- **SOC:** Current battery charge percentage
-- **Solar:** Current solar production in kW
-- **Status:** Hours until next peak OR "IN PEAK"
-- **Decision:** Reasoning for choice (grid charge vs solar wait)
-- **Action:** What system will do
-- **Mode:** Current/new battery mode
+### Finding specific events
 
-### Finding Specific Events
-
-**Peak transitions:**
 ```bash
-grep "Peak period" logs/solar_intelligence.log
+# Mode changes
+docker exec franklin-automation grep "SWITCHING\|Mode changed" /app/logs/solar_intelligence.log | tail -10
+
+# API errors
+docker exec franklin-automation grep -i "error\|failed\|timeout" /app/logs/solar_intelligence.log | tail -10
+
+# Peak transitions
+docker exec franklin-automation grep "Peak period\|IN PEAK" /app/logs/solar_intelligence.log | tail -10
+
+# Emergency charging events
+docker exec franklin-automation grep -i "emergency\|out of time\|Must start" /app/logs/solar_intelligence.log | tail -10
 ```
 
-**Mode changes:**
-```bash
-grep "Mode changed" logs/solar_intelligence.log
-```
+### Log file growing too large
 
-**Emergency charging:**
-```bash
-grep -i "emergency\|out of time" logs/solar_intelligence.log
-```
-
-**API errors:**
-```bash
-grep -i "error\|failed\|timeout" logs/solar_intelligence.log
-```
-
-**Successful decisions:**
-```bash
-grep "Decision made" logs/solar_intelligence.log | tail -20
-```
-
-### Log Rotation
-
-**Logs growing too large:**
 ```bash
 # Check log size
-du -h logs/*.log
+docker exec franklin-automation du -h /app/logs/*.log
 
-# Archive old logs
-cd logs
+# Logs can be archived from the host side
+cd logs/
 tar -czf archive-$(date +%Y%m%d).tar.gz *.log
-rm *.log
-
-# System will create new log files automatically
+> solar_intelligence.log   # Truncate (system recreates)
 ```
-
-**Set up automatic log rotation (Linux):**
-```bash
-sudo nano /etc/logrotate.d/franklin
-
-# Add:
-/opt/franklin/logs/*.log {
-    weekly
-    rotate 4
-    compress
-    missingok
-    notifempty
-}
-```
-
----
-
-## Getting Help
-
-### Before Asking for Help
-
-1. **Check this troubleshooting guide**
-2. **Review logs for errors:**
-   ```bash
-   tail -100 logs/solar_intelligence.log
-   ```
-3. **Test scripts manually:**
-   ```bash
-   ./scripts/smart_decision.py
-   ./scripts/get_battery_status.py
-   ```
-4. **Verify configuration:**
-   ```bash
-   grep "USERNAME\|GATEWAY_ID\|PEAK" scripts/smart_decision.py
-   ```
-
-### Gathering Information for Support
-
-**Include this information when reporting issues:**
-
-```bash
-# System info
-uname -a
-python --version
-
-# Recent logs (sanitize credentials first!)
-tail -100 logs/solar_intelligence.log > debug_log.txt
-
-# Current state
-cat logs/peak_state.txt
-cat logs/last_mode.txt
-
-# Configuration (remove actual credentials!)
-grep -E "PEAK_START|PEAK_END|TARGET_SOC" scripts/smart_decision.py
-
-# Task schedule
-# Synology:
-sudo /usr/syno/bin/synoschedtask --get | grep -A 10 "Smart Battery"
-# Linux:
-crontab -l
-```
-
-### Where to Get Help
-
-**GitHub Issues:**
-1. Check existing issues: https://github.com/YOUR-USERNAME/FranklinWH-Automation/issues
-2. Open new issue with:
-   - Descriptive title
-   - System details (NAS model, OS version, Python version)
-   - Log excerpts (sanitized)
-   - What you expected vs what happened
-   - Steps to reproduce
-
-**GitHub Discussions:**
-- For questions about setup or configuration
-- Sharing your customizations
-- Discussing feature ideas
-
-### Common Issue Templates
-
-**API Timeout Issue:**
-```
-**System:** Synology DS1234+ DSM 7.2.2
-**Python:** 3.11.2
-**Problem:** Smart decision script times out on first 2-3 attempts
-
-**Log excerpt:**
-Attempt 1 starting...
-✗ Attempt 1 failed: Device response timed out
-Attempt 2 starting...
-✗ Attempt 2 failed: Device response timed out
-Attempt 3 starting...
-✓ Success on attempt 3
-
-**Question:** Is this normal? Should I increase retry count?
-```
-
-**Peak State Issue:**
-```
-**System:** Raspberry Pi 4, Ubuntu 22.04
-**Python:** 3.11.4
-**Problem:** No "Peak period started" log at 5 PM
-
-**Configuration:**
-PEAK_START_HOUR = 17
-PEAK_END_HOUR = 20
-
-**System time:**
-Sat Jan 4 17:15:00 PST 2026
-
-**Peak state file:**
-OffPeak-2026-01-04
-
-**Expected:** Should transition to Peak-2026-01-04 at 5 PM
-```
-
----
-
-## Advanced Debugging
-
-### Enable More Verbose Logging
-
-**Edit smart_decision.py to add debug output:**
-```python
-# After imports, add:
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-# Or modify log_intelligence function to be more verbose
-```
-
-### Monitor Real-Time
-
-**Watch logs as they happen:**
-```bash
-tail -f logs/solar_intelligence.log
-```
-
-**Watch task execution (Synology):**
-```bash
-# In separate terminal
-watch -n 60 'sudo /usr/syno/bin/synoschedtask --get | grep -A 5 "Smart Battery"'
-```
-
-### Test API Connectivity
-
-```bash
-# Python interactive test
-source venv311/bin/activate
-python3
-
->>> from franklinwh import Client, TokenFetcher
->>> from config import config
->>> fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
->>> client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
->>> import asyncio
->>> stats = asyncio.run(client.get_stats())
->>> print(f"SOC: {stats.current.battery_soc}%")
->>> exit()
-```
-
-### Test Configuration Loading
-
-```bash
-source venv311/bin/activate
-python -c "from config import config; print(config.get_config_summary())"
-```
-
-If you see configuration errors, check your `.env` file.
 
 ---
 
 ## Known Limitations
 
 ### Franklin Cloud API
-- **Timeout frequency:** API can be slow, that's why we retry 5 times
-- **Rate limiting:** Not documented, but excessive requests may be throttled
-- **Maintenance windows:** Franklin may have service disruptions
+- Timeout frequency varies — the 5-retry mechanism handles most cases
+- Rate limiting is undocumented — the 15-minute default interval avoids issues
+- Service disruptions can occur during Franklin firmware updates
 
 ### System Limitations
-- **Local API:** Not currently available (installer access required)
-- **Multiple peak periods:** Current code supports one continuous peak
-- **Holiday rates:** No automatic adjustment for holiday TOU schedules
-
-### Workarounds
-
-**For multiple peak periods:**
-Modify `update_peak_state()` in `smart_decision.py` to check multiple time ranges.
-
-**For slow API:**
-Increase retry count and delay in `get_stats_with_retry()`.
-
-**For holiday schedules:**
-Manually adjust `PEAK_START_HOUR` and `PEAK_END_HOUR` on holidays or disable task.
+- TOU schedule cannot be queried from the API — must be set manually in `.env`
+- Mode IDs are firmware-specific — the system uses `run_status` codes instead for universal detection
+- Cell-level battery data is not available through the cloud API (requires local Modbus access)
 
 ---
 
-**Still stuck?** Open a GitHub issue with your logs and system details!
+## Getting Help
+
+### Before opening an issue
+
+1. Check this troubleshooting guide
+2. Review the container logs: `docker logs franklin-automation`
+3. Review the intelligence log: `docker exec franklin-automation tail -50 /app/logs/solar_intelligence.log`
+4. Check your `.env` configuration
+
+### Include this info in bug reports
+
+```bash
+# Version
+docker logs franklin-automation 2>&1 | head -3
+
+# Recent decisions
+docker exec franklin-automation tail -30 /app/logs/solar_intelligence.log
+
+# Configuration (remove credentials!)
+grep -v "PASSWORD\|USERNAME" .env
+```
+
+- GitHub Issues: https://github.com/mtnears/FranklinWH-Automation/issues
+- GitHub Discussions: https://github.com/mtnears/FranklinWH-Automation/discussions
 
 ---
 
-**Last Updated:** January 4, 2026  
-**Version:** 2.0
+**Last Updated:** February 2026
+**Version:** 3.2.0

@@ -1,675 +1,246 @@
-# Configuration Reference Guide
+# Configuration Reference
 
-**Complete guide to configuring Franklin WH Battery Automation**
+**Complete guide to configuring FranklinWH Battery Automation v3.2.0**
 
-This document explains ALL configuration variables, where to find them, how to set them, and which scripts need them.
-
----
-
-## Table of Contents
-
-- [Quick Start Checklist](#quick-start-checklist)
-- [Required Configuration](#required-configuration)
-- [Battery Performance Testing](#battery-performance-testing)
-- [Optional Configuration](#optional-configuration)
-- [Configuration by Script](#configuration-by-script)
-- [Troubleshooting Configuration](#troubleshooting-configuration)
+All configuration is done via the `.env` file. You never need to edit Python scripts directly.
 
 ---
 
-## Quick Start Checklist
+## Quick Start
 
-**Gather these BEFORE you begin installation:**
-
-### Required Information
-
-- [ ] **Franklin WH Username** (your account email)
-- [ ] **Franklin WH Password**
-- [ ] **Franklin WH Gateway ID** (from mobile app)
-- [ ] **Your Utility's Peak Period Hours** (e.g., 5 PM - 8 PM)
-- [ ] **Battery Charge Rate** (requires 30-60 min test - see below)
-
-### Optional Information
-
-- [ ] Weather Underground Station ID (if using weather tracking)
-- [ ] Weather Underground API Key
-- [ ] PVOutput API Key (if using solar tracking)
-- [ ] PVOutput System ID(s)
-- [ ] Email SMTP settings (if using notifications)
-
----
-
-## Required Configuration
-
-### 1. Franklin WH Credentials
-
-**What:** Your Franklin WH account credentials and gateway identifier
-
-**Where to find:**
-- **Username:** The email you use to log into Franklin WH mobile app
-- **Password:** Your Franklin WH account password
-- **Gateway ID:** Franklin WH mobile app → Settings → System Info → Gateway ID
-
-**Format:**
-```python
-USERNAME = "your-email@example.com"
-PASSWORD = "YourPassword123!"
-GATEWAY_ID = "10060005A02X24470437"  # 20-character alphanumeric
+```bash
+cp .env.example .env
+nano .env
 ```
 
-**Which scripts need this:**
-- `scripts/smart_decision.py` ⭐ CRITICAL
-- `scripts/switch_to_backup_v2.py`
-- `scripts/switch_to_tou_v2.py`
-- `scripts/get_battery_status.py`
-- `scripts/milestone_emailer.py` (optional)
+Set these required values and you're ready to go:
 
----
-
-### 2. Peak Period Hours
-
-**What:** The hours when your utility charges peak/expensive electricity rates
-
-**Why it matters:** System needs to know when NOT to change modes and when to have battery fully charged
-
-**How to find:**
-1. Check your utility bill for "Time-of-Use" or "TOU" rate schedule
-2. Look for "Peak Period" or "On-Peak Hours"
-3. Common schedules:
-   - **PG&E E-TOU-D:** 5 PM - 8 PM (hours 17-20)
-   - **SCE TOU-D-4-9PM:** 4 PM - 9 PM (hours 16-21)
-   - **SDG&E TOU-DR1:** 4 PM - 9 PM (hours 16-21)
-
-**Configuration:**
-```python
-# In scripts/smart_decision.py
-PEAK_START_HOUR = 17  # 5 PM (use 24-hour format: 0-23)
-PEAK_END_HOUR = 20    # 8 PM
+```bash
+FRANKLIN_USERNAME=your_email@example.com
+FRANKLIN_PASSWORD=your_password
+FRANKLIN_GATEWAY_ID=your_gateway_id
+BATTERY_CAPACITY_KWH=30
+CHARGE_RATE_PER_HOUR=32
 ```
 
-**24-Hour Format Reference:**
-- 12 AM (midnight) = 0
-- 1 AM = 1
-- 12 PM (noon) = 12
-- 1 PM = 13
-- 5 PM = 17
-- 8 PM = 20
-- 9 PM = 21
+---
 
-**Which scripts need this:**
-- `scripts/smart_decision.py` ⭐ CRITICAL
+## Required Settings
+
+### Franklin WH Credentials
+
+| Variable | Description | How to Find |
+|----------|-------------|-------------|
+| `FRANKLIN_USERNAME` | Account email | Same as mobile app login |
+| `FRANKLIN_PASSWORD` | Account password | Same as mobile app login |
+| `FRANKLIN_GATEWAY_ID` | Gateway identifier | App → Settings → System Info |
+
+The Gateway ID is a 20-character alphanumeric string (e.g., `10060005A02X24470437`).
+
+### Battery Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BATTERY_CAPACITY_KWH` | `30` | Total battery capacity in kWh |
+| `CHARGE_RATE_PER_HOUR` | `32.0` | Charge rate as % per hour (must test) |
+
+**Testing your charge rate:** Switch to backup mode at night, note starting SOC and time, wait 30-60 minutes, check SOC again. Calculate: `(ending_soc - starting_soc) / hours_elapsed`. Typical values: ~35-40%/hr for 13.6 kWh, ~30-35%/hr for 30 kWh, ~15-18%/hr for 60 kWh.
 
 ---
 
-### 3. Battery Charge Rate (REQUIRES TESTING)
+## Feature Toggles
 
-**What:** How fast your battery charges from the grid, measured in % per hour
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SOLAR_ENABLED` | `true` | Solar-first charging logic |
+| `TOU_ENABLED` | `true` | Time-of-Use peak protection |
+| `DYNAMIC_PRICING_ENABLED` | `false` | Hourly pricing integration |
+| `WEATHER_ENABLED` | `false` | Weather data collection |
+| `PVOUTPUT_ENABLED` | `false` | PVOutput solar tracking |
+| `EMAIL_ENABLED` | `false` | Email notifications |
 
-**Why it matters:** System uses this to calculate when it must start grid charging to reach target SOC before peak period
+Disabled features are completely skipped in the decision logic.
 
-**⚠️ CRITICAL:** This varies by battery size and inverter capacity. You MUST test YOUR system.
+---
 
-#### How to Test Your Battery Charge Rate
+## TOU Settings
 
-**Prerequisites:**
-- Battery SOC below 80% (more room to charge = better measurement)
-- Nighttime or cloudy day (no solar interference)
-- No major loads running (for cleaner measurement)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PEAK_START_HOUR` | `17` | Peak start in 24-hour format |
+| `PEAK_END_HOUR` | `20` | Peak end in 24-hour format |
+| `PEAK_DAYS` | `weekdays` | `all`, `weekdays`, or `weekends` |
+| `PEAK2_START_HOUR` | (disabled) | Optional second peak start |
+| `PEAK2_END_HOUR` | (disabled) | Optional second peak end |
 
-**Step-by-Step Test Procedure:**
+**Common TOU schedules:**
+- PG&E E-TOU-D: `PEAK_START_HOUR=17`, `PEAK_END_HOUR=20`
+- SCE TOU-D-4-9PM: `PEAK_START_HOUR=16`, `PEAK_END_HOUR=21`
+- SDG&E TOU-DR1: `PEAK_START_HOUR=16`, `PEAK_END_HOUR=21`
 
-1. **Switch to BACKUP mode** (starts grid charging):
-   ```bash
-   cd /volume1/docker/franklin
-   source venv311/bin/activate
-   ./scripts/switch_to_backup_v2.py
-   ```
+**24-hour reference:** 1 PM = 13, 4 PM = 16, 5 PM = 17, 8 PM = 20, 9 PM = 21
 
-2. **Note starting SOC and time:**
-   ```bash
-   ./scripts/get_battery_status.py
-   ```
-   Record:
-   - Starting SOC: _____% 
-   - Start time: _____
+---
 
-3. **Wait 30-60 minutes** (let it charge)
+## Scheduling Settings
 
-4. **Check SOC again:**
-   ```bash
-   ./scripts/get_battery_status.py
-   ```
-   Record:
-   - Ending SOC: _____%
-   - End time: _____
+These control when and how often the automation runs.
 
-5. **Calculate charge rate:**
-   ```
-   SOC Increase = Ending SOC - Starting SOC
-   Time Elapsed = (End time - Start time) in hours
-   
-   Charge Rate = SOC Increase ÷ Time Elapsed
-   ```
+| Variable | Default | Range | Description |
+|----------|---------|-------|-------------|
+| `CHECK_INTERVAL_MINUTES` | `15` | 1-60 | How often smart decisions run |
+| `PEAK_TRANSITION_BUFFER_MINUTES` | `5` | 1+ | Minutes before peak to run guaranteed check |
+| `HOME_MODE` | `tou` | `tou` or `self_consumption` | Your normal operating mode |
 
-6. **Switch back to TOU mode:**
-   ```bash
-   ./scripts/switch_to_tou_v2.py
-   ```
+**How scheduling works:**
+- The smart decision runs every `CHECK_INTERVAL_MINUTES` (default: every 15 minutes)
+- A guaranteed pre-peak check is pinned at `PEAK_START_HOUR` minus `PEAK_TRANSITION_BUFFER_MINUTES` (e.g., 16:55)
+- A guaranteed post-peak check is pinned at `PEAK_END_HOUR` + 1 minute (e.g., 20:01)
+- This ensures peak transitions are never missed regardless of the polling interval
 
-#### Example Calculation
+**HOME_MODE:** Set this to match how your Franklin system is configured in the app. Most TOU users should leave this as `tou`. If you use Self Consumption as your normal mode, set it to `self_consumption`.
 
-**Test Results:**
-- Starting SOC: 50%
-- Start time: 8:00 PM
-- Ending SOC: 66%
-- End time: 8:30 PM
+---
 
-**Calculation:**
-- SOC Increase: 66% - 50% = 16%
-- Time Elapsed: 30 minutes = 0.5 hours
-- **Charge Rate: 16% ÷ 0.5 = 32% per hour**
+## Decision Tuning
 
-#### Expected Ranges by Battery Size
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TARGET_SOC` | `95.0` | Target battery % before peak |
+| `SAFETY_MARGIN_HOURS` | `0.5` | Buffer time for charge calculations |
+| `CHARGING_STRATEGY` | `balanced` | `conservative`, `balanced`, or `aggressive` |
+| `MIN_SOLAR_FOR_WAIT` | `0.5` | Minimum solar kW to delay grid charging |
 
-These are **estimates** - always test YOUR system:
+**Adjusting TARGET_SOC:** Lower to 90% if you consistently reach 95% well before peak. Keep at 95% if you sometimes fall short on cloudy days.
 
-| Battery Size | Typical Grid Charge (kW) | Estimated %/hour |
-|--------------|-------------------------|------------------|
-| 13.6 kWh | ~5 kW | ~35-40%/hour |
-| 30 kWh | ~10 kW | ~30-35%/hour |
-| 40 kWh | ~10 kW | ~22-27%/hour |
-| 60 kWh | ~10 kW | ~15-18%/hour |
+**Adjusting SAFETY_MARGIN_HOURS:** Increase to 1.0 for more conservative charging. Decrease to 0.25 to maximize solar waiting time (riskier).
 
-**Configuration:**
-```python
-# In scripts/smart_decision.py
-CHARGE_RATE_PER_HOUR = 32.0  # Replace with YOUR measured rate
+---
+
+## Solar Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SOLAR_CAPACITY_KW` | `28.26` | Total solar array capacity |
+| `MIN_SOLAR_FOR_WAIT` | `0.5` | Minimum kW to consider "useful solar" |
+
+---
+
+## Dynamic Pricing (ComEd)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PRICING_PROVIDER` | `comed` | Pricing API provider |
+| `PRICE_THRESHOLD_CENTS` | `4.0` | Charge from grid below this price |
+| `PRICE_CEILING_CENTS` | `10.0` | Never charge above this price |
+
+When enabled, the system checks current electricity prices and charges from the grid during cheap periods, regardless of solar availability.
+
+---
+
+## Weather Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEATHER_PROVIDER` | `wunderground` | Weather data source |
+| `WEATHER_STATION_ID` | (required) | Personal Weather Station ID |
+| `WEATHER_API_KEY` | (required) | Weather Underground API key |
+| `CLOUDY_THRESHOLD_PERCENT` | `50` | Cloud cover % to trigger grid charging |
+
+Get a free API key at [wunderground.com/member/api-keys](https://www.wunderground.com/member/api-keys).
+
+---
+
+## PVOutput Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PVOUTPUT_API_KEY` | (required) | PVOutput API key |
+| `PVOUTPUT_SYSTEM_IDS` | (required) | Comma-separated system IDs |
+
+Get your API key at [pvoutput.org/account.jsp](https://pvoutput.org/account.jsp).
+
+---
+
+## System Paths
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BASE_DIR` | `/volume1/docker/franklin` | Base installation directory |
+| `LOG_DIR` | `BASE_DIR/logs` | Log file directory |
+| `DATA_DIR` | `BASE_DIR/data` | Savings data directory |
+| `WEB_DIR` | `/volume1/web` | Web dashboard directory |
+
+**Docker users:** These paths are mapped via volume mounts in `docker-compose.yml`. The container uses `/app/logs`, `/app/data`, `/app/web` internally.
+
+---
+
+## Docker Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DASHBOARD_PORT` | `8100` | Port for the web dashboard |
+| `TZ` | `America/Los_Angeles` | Container timezone |
+
+---
+
+## Notification Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `EMAIL_ENABLED` | `false` | Enable email reports |
+| `SMTP_SERVER` | `smtp.gmail.com` | SMTP server |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SENDER_EMAIL` | (required) | From address |
+| `SENDER_PASSWORD` | (required) | App password (not account password) |
+| `RECIPIENT_EMAIL` | (required) | To address |
+
+For Gmail, use an [App Password](https://myaccount.google.com/apppasswords), not your regular password.
+
+---
+
+## Advanced Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEBUG_MODE` | `false` | Verbose logging |
+| `API_MAX_RETRIES` | `5` | API call retry attempts |
+| `API_RETRY_DELAY` | `10` | Seconds between retries |
+
+---
+
+## Validating Your Configuration
+
+### Docker
+
+```bash
+docker logs franklin-automation 2>&1 | head -25
 ```
 
-**Which scripts need this:**
-- `scripts/smart_decision.py` ⭐ CRITICAL
+The startup banner shows all enabled features and scheduled tasks.
 
----
+### Check the intelligence log for enriched data
 
-### 4. Target State of Charge
-
-**What:** The battery charge percentage you want to reach before peak period
-
-**Default:** 95%
-
-**Why 95%:** 
-- Fully charged but leaves small buffer
-- Ensures maximum capacity during peak period
-- Accounts for minor measurement variations
-
-**When to adjust:**
-- **Lower to 90%:** If consistently reaching 95% too early (wasting solar opportunity)
-- **Keep at 95%:** If occasionally falling short on cloudy days
-
-**Configuration:**
-```python
-# In scripts/smart_decision.py
-TARGET_SOC = 95.0  # Target battery charge % before peak
+```bash
+docker exec franklin-automation tail -15 /app/logs/solar_intelligence.log
 ```
 
-**Which scripts need this:**
-- `scripts/smart_decision.py`
-
----
-
-## Optional Configuration
-
-### 5. Advanced Decision Thresholds
-
-**Most users should leave these at defaults.** Adjust only if you understand the implications.
-
-#### Safety Margin Hours
-
-**What:** Buffer time added when calculating "must start charging by" deadline
-
-**Default:** 0.5 hours (30 minutes)
-
-**Why:** Adds safety buffer for API delays, charge rate variations
-
-**When to adjust:**
-- **Increase to 1.0:** If you want more conservative (earlier) grid charging
-- **Decrease to 0.25:** If you want to maximize solar waiting time (riskier)
-
-```python
-SAFETY_MARGIN_HOURS = 0.5
-```
-
-#### Minimum Solar for Wait
-
-**What:** Minimum solar production (kW) required to consider "waiting for solar" vs grid charging
-
-**Default:** 0.5 kW
-
-**Why:** Below this threshold, solar is too weak to meaningfully charge battery
-
-**When to adjust:**
-- **Increase to 1.0:** If you have large solar array and want to wait for better production
-- **Decrease to 0.3:** If you have small solar array and want to use any available solar
-
-```python
-MIN_SOLAR_FOR_WAIT = 0.5  # Minimum kW to wait vs grid charge
-```
-
-**Which scripts need this:**
-- `scripts/smart_decision.py`
-
----
-
-### 6. Weather Underground (Optional)
-
-**What:** Collects weather data for correlation analysis with solar production
-
-**Benefits:** 
-- Track weather conditions vs solar output
-- Historical weather correlation
-- No impact on automation decisions (just data collection)
-
-**Setup:**
-
-1. **Create free account:** https://www.wunderground.com/member/api-keys
-2. **Get API key** from account settings
-3. **Find nearby PWS (Personal Weather Station):**
-   - Go to wunderground.com
-   - Search your location
-   - Find nearest active PWS
-   - Note the Station ID (e.g., "KCAGEORG58")
-
-**Configuration:**
-```python
-# In scripts/collect_weather.py
-PWS_ID = "KCAGEORG58"  # Your station ID
-API_KEY = "a3ce125ca7c04af88e125ca7c0aaf859"  # Your WU API key
-```
-
-**Task Scheduler:** Set up to run every 15 minutes (see TASK_SCHEDULER.md)
-
-**Which scripts need this:**
-- `scripts/collect_weather.py` (optional)
-
----
-
-### 7. PVOutput (Optional)
-
-**What:** Tracks daily solar production for long-term analysis
-
-**Benefits:**
-- Historical production tracking
-- Compare with other solar systems
-- Free graphing and analysis tools
-- No impact on automation decisions
-
-**Setup:**
-
-1. **Create free account:** https://pvoutput.org/register.jsp
-2. **Add your solar system(s):**
-   - Settings → Add System
-   - Enter system size, orientation, etc.
-3. **Get API key:** Account Settings → API Settings
-4. **Get System ID:** Displayed on your system page
-
-**Configuration:**
-```python
-# In scripts/collect_pvoutput.py
-API_KEY = "YOUR_PVOUTPUT_API_KEY"
-GROUND_MOUNT_SID = "12345"  # Your first system ID
-HOUSE_SID = "67890"         # Second system (if you have one)
-```
-
-**If you only have one system:**
-```python
-API_KEY = "YOUR_PVOUTPUT_API_KEY"
-GROUND_MOUNT_SID = "12345"
-# Just comment out or remove HOUSE_SID line
-```
-
-**Task Scheduler:** Set up to run hourly (see TASK_SCHEDULER.md)
-
-**Which scripts need this:**
-- `scripts/collect_pvoutput.py` (optional)
-
----
-
-### 8. Email Notifications (Optional)
-
-**What:** Send status emails during testing/monitoring
-
-**Used by:**
-- `milestone_emailer.py` - Hourly status during testing
-- `daily_status_report.py` - Daily summary (can be emailed or just logged)
-
-**Gmail Setup (Recommended):**
-
-1. **Enable 2-Factor Authentication** on your Google account
-2. **Create App Password:**
-   - Google Account → Security → 2-Step Verification → App passwords
-   - Generate password for "Mail"
-   - Copy the 16-character password
-
-**Configuration:**
-```python
-# In scripts/milestone_emailer.py
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = "your-email@gmail.com"
-SENDER_PASSWORD = "abcd efgh ijkl mnop"  # App password (16 chars with spaces)
-RECIPIENT_EMAIL = "your-email@gmail.com"
-MILESTONES = [8, 10, 12, 14, 16]  # Hours to send status emails
-```
-
-**Other Email Providers:**
-- **Outlook/Hotmail:** `smtp.office365.com`, port 587
-- **Yahoo:** `smtp.mail.yahoo.com`, port 587
-- **Custom SMTP:** Check your email provider's documentation
-
-**Which scripts need this:**
-- `scripts/milestone_emailer.py` (optional - testing only)
-
----
-
-## Configuration by Script
-
-### Core Automation (Required)
-
-#### smart_decision.py ⭐ MOST IMPORTANT
-
-**Required:**
-- `USERNAME` - Franklin WH email
-- `PASSWORD` - Franklin WH password
-- `GATEWAY_ID` - Franklin gateway ID
-- `PEAK_START_HOUR` - Your TOU peak start (24-hour format)
-- `PEAK_END_HOUR` - Your TOU peak end (24-hour format)
-- `CHARGE_RATE_PER_HOUR` - Your tested charge rate
-
-**Optional (Advanced):**
-- `TARGET_SOC` - Default: 95.0
-- `SAFETY_MARGIN_HOURS` - Default: 0.5
-- `MIN_SOLAR_FOR_WAIT` - Default: 0.5
-
-**File paths (verify these match your installation):**
-- `LOG_FILE` - Default: `/volume1/docker/franklin/logs/continuous_monitoring.csv`
-- `INTELLIGENCE_LOG` - Default: `/volume1/docker/franklin/logs/solar_intelligence.log`
-- `STATE_FILE` - Default: `/volume1/docker/franklin/logs/last_mode.txt`
-- `PEAK_STATE_FILE` - Default: `/volume1/docker/franklin/logs/peak_state.txt`
-
----
-
-#### switch_to_backup_v2.py
-
-**Required:**
-- `USERNAME`
-- `PASSWORD`
-- `GATEWAY_ID`
-
----
-
-#### switch_to_tou_v2.py
-
-**Required:**
-- `USERNAME`
-- `PASSWORD`
-- `GATEWAY_ID`
-
----
-
-#### get_battery_status.py
-
-**Required:**
-- `USERNAME`
-- `PASSWORD`
-- `GATEWAY_ID`
-
----
-
-### Data Collection (Optional)
-
-#### collect_weather.py
-
-**Required IF using:**
-- `PWS_ID` - Weather Underground station ID
-- `API_KEY` - Weather Underground API key
-- `LOG_DIR` - Default: `/volume1/docker/franklin/logs`
-
----
-
-#### collect_pvoutput.py
-
-**Required IF using:**
-- `API_KEY` - PVOutput API key
-- `GROUND_MOUNT_SID` - System ID for first/only system
-- `HOUSE_SID` - System ID for second system (optional)
-- `LOG_DIR` - Default: `/volume1/docker/franklin/logs`
-
----
-
-### Monitoring (Optional)
-
-#### milestone_emailer.py
-
-**Required IF using:**
-- `USERNAME`
-- `PASSWORD`
-- `GATEWAY_ID`
-- `SMTP_SERVER`
-- `SMTP_PORT`
-- `SENDER_EMAIL`
-- `SENDER_PASSWORD`
-- `RECIPIENT_EMAIL`
-- `MILESTONES` - Hours to send emails (e.g., [8, 10, 12, 14, 16])
-
----
-
-#### daily_status_report.py
-
-**Required:**
-- None (just runs scripts that have their own configuration)
-
-**Optional:**
-- Can be modified to email output instead of just printing
-
----
-
-#### aggregate_data.py
-
-**Required:**
-- `LOG_DIR` - Default: `/volume1/docker/franklin/logs`
-
----
-
-## Configuration Workflow
-
-### Recommended Order
-
-1. **Gather Franklin WH credentials** (5 minutes)
-   - Username, password from your account
-   - Gateway ID from mobile app
-
-2. **Determine your TOU schedule** (5 minutes)
-   - Check utility bill or website
-   - Note peak hours in 24-hour format
-
-3. **Test battery charge rate** (30-60 minutes)
-   - Follow test procedure above
-   - Calculate %/hour rate
-
-4. **Configure core scripts** (10 minutes)
-   - `smart_decision.py` with all required values
-   - Mode switching scripts (same credentials)
-   - `get_battery_status.py` (same credentials)
-
-5. **Test core automation** (5 minutes)
-   - Run `./scripts/smart_decision.py` manually
-   - Verify it works without errors
-
-6. **Set up Task Scheduler** (10 minutes)
-   - See TASK_SCHEDULER.md
-   - Every 15 minutes for smart_decision.py
-
-7. **Optional: Configure data collection** (15 minutes if desired)
-   - Weather Underground
-   - PVOutput
-   - Email notifications
-
-8. **Optional: Set up monitoring tasks** (10 minutes if desired)
-   - Weather collection (every 15 min)
-   - PVOutput collection (hourly)
-   - Daily status report (4:30 PM)
+v3.2.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines.
 
 ---
 
 ## Troubleshooting Configuration
 
-### "Authentication failed"
-
-**Problem:** Incorrect USERNAME or PASSWORD
-
-**Solution:**
-- Verify you can log into Franklin WH mobile app with same credentials
-- Check for typos in script
-- Ensure quotes are correct: `"email@example.com"` not `'email@example.com'`
-- Password may have special characters - ensure they're escaped properly
-
----
-
-### "Gateway not found"
-
-**Problem:** Incorrect GATEWAY_ID
-
-**Solution:**
-- Verify Gateway ID in Franklin WH app: Settings → System Info
-- Should be exactly 20 characters
-- Common mistake: Extra spaces or missing characters
-- Format: `"10060005A02X24470437"` with quotes
+| Problem | Likely Cause | Solution |
+|---------|-------------|----------|
+| "Authentication failed" | Wrong credentials | Verify in Franklin WH app, check `.env` |
+| "Gateway not found" | Wrong gateway ID | Check App → Settings → System Info |
+| Battery charges during peak | Wrong peak hours | Verify `PEAK_START_HOUR` / `PEAK_END_HOUR` |
+| Battery not ready for peak | Charge rate too high | Re-test your charge rate, lower by 10-20% |
+| Charges too early (wastes solar) | Charge rate too low | Re-test, or reduce `SAFETY_MARGIN_HOURS` |
+| Wrong mode after peak | Wrong `HOME_MODE` | Set to `tou` or `self_consumption` to match your setup |
 
 ---
 
-### Battery charges during peak period
-
-**Problem:** PEAK_START_HOUR or PEAK_END_HOUR incorrect
-
-**Solution:**
-- Verify your utility's TOU schedule
-- Remember 24-hour format: 5 PM = 17, not 5
-- Check system timezone is correct: `date`
-- Look for "Peak period started" in logs at correct time
-
----
-
-### Battery not charging in time for peak
-
-**Problem:** CHARGE_RATE_PER_HOUR set too high
-
-**Solution:**
-- Re-test your battery's actual charge rate
-- System thinks it can charge faster than reality
-- Lower the rate by 10-20% for safety margin
-- Example: If tested at 32%/hr, try 28%/hr
-
----
-
-### System charges too early (wastes solar)
-
-**Problem:** CHARGE_RATE_PER_HOUR set too low or SAFETY_MARGIN_HOURS too high
-
-**Solution:**
-- Re-test battery charge rate (might be faster than you think)
-- Reduce SAFETY_MARGIN_HOURS from 0.5 to 0.25
-- Increase MIN_SOLAR_FOR_WAIT from 0.5 to 1.0
-
----
-
-### Email notifications not working
-
-**Problem:** SMTP configuration incorrect
-
-**Solution:**
-- For Gmail, ensure you're using App Password, not account password
-- Verify SMTP_SERVER and SMTP_PORT for your provider
-- Check firewall isn't blocking port 587
-- Test with a simple Python SMTP script first
-
----
-
-### Weather/PVOutput data not collecting
-
-**Problem:** API credentials incorrect or rate limiting
-
-**Solution:**
-- Verify API keys in respective service dashboards
-- Check rate limits (Weather Underground, PVOutput have limits)
-- Ensure Task Scheduler is running the scripts
-- Check logs for error messages
-
----
-
-## Pre-Installation Worksheet
-
-**Print or copy this section and fill it out before installation:**
-
-```
-FRANKLIN WH CREDENTIALS
------------------------
-Username (email):     _________________________________
-Password:             _________________________________
-Gateway ID:           _________________________________
-
-UTILITY TOU SCHEDULE
---------------------
-Utility company:      _________________________________
-Peak start time:      _____ PM  = Hour _____ (24-hr)
-Peak end time:        _____ PM  = Hour _____ (24-hr)
-
-BATTERY TESTING
----------------
-Test date:            _________________________________
-Starting SOC:         _____%  at  _____:_____ (time)
-Ending SOC:           _____%  at  _____:_____ (time)
-SOC increase:         _____%
-Time elapsed:         _____ hours
-CHARGE RATE:          _____ % per hour
-
-OPTIONAL SERVICES (if using)
-----------------------------
-Weather Underground:
-  Station ID:         _________________________________
-  API Key:            _________________________________
-
-PVOutput:
-  API Key:            _________________________________
-  System ID 1:        _________________________________
-  System ID 2:        _________________________________ (if applicable)
-
-Email (for monitoring):
-  SMTP Server:        _________________________________
-  SMTP Port:          _________________________________
-  Email address:      _________________________________
-  App Password:       _________________________________
-```
-
----
-
-## Summary: Minimum Required Configuration
-
-To get the core automation working, you MUST configure these 6 items:
-
-1. ✅ `USERNAME` - Franklin WH email
-2. ✅ `PASSWORD` - Franklin WH password
-3. ✅ `GATEWAY_ID` - From Franklin mobile app
-4. ✅ `PEAK_START_HOUR` - Your peak period start (24-hour)
-5. ✅ `PEAK_END_HOUR` - Your peak period end (24-hour)
-6. ✅ `CHARGE_RATE_PER_HOUR` - Test YOUR battery!
-
-**Everything else is optional** and can be configured later!
-
----
-
-**Next Steps:** See [INSTALLATION.md](INSTALLATION.md) for complete setup instructions.
-
----
-
-**Last Updated:** January 4, 2026  
-**Version:** 2.0
+**Last Updated:** February 2026
+**Version:** 3.2.0

@@ -6,12 +6,15 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-❤-ea4aaa)](https://github.com/sponsors/mtnears)
 
 ---
 
 ## Key Features
 
-- **Smart 15-Minute Decisions** - Intelligent automation runs every 15 minutes
+- **API-Native Mode Management** - Reads and sets battery modes directly through the Franklin WH API
+- **Schedule-Aware Timing** - Critical checks pinned to peak boundaries so mode switches are never late
+- **Per-Battery Monitoring** - Individual SOC and power tracking for multi-battery systems
 - **Peak State Tracking** - Prevents mode changes during expensive peak periods
 - **Solar-First Intelligence** - Waits for solar production before grid charging
 - **Dynamic Pricing Support** - Optional ComEd hourly pricing integration
@@ -19,140 +22,86 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 - **Web Dashboard** - Real-time monitoring with energy flow visualization
 - **Weekly Reports** - Performance charts showing 7-day automation effectiveness
 - **Robust API Handling** - 5-attempt retry logic for Franklin Cloud API
+- **Docker Deployment** - Single command startup with built-in scheduler and dashboard
 
 ---
 
-## What's New in v3.1
+## What's New in v3.2.0
 
-### Complete Docker Support
-Docker is now the recommended deployment method:
-- **Self-contained scheduler** - No external cron or Task Scheduler needed
-- **Built-in web dashboard** - Nginx server included on port 8100
-- **Single command startup** - Just `docker compose up -d`
-- **Configurable port** - Set `DASHBOARD_PORT` in your `.env` file
+### API-Native Mode Management
+- Mode detection reads directly from the gateway's `run_status` field — no more state files
+- Mode switching via direct `set_mode()` API calls — no more external switch scripts
+- Universal mode detection works across firmware versions using `run_status` codes
+- Post-switch verification confirms the mode actually changed
 
-### Dashboard Improvements
-- **System Logs tab** - View intelligence, scheduler, and monitoring logs in browser
-- **Fixed battery status** - Now correctly shows Standby when idle (±0.1kW threshold)
-- **Auto-refresh logs** - Logs tab updates every 30 seconds
+### Schedule-Aware Timing
+- Pre-peak check pinned to exact time (e.g., 16:55) — guarantees readiness before peak
+- Post-peak check pinned to exact time (e.g., 20:01) — resumes normal operation immediately
+- Configurable polling interval via `CHECK_INTERVAL_MINUTES`
+- Configurable buffer via `PEAK_TRANSITION_BUFFER_MINUTES`
 
-See [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) for the easiest setup path.
+### Per-Battery Monitoring
+- Individual SOC tracking for each battery in the system
+- Individual power output per battery
+- Automatic detection of battery count — works with 1, 2, or more batteries
+- Enriched logging: ambient temperature, cellular signal, charging source breakdown
 
----
-
-
-## What's New in v3.0
-
-### Configuration-Driven Architecture
-All features now controlled via environment variables:
+### New Configuration Options
 ```bash
-# Enable/disable features as needed
-SOLAR_ENABLED=true
-TOU_ENABLED=true
-DYNAMIC_PRICING_ENABLED=false
-WEATHER_ENABLED=false
+CHECK_INTERVAL_MINUTES=15           # How often to run decisions
+PEAK_TRANSITION_BUFFER_MINUTES=5    # How early to check before peak
+HOME_MODE=tou                       # Normal mode: tou or self_consumption
 ```
 
-### Dynamic Pricing (ComEd)
-For ComEd customers with hourly pricing:
-- Automatically fetches real-time electricity prices
-- Charges battery when prices are low
-- Skips charging when prices spike
-- Integrates with solar forecasting
-
-### Web Dashboard
-Real-time monitoring interface:
-- Battery status and SOC
-- Energy flow visualization
-- Savings tracking
-- Weekly performance charts
-
-See [WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md) for setup instructions.
-
 ---
 
-## Quick Start
+## Quick Start (Docker — Recommended)
 
-### 1. Clone and Setup
+### 1. Clone and Configure
 ```bash
 git clone https://github.com/mtnears/FranklinWH-Automation.git
 cd FranklinWH-Automation
-
-python3 -m venv venv311
-source venv311/bin/activate
-pip install -r requirements.txt
-```
-
-### 2. Configure
-```bash
 cp .env.example .env
-nano .env  # Edit with your settings
+nano .env   # Set your credentials and preferences
 ```
 
-**Required settings:**
+**Required settings in `.env`:**
 ```bash
 FRANKLIN_USERNAME=your_email@example.com
 FRANKLIN_PASSWORD=your_password
 FRANKLIN_GATEWAY_ID=your_gateway_id
 BATTERY_CAPACITY_KWH=30
+CHARGE_RATE_PER_HOUR=32
 ```
 
-### 3. Test
+### 2. Build and Start
 ```bash
-python scripts/smart_decision.py
+mkdir -p logs data web
+docker compose build
+docker compose up -d
 ```
 
-### 4. Schedule
-Set up to run every 15 minutes via cron or Task Scheduler.
+### 3. Verify
+```bash
+docker logs franklin-automation 2>&1 | head -25
+```
+
+You should see the v3.2.0 banner with your configured features and scheduled tasks.
+
+### 4. Access Dashboard
+Open `http://YOUR-SERVER-IP:8100` in your browser.
+
+See [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) for complete setup details.
 
 ---
 
-## Deployment Options
+## How It Works
 
-| Method | Best For | Guide |
-|--------|----------|-------|
-| **Native** | Single system, Synology NAS | [INSTALLATION.md](docs/INSTALLATION.md) |
-| **Docker** | Portability, multiple systems | [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) |
-
----
-
-## Configuration Reference
-
-### Feature Toggles
-
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `SOLAR_ENABLED` | `true` | Solar-first charging logic |
-| `TOU_ENABLED` | `true` | Time-of-Use peak protection |
-| `DYNAMIC_PRICING_ENABLED` | `false` | Hourly pricing (ComEd) |
-| `WEATHER_ENABLED` | `false` | Weather-informed decisions |
-| `PVOUTPUT_ENABLED` | `false` | PVOutput solar tracking |
-
-### TOU Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `PEAK_START_HOUR` | `17` | Peak period start (5 PM) |
-| `PEAK_END_HOUR` | `20` | Peak period end (8 PM) |
-| `PEAK_DAYS` | `weekdays` | Which days have peak pricing |
-
-### Dynamic Pricing
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `PRICING_PROVIDER` | `comed` | Pricing API provider |
-| `PRICE_THRESHOLD_CENTS` | `4.0` | Charge when below this price |
-| `PRICE_CEILING_CENTS` | `10.0` | Never charge above this price |
-
-See [.env.example](.env.example) for all options.
-
----
-
-## System Architecture
+Every 15 minutes (configurable), plus pinned checks at peak boundaries:
 
 ```
-Every 15 minutes:
-├─ Get battery stats (with retry logic)
+┌─ Get battery stats via Franklin API (with retry logic)
+├─ Detect current mode from API (run_status field)
 ├─ Check enabled features
 ├─ Layer 1: Peak Protection (if TOU_ENABLED)
 │   └─ NO ACTION during peak period
@@ -162,82 +111,136 @@ Every 15 minutes:
 │   └─ Charge when price is cheap
 ├─ Layer 4: Time-Based Logic
 │   └─ Ensure ready for peak
-└─ Execute mode switch if needed
+└─ Execute mode switch via API if needed (with verification)
 ```
 
-### Core Scripts
+### Peak Protection
+
+The system guarantees battery readiness for peak hours:
+- Calculates time needed to reach target SOC based on your measured charge rate
+- Waits for solar as long as there's enough time buffer
+- Switches to grid charging only when necessary
+- Never changes modes during peak period
+- Pre-peak check ensures mode is set before peak starts
+
+---
+
+## Deployment Options
+
+| Method | Best For | Guide |
+|--------|----------|-------|
+| **Docker** (Recommended) | All users, easiest setup | [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) |
+| **Native** | Advanced users, custom setups | [INSTALLATION.md](docs/INSTALLATION.md) |
+
+---
+
+## Configuration
+
+All settings live in your `.env` file. See [.env.example](.env.example) for all options.
+
+### Feature Toggles
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `SOLAR_ENABLED` | `true` | Solar-first charging logic |
+| `TOU_ENABLED` | `true` | Time-of-Use peak protection |
+| `DYNAMIC_PRICING_ENABLED` | `false` | Hourly pricing (ComEd) |
+| `WEATHER_ENABLED` | `false` | Weather data collection |
+| `PVOUTPUT_ENABLED` | `false` | PVOutput solar tracking |
+
+### Scheduling
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CHECK_INTERVAL_MINUTES` | `15` | Decision frequency |
+| `PEAK_TRANSITION_BUFFER_MINUTES` | `5` | Minutes before peak to check |
+| `HOME_MODE` | `tou` | Normal mode: `tou` or `self_consumption` |
+
+### TOU Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `PEAK_START_HOUR` | `17` | Peak period start (5 PM) |
+| `PEAK_END_HOUR` | `20` | Peak period end (8 PM) |
+| `PEAK_DAYS` | `weekdays` | Which days have peak pricing |
+
+See [CONFIGURATION_REFERENCE.md](docs/CONFIGURATION_REFERENCE.md) for complete details.
+
+---
+
+## Core Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `smart_decision.py` | Main decision engine |
-| `config.py` | Configuration management |
-| `pricing.py` | Dynamic pricing integration |
-| `generate_dashboard_data.py` | Dashboard data generator |
+| `smart_decision.py` | Main decision engine with API-native mode management |
+| `config.py` | Configuration management from `.env` |
+| `scheduler.py` | Schedule-aware task runner with peak-pinned checks |
+| `generate_dashboard_data.py` | Real-time dashboard data |
 | `generate_weekly_charts.py` | Performance visualization |
-| `daily_status_report.py` | Daily summary reports |
+| `calculate_daily_savings.py` | Daily savings tracking |
 
 ---
 
 ## Web Dashboard
 
-Real-time monitoring of your system:
+Real-time monitoring at `http://YOUR-SERVER-IP:8100`:
 
-![Dashboard Preview](docs/images/dashboard-preview.png)
+**Live Dashboard** — Battery SOC, energy flow, charging status, savings tracker, peak countdown
 
-**Features:**
-- Battery SOC and charging status
-- Energy flow visualization (Franklin-style)
-- Savings tracking
-- Weekly performance charts
+**Weekly Reports** — 7-day SOC timeline, daily summaries, power flow charts
 
-**Setup:** See [WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md)
+**System Logs** — Intelligence log, scheduler log, monitoring data with auto-refresh
+
+See [WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md) for details.
 
 ---
 
 ## Results
 
 ### Tested Configuration
-- **Battery:** Franklin WH aPower2 (30 kWh)
-- **Solar:** 28.26 kW total capacity
-- **Utility:** PG&E E-TOU-D with CARE
+- **Battery:** Franklin WH aPower2 (2× FHP, 30 kWh total)
+- **Solar:** 28.26 kW total capacity (dual-meter, house + barn)
+- **Utility:** PG&E E-TOU-D with CARE discount
 - **Location:** Georgetown, CA
 
-### Performance
-- **Peak Protection:** >95% success rate
-- **API Reliability:** >99% uptime
-- **Estimated Savings:** ~$1,050/year
+### Performance (v3.2.0)
+- **Peak Protection:** 100% success rate
+- **API Reliability:** 99.5% uptime
+- **Target SOC Achievement:** 91-94% before peak
+- **Average Daily Savings:** ~$3.40/day
 
 ---
 
 ## Documentation
 
-- [Installation Guide](docs/INSTALLATION.md)
-- [Docker Setup](docs/DOCKER_INSTALLATION.md)
-- [Web Dashboard](docs/WEB_DASHBOARD.md)
-- [Configuration Reference](docs/CONFIGURATION.md)
-- [Upgrade to v3.0](docs/UPGRADE_v3.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Docker Installation](docs/DOCKER_INSTALLATION.md) — Recommended setup path
+- [Native Installation](docs/INSTALLATION.md) — For advanced users
+- [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) — All settings explained
+- [Web Dashboard](docs/WEB_DASHBOARD.md) — Dashboard setup and features
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and solutions
+- [Changelog](docs/CHANGELOG.md) — Version history
 
 ---
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome!
 
 - Report bugs with log excerpts
 - Share configurations for different utilities
 - Submit PRs for new pricing providers
+- Open discussions for feature ideas
 
 ---
 
 ## License
 
-MIT License - See [LICENSE](LICENSE)
+MIT License — See [LICENSE](LICENSE)
 
 ---
 
 ## Credits
 
-Built using the [franklinwh](https://pypi.org/project/franklinwh/) Python library.
+Built using the [franklinwh](https://pypi.org/project/franklinwh/) Python library by richö butts.
 
 **Built with ☀️ for the Franklin WH community**
