@@ -62,9 +62,11 @@ def switch_to_backup():
     import subprocess
     try:
         log_intelligence("SWITCHING TO EMERGENCY BACKUP MODE (grid charging)")
-        script_path = config.BASE_DIR / 'switch_to_backup_v2.py'
-        subprocess.run([str(script_path)], capture_output=True, text=True, timeout=60)
-        return True
+        script_path = config.BASE_DIR / 'scripts' / 'switch_to_backup_v2.py'
+        result = subprocess.run(['python3', str(script_path)], capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            log_intelligence(f"Switch script stderr: {result.stderr}")
+        return result.returncode == 0
     except Exception as e:
         log_intelligence(f"ERROR switching to backup: {e}")
         return False
@@ -75,9 +77,11 @@ def switch_to_tou():
     import subprocess
     try:
         log_intelligence("SWITCHING TO TOU MODE (solar-first)")
-        script_path = config.BASE_DIR / 'switch_to_tou_v2.py'
-        subprocess.run([str(script_path)], capture_output=True, text=True, timeout=60)
-        return True
+        script_path = config.BASE_DIR / 'scripts' / 'switch_to_tou_v2.py'
+        result = subprocess.run(['python3', str(script_path)], capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            log_intelligence(f"Switch script stderr: {result.stderr}")
+        return result.returncode == 0
     except Exception as e:
         log_intelligence(f"ERROR switching to TOU: {e}")
         return False
@@ -367,11 +371,16 @@ async def main():
         # Switch modes if needed (only if NOT in peak when TOU enabled)
         if (not config.TOU_ENABLED or not in_peak) and desired_mode != last_mode:
             if desired_mode == "BACKUP":
-                switch_to_backup()
+                success = switch_to_backup()
             else:
-                switch_to_tou()
-            log_intelligence(f"Mode changed: {last_mode} -> {desired_mode}")
-            save_mode(desired_mode)
+                success = switch_to_tou()
+            
+            if success:
+                log_intelligence(f"Mode changed: {last_mode} -> {desired_mode}")
+                save_mode(desired_mode)
+            else:
+                log_intelligence(f"Mode switch FAILED - staying in {last_mode}")
+                # Don't update the saved mode since switch failed
         else:
             log_intelligence(f"Mode unchanged: {desired_mode}")
             save_mode(desired_mode)

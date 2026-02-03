@@ -1083,7 +1083,7 @@
             document.getElementById('source-battery').classList.toggle('active', battery > 0.1);
         }
         
-        // Update charging status - FIXED to handle idle state
+        // Update charging status - Accurately determines charging source
         function updateChargingStatus(data) {
             const batteryPower = data.battery.current_power;
             const statusEl = document.getElementById('charging-status');
@@ -1097,14 +1097,25 @@
                 // Charging (negative power = energy going into battery)
                 statusEl.classList.add('charging');
                 iconEl.textContent = '⚡';
-                if (data.energy_flow.solar > 0.5 && data.energy_flow.grid < 0.5) {
+                
+                // Calculate the charge rate (absolute value)
+                const chargeRate = Math.abs(batteryPower);
+                const solarPower = Math.max(0, data.energy_flow.solar);
+                
+                // Determine charging source based on whether solar can cover the charge
+                // If solar >= charge rate, solar is fully covering the charge
+                // If solar > 0 but < charge rate, it's mixed (solar + grid)
+                // If solar ≈ 0, grid is charging
+                
+                if (solarPower >= chargeRate - 0.05) {
+                    // Solar can fully cover the charging (with small tolerance)
                     textEl.textContent = 'Charging (Solar)';
-                } else if (data.energy_flow.grid > 0.5 && data.energy_flow.solar < 0.5) {
-                    textEl.textContent = 'Charging (Grid)';
-                } else if (data.energy_flow.solar > 0.1 && data.energy_flow.grid > 0.1) {
-                    textEl.textContent = 'Charging (Mixed)';
+                } else if (solarPower > 0.1) {
+                    // Solar is contributing but not enough - grid is supplementing
+                    textEl.textContent = 'Charging (Solar + Grid)';
                 } else {
-                    textEl.textContent = 'Charging';
+                    // No significant solar, must be grid charging
+                    textEl.textContent = 'Charging (Grid)';
                 }
             } else if (batteryPower > 0.1) {
                 // Discharging (positive power = energy coming from battery)

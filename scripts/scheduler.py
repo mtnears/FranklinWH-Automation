@@ -11,6 +11,7 @@ Tasks:
 - generate_dashboard_data.py: Every 1 minute (dashboard updates)
 - collect_weather.py: Every 15 minutes (if WEATHER_ENABLED)
 - collect_pvoutput.py: Every hour (if PVOUTPUT_ENABLED)
+- calculate_daily_savings.py: Daily at 12:30 AM (savings tracking)
 - daily_status_report.py: Daily at 4:30 PM (if EMAIL_ENABLED)
 - generate_weekly_charts.py: Weekly on Sunday at 2:00 AM
 """
@@ -51,7 +52,7 @@ def log(message: str):
         pass  # Don't fail if we can't write to log file
 
 
-def run_script(script_name: str, description: str):
+def run_script(script_name: str, description: str, extra_args: list = None):
     """Run a Python script and log the result."""
     script_path = SCRIPT_DIR / script_name
     
@@ -62,8 +63,12 @@ def run_script(script_name: str, description: str):
     log(f"▶ {description}: Starting...")
     
     try:
+        cmd = [sys.executable, str(script_path)]
+        if extra_args:
+            cmd.extend(extra_args)
+
         result = subprocess.run(
-            [sys.executable, str(script_path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,  # 5 minute timeout
@@ -117,6 +122,11 @@ def job_pvoutput():
         pass  # Silently skip if not enabled
 
 
+def job_daily_savings():
+    """Daily savings calculation - runs at 12:30 AM for yesterday's data."""
+    run_script("calculate_daily_savings.py", "Daily Savings", ["--yesterday", "--quiet"])
+
+
 def job_daily_report():
     """Daily status report - runs at 4:30 PM if email enabled."""
     if CONFIG_LOADED and getattr(config, 'EMAIL_ENABLED', False):
@@ -166,6 +176,10 @@ def setup_schedule():
     if CONFIG_LOADED and config.PVOUTPUT_ENABLED:
         schedule.every().hour.at(":05").do(job_pvoutput)
         log("  • PVOutput Collection: Hourly at :05")
+    
+    # Daily savings - 12:30 AM (after midnight so yesterday's data is complete)
+    schedule.every().day.at("00:30").do(job_daily_savings)
+    log("  • Daily Savings: Daily at 12:30 AM")
     
     # Daily report - 4:30 PM (if email enabled)
     if CONFIG_LOADED and getattr(config, 'EMAIL_ENABLED', False):
