@@ -1,6 +1,6 @@
 # Configuration Reference
 
-**Complete guide to configuring FranklinWH Battery Automation v3.3.0**
+**Complete guide to configuring FranklinWH Battery Automation v3.4.0**
 
 All configuration is done via the `.env` file. You never need to edit Python scripts directly.
 
@@ -88,13 +88,14 @@ These control when and how often the automation runs.
 
 | Variable | Default | Range | Description |
 |----------|---------|-------|-------------|
-| `CHECK_INTERVAL_MINUTES` | `15` | 1-60 | How often smart decisions run |
-| `PEAK_TRANSITION_BUFFER_MINUTES` | `5` | 1+ | Minutes before peak to run guaranteed check |
+| `CHECK_INTERVAL_MINUTES` | `30` | 30-60 | How often smart decisions run (minimum 30) |
+| `PEAK_TRANSITION_BUFFER_MINUTES` | `10` | 1+ | Minutes before peak to run guaranteed check |
 | `HOME_MODE` | `tou` | `tou` or `self_consumption` | Your normal operating mode |
 
 **How scheduling works:**
-- The smart decision runs every `CHECK_INTERVAL_MINUTES` (default: every 15 minutes)
-- A guaranteed pre-peak check is pinned at `PEAK_START_HOUR` minus `PEAK_TRANSITION_BUFFER_MINUTES` (e.g., 16:55)
+- Smart decisions run on clock-aligned intervals at :00 and :30 each hour
+- The 30-minute minimum is a temporary conservative default to reduce Franklin Cloud API load until rate limit guidance is formalized
+- A guaranteed pre-peak check is pinned at `PEAK_START_HOUR` minus `PEAK_TRANSITION_BUFFER_MINUTES` (e.g., 16:50)
 - A guaranteed post-peak check is pinned at `PEAK_END_HOUR` + 1 minute (e.g., 20:01)
 - This ensures peak transitions are never missed regardless of the polling interval
 
@@ -246,7 +247,7 @@ The startup banner shows all enabled features and scheduled tasks.
 docker exec franklin-automation tail -15 /app/logs/solar_intelligence.log
 ```
 
-v3.3.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines.
+v3.4.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines.
 
 ---
 
@@ -264,4 +265,4 @@ v3.3.0 entries include `API Mode:`, `Per-battery SOC:`, and `Environment:` lines
 ---
 
 **Last Updated:** February 2026
-**Version:** 3.3.0
+**Version:** 3.4.0

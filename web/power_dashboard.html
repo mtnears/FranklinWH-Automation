@@ -236,6 +236,95 @@
         @media(max-width:1600px) { html { font-size: 14px; } .live-grid { grid-template-columns: 270px 1fr 270px; } }
         @media(max-width:1200px) { .live-grid { grid-template-columns: 1fr 1fr; } .battery-card { grid-row: auto; } .sysinfo-grid { grid-template-columns: 1fr 1fr; } }
         @media(max-width:800px) { .live-grid, .sysinfo-grid, .settings-columns, .chart-grid { grid-template-columns: 1fr; } .tab-bar-right { display: none; } }
+
+        /* ===== SOLAR ARRAY TAB ===== */
+        .solar-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); margin-bottom: var(--gap); }
+        .solar-array-tabs { display: flex; gap: 6px; margin-bottom: var(--gap); }
+        .solar-array-tab { padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; background: var(--bg-elevated); border: 1px solid var(--border-subtle); color: var(--text-secondary); cursor: pointer; font-family: var(--font-body); transition: all .15s; }
+        .solar-array-tab:hover { border-color: var(--border-active); }
+        .solar-array-tab.active { background: rgba(251,191,36,.1); border-color: rgba(251,191,36,.3); color: var(--solar-color); }
+        .solar-stat { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--card-radius); padding: 14px 18px; text-align: center; }
+        .solar-stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 4px; }
+        .solar-stat-value { font-family: var(--font-mono); font-size: 28px; font-weight: 600; }
+        .solar-stat-unit { font-size: 13px; font-weight: 400; color: var(--text-secondary); }
+        .solar-stat:nth-child(1) { border-left: 3px solid var(--solar-color); }
+        .solar-stat:nth-child(1) .solar-stat-value { color: var(--solar-color); }
+        .solar-stat:nth-child(2) { border-left: 3px solid var(--accent-green); }
+        .solar-stat:nth-child(2) .solar-stat-value { color: var(--accent-green); }
+        .solar-stat:nth-child(3) { border-left: 3px solid var(--accent-blue); }
+        .solar-stat:nth-child(3) .solar-stat-value { color: var(--accent-blue); }
+        .solar-stat:nth-child(4) { border-left: 3px solid var(--accent-purple); }
+        .solar-stat:nth-child(4) .solar-stat-value { color: var(--accent-purple); }
+        .solar-main { display: grid; grid-template-columns: 1fr 320px; gap: var(--gap); margin-bottom: var(--gap); }
+        .solar-array-card { min-height: 320px; display: flex; flex-direction: column; }
+        .solar-array-name { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 14px; }
+        .solar-array-grid { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; justify-content: center; }
+        .solar-array-row { display: flex; gap: 8px; justify-content: center; }
+        .solar-panel { width: 90px; height: 68px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border-subtle); transition: all .2s; position: relative; }
+        .solar-panel:hover { border-color: var(--border-active); transform: translateY(-2px); }
+        .solar-panel.panel-off { background: rgba(255,255,255,.03); }
+        .solar-panel.panel-low { background: rgba(79,143,255,.08); border-color: rgba(79,143,255,.2); }
+        .solar-panel.panel-med { background: rgba(79,143,255,.15); border-color: rgba(79,143,255,.3); }
+        .solar-panel.panel-high { background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.25); }
+        .solar-panel.panel-peak { background: rgba(251,191,36,.2); border-color: rgba(251,191,36,.4); }
+        .solar-panel-watts { font-family: var(--font-mono); font-size: 16px; font-weight: 600; }
+        .solar-panel-unit { font-size: 10px; color: var(--text-muted); }
+        .solar-panel-serial { font-size: 8px; color: var(--text-muted); letter-spacing: .3px; margin-top: 2px; }
+        .solar-spacer { width: 90px; height: 68px; border-radius: 8px; background: transparent; border: none; }
+        .solar-panel.panel-off .solar-panel-watts { color: var(--text-muted); }
+        .solar-panel.panel-low .solar-panel-watts { color: var(--accent-blue); }
+        .solar-panel.panel-med .solar-panel-watts { color: #6aafff; }
+        .solar-panel.panel-high .solar-panel-watts { color: var(--solar-color); }
+        .solar-panel.panel-peak .solar-panel-watts { color: #fcd34d; }
+        .solar-detail-card { display: flex; flex-direction: column; gap: var(--gap); }
+        .solar-detail-panel { flex: 1; }
+        .solar-detail-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 10px; }
+        .solar-alerts { padding: 10px; background: rgba(52,211,153,.06); border: 1px solid rgba(52,211,153,.15); border-radius: 8px; font-size: 12px; color: var(--accent-green); }
+        .solar-alerts.has-alerts { background: rgba(251,191,36,.06); border-color: rgba(251,191,36,.15); color: var(--accent-amber); }
+        .solar-gw-info { font-size: 12px; color: var(--text-secondary); }
+        .solar-gw-info span { display: block; margin-bottom: 3px; }
+        .solar-gw-info .gw-val { font-family: var(--font-mono); color: var(--text-primary); }
+        .solar-inv-table { width: 100%; }
+        .solar-inv-table table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .solar-inv-table th { text-align: left; padding: 8px 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); background: var(--bg-elevated); border-bottom: 2px solid var(--border-subtle); }
+        .solar-inv-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 12px; }
+        .solar-inv-table tr:hover { background: rgba(255,255,255,.02); }
+        .solar-inv-bar { width: 100%; height: 6px; background: rgba(255,255,255,.05); border-radius: 3px; overflow: hidden; }
+        .solar-inv-bar-fill { height: 100%; border-radius: 3px; transition: width .5s; }
+        /* Layout Editor */
+        .solar-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: var(--gap); }
+        .solar-edit-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.8); backdrop-filter: blur(4px); z-index: 1000; overflow-y: auto; padding: 24px; }
+        .solar-edit-overlay.active { display: block; }
+        .solar-editor { max-width: 900px; margin: 0 auto; }
+        .solar-editor h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+        .solar-editor p { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+        .se-row { background: var(--bg-card); border: 2px dashed var(--border-subtle); border-radius: 12px; padding: 12px; margin-bottom: 10px; min-height: 70px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; transition: border-color .2s; position: relative; }
+        .se-row.drag-over { border-color: var(--solar-color); background: rgba(251,191,36,.04); }
+        .se-row-label { position: absolute; top: -9px; left: 14px; font-size: 10px; font-weight: 600; color: var(--text-muted); background: var(--bg-card); padding: 0 6px; text-transform: uppercase; letter-spacing: .5px; }
+        .se-panel { width: 84px; height: 62px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 1px solid var(--border-active); background: rgba(79,143,255,.08); transition: all .15s; user-select: none; }
+        .se-panel:active { cursor: grabbing; }
+        .se-panel.dragging { opacity: .4; }
+        .se-panel .se-serial { font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text-primary); }
+        .se-panel .se-watts { font-size: 9px; color: var(--text-muted); margin-top: 1px; }
+        .se-spacer { width: 84px; height: 62px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 2px dashed var(--border-subtle); background: transparent; transition: all .15s; user-select: none; opacity: .4; }
+        .se-spacer:hover { opacity: .7; border-color: var(--text-muted); }
+        .se-spacer:active { cursor: grabbing; }
+        .se-spacer.dragging { opacity: .15; }
+        .se-spacer-label { font-size: 18px; color: var(--text-muted); }
+        .se-spacer-text { font-size: 8px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+        .se-btn-spacer { background: var(--bg-elevated); color: var(--text-muted); border-color: var(--border-subtle); font-size: 12px; padding: 6px 14px; }
+        .se-unassigned { background: var(--bg-elevated); border: 2px dashed rgba(251,191,36,.3); border-radius: 12px; padding: 12px; margin-top: 16px; min-height: 70px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .se-unassigned-label { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; width: 100%; font-weight: 600; }
+        .se-actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+        .se-btn { padding: 10px 20px; border-radius: 8px; font-family: var(--font-body); font-size: 14px; font-weight: 500; cursor: pointer; border: 1px solid var(--border-subtle); transition: all .15s; }
+        .se-btn-save { background: var(--accent-green); color: #fff; border-color: var(--accent-green); }
+        .se-btn-save:hover { filter: brightness(1.1); }
+        .se-btn-cancel { background: var(--bg-elevated); color: var(--text-secondary); }
+        .se-btn-add { background: var(--bg-elevated); color: var(--accent-blue); border-color: rgba(79,143,255,.3); font-size: 12px; padding: 6px 14px; }
+        .se-btn-rmrow { position: absolute; top: 4px; right: 8px; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; }
+        .se-btn-rmrow:hover { color: var(--accent-red); background: rgba(248,113,113,.1); }
+        .se-save-status { font-size: 12px; color: var(--accent-green); margin-left: auto; }
+        @media(max-width:1200px) { .solar-main { grid-template-columns: 1fr; } .solar-summary { grid-template-columns: repeat(2,1fr); } }
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
     </style>
 </head>
@@ -259,6 +348,7 @@
             <button class="tab-btn" onclick="switchTab('sysinfo')" id="tb-sysinfo"><span class="tab-icon">🔧</span> System Info</button>
             <button class="tab-btn" onclick="switchTab('weekly')" id="tb-weekly"><span class="tab-icon">📈</span> Weekly Reports</button>
             <button class="tab-btn" onclick="switchTab('logs')" id="tb-logs"><span class="tab-icon">📋</span> System Logs</button>
+            <button class="tab-btn" onclick="switchTab('solar')" id="tb-solar" style="display:none"><span class="tab-icon">☀️</span> Solar Array</button>
             <button class="tab-btn" onclick="switchTab('settings')" id="tb-settings"><span class="tab-icon">⚙️</span> Settings</button>
         </div>
         <div class="tab-bar-right">
@@ -503,6 +593,68 @@
             <div class="info-row"><span class="info-key">Project</span><span class="info-val"><a href="https://github.com/mtnears/FranklinWH-Automation" target="_blank" style="color:var(--accent-blue);text-decoration:none">GitHub ↗</a></span></div>
         </div>
     </div>
+
+    <!-- ========== SOLAR ARRAY ========== -->
+    <div class="tab-content" id="tab-solar">
+        <div class="solar-array-tabs" id="sol-array-tabs"></div>
+        <div class="solar-toolbar">
+            <button class="btn-sm" onclick="openLayoutEditor()" id="sol-edit-btn" style="display:none">📐 Arrange Panels</button>
+        </div>
+        <div class="solar-summary">
+            <div class="solar-stat"><div class="solar-stat-label">Total Production</div><div class="solar-stat-value" id="sol-total">0<span class="solar-stat-unit"> kW</span></div></div>
+            <div class="solar-stat"><div class="solar-stat-label">Active Panels</div><div class="solar-stat-value" id="sol-active">0<span class="solar-stat-unit"> / 16</span></div></div>
+            <div class="solar-stat"><div class="solar-stat-label">Avg Per Panel</div><div class="solar-stat-value" id="sol-avg">0<span class="solar-stat-unit"> W</span></div></div>
+            <div class="solar-stat"><div class="solar-stat-label">Spread</div><div class="solar-stat-value" id="sol-spread">0<span class="solar-stat-unit"> W</span></div></div>
+        </div>
+        <div class="solar-main">
+            <div class="card solar-array-card">
+                <div id="sol-arrays">
+                    <div style="text-align:center;padding:40px;color:var(--text-muted)">Loading solar data...</div>
+                </div>
+            </div>
+            <div class="solar-detail-card">
+                <div class="card solar-detail-panel" id="sol-detail">
+                    <div class="solar-detail-title">Panel Detail</div>
+                    <div style="color:var(--text-muted);font-size:13px;padding:20px 0">Click a panel to view details</div>
+                </div>
+                <div class="card">
+                    <div class="solar-detail-title">Alerts</div>
+                    <div class="solar-alerts" id="sol-alerts">✓ All panels performing normally</div>
+                </div>
+                <div class="card">
+                    <div class="solar-detail-title">Gateway</div>
+                    <div class="solar-gw-info" id="sol-gateway">
+                        <span>IP: <span class="gw-val">--</span></span>
+                        <span>Serial: <span class="gw-val">--</span></span>
+                        <span>Panels: <span class="gw-val">--</span></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card solar-inv-table">
+            <div class="card-label">All Inverters</div>
+            <table><thead><tr><th>Serial</th><th>Now</th><th>Max Today</th><th>Max Ever</th><th>Avg Today</th><th>Samples</th><th>Production</th></tr></thead><tbody id="sol-inv-body"><tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">No data</td></tr></tbody></table>
+        </div>
+    </div>
+</div>
+
+<!-- Layout Editor Overlay -->
+<div class="solar-edit-overlay" id="layout-editor">
+    <div class="solar-editor">
+        <h2>📐 Arrange Solar Panels</h2>
+        <p>Drag panels between rows to match your physical array layout. Add or remove rows as needed.</p>
+        <div id="le-rows"></div>
+        <button class="se-btn se-btn-add" onclick="leAddRow()">+ Add Row</button>
+        <button class="se-btn se-btn-spacer" onclick="leAddSpacer()">⬜ Add Spacer</button>
+        <div class="se-unassigned" id="le-unassigned">
+            <div class="se-unassigned-label">☀️ Unassigned Panels (drag to a row above)</div>
+        </div>
+        <div class="se-actions">
+            <button class="se-btn se-btn-save" onclick="leSave()">💾 Save Layout</button>
+            <button class="se-btn se-btn-cancel" onclick="leClose()">Cancel</button>
+            <span class="se-save-status" id="le-status"></span>
+        </div>
+    </div>
 </div>
 
 <!-- Override Modal -->
@@ -530,9 +682,366 @@ let D=null,S={},OV={active:false},ovMode=null,ovDur='1h',logTimer=null,dashTimer
 document.addEventListener('DOMContentLoaded',()=>{
     loadSettings(); tick(); setInterval(tick,1000);
     update(); startDash(); startLogAR(); scanForReports(); loadOV();
+    // Show Solar Array tab if any solar data is available
+    (async()=>{
+        let found=false;
+        // Try multi-array files
+        for(const aid of ['house','barn','garage','ground','roof','default']){
+            try{const r=await fetch('solar_'+aid+'.json?t='+Date.now(),{method:'HEAD'});if(r.ok){found=true;break}}catch(e){}
+        }
+        // Try legacy file
+        if(!found){try{const r=await fetch('enphase_solar_data.json?t='+Date.now(),{method:'HEAD'});if(r.ok)found=true}catch(e){}}
+        if(found){document.getElementById('tb-solar').style.display='flex';loadSolar()}
+        // Restore last active tab
+        try{const t=localStorage.getItem('fwh_tab');if(t&&document.getElementById('tab-'+t)){switchTab(t)}}catch(e){}
+    })();
 });
 
-function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs()}
+function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();try{localStorage.setItem('fwh_tab',t)}catch(e){}}
+
+// ===== SOLAR ARRAY TAB (Multi-Array) =====
+let solArrays={}, solActive=null, solTimer=null;
+
+async function loadSolar(){
+    // Discover available arrays
+    const found={};
+    
+    // 1. Try common array IDs first (most reliable)
+    for(const aid of ['house','barn','garage','ground','roof','default']){
+        await loadOneArray(aid,found);
+    }
+    
+    // 2. Try manifest file (future: written by scheduler)
+    if(Object.keys(found).length===0){
+        try{
+            const mr=await fetch('solar_manifest.json?t='+Date.now());
+            if(mr.ok){const m=await mr.json();if(m.arrays){for(const aid of m.arrays){await loadOneArray(aid,found)}}}
+        }catch(e){}
+    }
+    
+    // 3. Legacy single-array file fallback
+    if(Object.keys(found).length===0){
+        try{
+            const lr=await fetch('enphase_solar_data.json?t='+Date.now());
+            if(lr.ok){const d=await lr.json();d.array_id=d.array_id||'default';d.array_name=d.array_name||'Solar Array';found[d.array_id]=d}
+        }catch(e){}
+    }
+    
+    solArrays=found;
+    const ids=Object.keys(found);
+    if(ids.length===0){
+        document.getElementById('sol-arrays').innerHTML='<div style="text-align:center;padding:40px;color:var(--text-muted)">⚠ No solar data found</div>';
+        return;
+    }
+    
+    // Build sub-tabs if multiple arrays
+    const tabsEl=document.getElementById('sol-array-tabs');
+    if(ids.length>1){
+        tabsEl.innerHTML=ids.map(id=>{
+            const nm=found[id].array_name||id;
+            return '<button class="solar-array-tab'+(id===solActive?' active':'')+'" onclick="switchSolarArray(\''+id+'\')">☀️ '+nm+'</button>';
+        }).join('');
+        tabsEl.style.display='flex';
+    }else{
+        tabsEl.style.display='none';
+    }
+    
+    // Show first or previously selected
+    if(!solActive||!found[solActive])solActive=ids[0];
+    renderSolar(found[solActive]);
+    
+    // Update tab label with array name if single
+    const tb=document.getElementById('tb-solar');
+    if(ids.length===1){
+        tb.innerHTML='<span class="tab-icon">☀️</span> Solar - '+found[ids[0]].array_name;
+    }else{
+        tb.innerHTML='<span class="tab-icon">☀️</span> Solar Arrays';
+    }
+    
+    // Auto-refresh
+    if(solTimer)clearInterval(solTimer);
+    solTimer=setInterval(()=>{if(document.getElementById('tab-solar').classList.contains('active'))refreshSolarArrays()},60000);
+}
+
+async function loadOneArray(aid,found){
+    try{
+        const r=await fetch('solar_'+aid+'.json?t='+Date.now());
+        if(r.ok){const d=await r.json();if(d.collection_status!=='error'||d.inverters){d.array_id=d.array_id||aid;d.array_name=d.array_name||aid;found[aid]=d}}
+    }catch(e){}
+}
+
+async function refreshSolarArrays(){
+    for(const aid of Object.keys(solArrays)){await loadOneArray(aid,solArrays)}
+    if(solActive&&solArrays[solActive])renderSolar(solArrays[solActive]);
+}
+
+function switchSolarArray(aid){
+    solActive=aid;
+    document.querySelectorAll('.solar-array-tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.solar-array-tab').forEach(t=>{if(t.textContent.includes(solArrays[aid]?.array_name||aid))t.classList.add('active')});
+    if(solArrays[aid])renderSolar(solArrays[aid]);
+}
+
+function renderSolar(d){
+    if(!d||!d.inverters)return;
+    const s=d.summary||{}, inv=d.inverters||{}, gw=d.gateway||{};
+    const aid=d.array_id||solActive||'default';
+    // Check localStorage layout first, then server layout
+    let lay=d.layout||{};
+    try{const saved=localStorage.getItem('fwh_layout_'+aid);if(saved){lay=JSON.parse(saved)}}catch(e){}
+    // Show arrange button
+    document.getElementById('sol-edit-btn').style.display='inline-flex';
+    // Summary cards
+    const totalW=s.total_watts||0;
+    document.getElementById('sol-total').innerHTML=(totalW/1000).toFixed(2)+'<span class="solar-stat-unit"> kW</span>';
+    document.getElementById('sol-active').innerHTML=(s.active_count||0)+'<span class="solar-stat-unit"> / '+(s.panel_count||0)+'</span>';
+    document.getElementById('sol-avg').innerHTML=Math.round(s.average_watts||s.avg_watts||0)+'<span class="solar-stat-unit"> W</span>';
+    const spread=s.spread||0;
+    document.getElementById('sol-spread').innerHTML=spread+'<span class="solar-stat-unit"> W</span>';
+    // Array layout
+    const arrays=lay.arrays||[];
+    let html='';
+    if(arrays.length>0){
+        arrays.forEach(arr=>{
+            html+='<div class="solar-array-name">'+(arr.name||d.array_name||'Array')+'</div><div class="solar-array-grid">';
+            (arr.rows||[]).forEach(row=>{
+                html+='<div class="solar-array-row">';
+                row.forEach(serial=>{
+                    if(serial.startsWith('__spacer')){
+                        html+='<div class="solar-spacer"></div>';
+                    }else{
+                        const p=inv[serial]||{current_watts:0,max_ever_watts:1};
+                        const w=p.current_watts||0;
+                        const cls=panelClass(w,p.max_ever_watts||300);
+                        html+='<div class="solar-panel '+cls+'" onclick="showPanelDetail(\''+serial+'\')" title="SN: '+serial+'">';
+                        html+='<div class="solar-panel-watts">'+w+'</div><div class="solar-panel-unit">W</div>';
+                        html+='<div class="solar-panel-serial">'+serial.slice(-4)+'</div></div>';
+                    }
+                });
+                html+='</div>';
+            });
+            html+='</div>';
+        });
+    }else{
+        const serials=Object.keys(inv);
+        html+='<div class="solar-array-name">'+(d.array_name||'All Panels')+'</div><div class="solar-array-grid"><div class="solar-array-row" style="flex-wrap:wrap">';
+        serials.forEach(serial=>{
+            const p=inv[serial]||{};const w=p.current_watts||0;
+            const cls=panelClass(w,p.max_ever_watts||300);
+            html+='<div class="solar-panel '+cls+'" onclick="showPanelDetail(\''+serial+'\')">';
+            html+='<div class="solar-panel-watts">'+w+'</div><div class="solar-panel-unit">W</div>';
+            html+='<div class="solar-panel-serial">'+serial.slice(-4)+'</div></div>';
+        });
+        html+='</div></div>';
+    }
+    document.getElementById('sol-arrays').innerHTML=html;
+    // Alerts
+    const alerts=d.underperformers||[];
+    const alertEl=document.getElementById('sol-alerts');
+    if(alerts.length>0){alertEl.className='solar-alerts has-alerts';alertEl.innerHTML='⚠ '+alerts.length+' underperforming: '+alerts.map(a=>(a.serial||'').slice(-4)+' ('+Math.round(a.pct_of_avg||0)+'%)').join(', ')}
+    else{alertEl.className='solar-alerts';alertEl.innerHTML='✓ All panels performing normally'}
+    // Gateway
+    const gwIp = gw.ip === 'cloud' ? '☁️ Cloud API' : (gw.ip||'--');
+    let gwHtml = '<span>IP: <span class="gw-val">'+gwIp+'</span></span><span>Serial: <span class="gw-val">'+(gw.serial||'--')+'</span></span><span>Panels: <span class="gw-val">'+(s.panel_count||'--')+' '+(gw.model||'')+'</span></span>';
+    if(d.array_type==='solaredge') gwHtml+='<div style="font-size:10px;color:var(--text-muted);margin-top:4px">Per-panel watts estimated from site total</div>';
+    document.getElementById('sol-gateway').innerHTML=gwHtml;
+    // Inverter table
+    const maxW=Math.max(...Object.values(inv).map(v=>v.max_ever_watts||0),1);
+    const sorted=Object.entries(inv).sort((a,b)=>(b[1].current_watts||0)-(a[1].current_watts||0));
+    let tbody='';
+    sorted.forEach(([serial,p])=>{
+        const w=p.current_watts||0,mxT=p.max_today_watts||0,mxE=p.max_ever_watts||0,avg=Math.round(p.avg_today_watts||0),samp=p.samples_today||0;
+        const pct=mxE>0?Math.round(w/mxE*100):0;
+        const barColor=w===0?'var(--text-muted)':pct>75?'var(--solar-color)':pct>50?'var(--accent-blue)':'rgba(79,143,255,.5)';
+        tbody+='<tr onclick="showPanelDetail(\''+serial+'\')" style="cursor:pointer"><td>...'+serial.slice(-4)+'</td><td>'+w+' W</td><td>'+mxT+' W</td><td>'+mxE+' W</td><td>'+avg+' W</td><td>'+samp+'</td>';
+        tbody+='<td style="width:120px"><div class="solar-inv-bar"><div class="solar-inv-bar-fill" style="width:'+pct+'%;background:'+barColor+'"></div></div></td></tr>';
+    });
+    document.getElementById('sol-inv-body').innerHTML=tbody||'<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No data</td></tr>';
+}
+function panelClass(w,maxEver){
+    if(w===0)return'panel-off';
+    const pct=maxEver>0?w/maxEver*100:0;
+    if(pct>75)return'panel-peak';if(pct>50)return'panel-high';if(pct>25)return'panel-med';return'panel-low';
+}
+function showPanelDetail(serial){
+    const d=solActive?solArrays[solActive]:Object.values(solArrays)[0];
+    if(!d||!d.inverters||!d.inverters[serial])return;
+    const p=d.inverters[serial],el=document.getElementById('sol-detail');
+    const lastT=p.last_report_time?new Date(p.last_report_time*1000).toLocaleTimeString():(p.last_report_human||'--');
+    el.innerHTML='<div class="solar-detail-title">Panel ...'+serial.slice(-4)+'</div>'
+        +'<div class="info-row"><span class="info-key">Serial</span><span class="info-val">'+serial+'</span></div>'
+        +'<div class="info-row"><span class="info-key">Current</span><span class="info-val" style="color:var(--solar-color)">'+(p.current_watts||0)+' W</span></div>'
+        +'<div class="info-row"><span class="info-key">Max Today</span><span class="info-val">'+(p.max_today_watts||0)+' W</span></div>'
+        +'<div class="info-row"><span class="info-key">Max Ever</span><span class="info-val">'+(p.max_ever_watts||0)+' W</span></div>'
+        +'<div class="info-row"><span class="info-key">Avg Today</span><span class="info-val">'+Math.round(p.avg_today_watts||0)+' W</span></div>'
+        +'<div class="info-row"><span class="info-key">Samples</span><span class="info-val">'+(p.samples_today||0)+'</span></div>'
+        +'<div class="info-row"><span class="info-key">Last Report</span><span class="info-val">'+lastT+'</span></div>';
+}
+
+// ===== Layout Editor =====
+let leData={rows:[], unassigned:[]}, leDragSerial=null;
+
+function openLayoutEditor(){
+    const d=solActive?solArrays[solActive]:Object.values(solArrays)[0];
+    if(!d||!d.inverters)return;
+    const aid=d.array_id||solActive||'default';
+    const inv=d.inverters||{};
+    const allSerials=Object.keys(inv);
+    // Load existing layout from localStorage or server
+    let existingLayout=null;
+    try{const s=localStorage.getItem('fwh_layout_'+aid);if(s)existingLayout=JSON.parse(s)}catch(e){}
+    if(!existingLayout)existingLayout=d.layout||{};
+    const arrays=existingLayout.arrays||[];
+    // Build editor state
+    leData.rows=[];
+    leSpacerCount=0;
+    const assigned=new Set();
+    if(arrays.length>0&&arrays[0].rows){
+        arrays[0].rows.forEach(row=>{
+            const editorRow=[];
+            row.forEach(s=>{
+                if(s.startsWith('__spacer')){
+                    leSpacerCount++;
+                    editorRow.push('__spacer_'+leSpacerCount);
+                }else if(allSerials.includes(s)){
+                    editorRow.push(s);
+                    assigned.add(s);
+                }
+            });
+            leData.rows.push(editorRow);
+        });
+    }
+    leData.unassigned=allSerials.filter(s=>!assigned.has(s));
+    // If no rows exist at all, start with one empty row
+    if(leData.rows.length===0)leData.rows.push([]);
+    leRender();
+    document.getElementById('layout-editor').classList.add('active');
+    document.getElementById('le-status').textContent='';
+}
+
+function leClose(){
+    document.getElementById('layout-editor').classList.remove('active');
+}
+
+function leRender(){
+    const d=solActive?solArrays[solActive]:Object.values(solArrays)[0];
+    const inv=d?d.inverters||{}:{};
+    // Render rows
+    const rowsEl=document.getElementById('le-rows');
+    let rhtml='';
+    leData.rows.forEach((row,ri)=>{
+        const panelCount=row.filter(s=>!s.startsWith('__spacer')).length;
+        const spacerCount=row.filter(s=>s.startsWith('__spacer')).length;
+        rhtml+='<div class="se-row" data-row="'+ri+'" ondragover="leDragOver(event)" ondrop="leDrop(event,'+ri+')" ondragleave="leDragLeave(event)">';
+        rhtml+='<span class="se-row-label">Row '+(ri+1)+' ('+panelCount+' panels'+(spacerCount?', '+spacerCount+' spacer'+(spacerCount>1?'s':''):'')+') </span>';
+        rhtml+='<button class="se-btn-rmrow" onclick="leRemoveRow('+ri+')" title="Remove row">✕</button>';
+        row.forEach((item,ii)=>{
+            if(item.startsWith('__spacer')){
+                rhtml+='<div class="se-spacer" draggable="true" data-serial="'+item+'" ondragstart="leDragStart(event,\''+item+'\')" ondragend="leDragEnd(event)">';
+                rhtml+='<div class="se-spacer-label">⬜</div>';
+                rhtml+='<div class="se-spacer-text">spacer</div></div>';
+            }else{
+                const p=inv[item]||{};
+                rhtml+='<div class="se-panel" draggable="true" data-serial="'+item+'" ondragstart="leDragStart(event,\''+item+'\')" ondragend="leDragEnd(event)">';
+                rhtml+='<div class="se-serial">'+item.slice(-4)+'</div>';
+                rhtml+='<div class="se-watts">'+(p.max_ever_watts||0)+' W max</div></div>';
+            }
+        });
+        if(row.length===0)rhtml+='<span style="color:var(--text-muted);font-size:12px;padding:8px">Drop panels here</span>';
+        rhtml+='</div>';
+    });
+    rowsEl.innerHTML=rhtml;
+    // Render unassigned
+    const uEl=document.getElementById('le-unassigned');
+    let uhtml='<div class="se-unassigned-label">☀️ Unassigned Panels — drag to a row above ('+leData.unassigned.length+' remaining)</div>';
+    leData.unassigned.forEach(serial=>{
+        const p=inv[serial]||{};
+        uhtml+='<div class="se-panel" draggable="true" data-serial="'+serial+'" ondragstart="leDragStart(event,\''+serial+'\')" ondragend="leDragEnd(event)">';
+        uhtml+='<div class="se-serial">'+serial.slice(-4)+'</div>';
+        uhtml+='<div class="se-watts">'+(p.max_ever_watts||0)+' W max</div></div>';
+    });
+    if(leData.unassigned.length===0)uhtml+='<span style="color:var(--text-muted);font-size:12px;padding:8px">✓ All panels assigned</span>';
+    uEl.innerHTML=uhtml;
+    // Make unassigned droppable too
+    uEl.ondragover=e=>{e.preventDefault();uEl.style.borderColor='var(--solar-color)'};
+    uEl.ondragleave=e=>{uEl.style.borderColor=''};
+    uEl.ondrop=e=>{e.preventDefault();uEl.style.borderColor='';leDropUnassigned()};
+}
+
+function leDragStart(e,serial){
+    leDragSerial=serial;
+    e.dataTransfer.effectAllowed='move';
+    e.dataTransfer.setData('text/plain',serial);
+    setTimeout(()=>{e.target.classList.add('dragging')},0);
+}
+function leDragEnd(e){e.target.classList.remove('dragging');leDragSerial=null}
+function leDragOver(e){e.preventDefault();e.currentTarget.classList.add('drag-over')}
+function leDragLeave(e){e.currentTarget.classList.remove('drag-over')}
+
+function leDrop(e,rowIdx){
+    e.preventDefault();e.currentTarget.classList.remove('drag-over');
+    if(!leDragSerial)return;
+    // Remove from current location
+    leData.rows.forEach((row,i)=>{const idx=row.indexOf(leDragSerial);if(idx>-1)row.splice(idx,1)});
+    const uidx=leData.unassigned.indexOf(leDragSerial);if(uidx>-1)leData.unassigned.splice(uidx,1);
+    // Find drop position within row based on mouse X
+    const rowEl=e.currentTarget;
+    const panels=rowEl.querySelectorAll('.se-panel');
+    let insertIdx=leData.rows[rowIdx].length;
+    for(let i=0;i<panels.length;i++){
+        const rect=panels[i].getBoundingClientRect();
+        if(e.clientX<rect.left+rect.width/2){insertIdx=i;break}
+    }
+    leData.rows[rowIdx].splice(insertIdx,0,leDragSerial);
+    leRender();
+}
+
+function leDropUnassigned(){
+    if(!leDragSerial)return;
+    leData.rows.forEach(row=>{const idx=row.indexOf(leDragSerial);if(idx>-1)row.splice(idx,1)});
+    // Spacers just get deleted; real panels go back to unassigned
+    if(!leDragSerial.startsWith('__spacer')&&!leData.unassigned.includes(leDragSerial))leData.unassigned.push(leDragSerial);
+    leRender();
+}
+
+function leAddRow(){leData.rows.push([]);leRender()}
+
+let leSpacerCount=0;
+function leAddSpacer(){
+    // Add a spacer to the first row that has panels, or the first row
+    leSpacerCount++;
+    const targetRow=leData.rows.findIndex(r=>r.length>0);
+    const ri=targetRow>=0?targetRow:0;
+    leData.rows[ri].push('__spacer_'+leSpacerCount);
+    leRender();
+}
+
+function leRemoveRow(ri){
+    const removed=leData.rows.splice(ri,1)[0]||[];
+    // Only return real panels to unassigned, discard spacers
+    removed.filter(s=>!s.startsWith('__spacer')).forEach(s=>leData.unassigned.push(s));
+    if(leData.rows.length===0)leData.rows.push([]);
+    leRender();
+}
+
+function leSave(){
+    const d=solActive?solArrays[solActive]:Object.values(solArrays)[0];
+    if(!d)return;
+    const aid=d.array_id||solActive||'default';
+    // Filter out empty rows
+    const rows=leData.rows.filter(r=>r.length>0);
+    if(rows.length===0){document.getElementById('le-status').textContent='⚠ Add panels to at least one row';return}
+    const layout={arrays:[{name:d.array_name||aid,rows:rows}]};
+    // Save to localStorage
+    try{localStorage.setItem('fwh_layout_'+aid,JSON.stringify(layout))}catch(e){}
+    // Also try server save (non-blocking, OK if it fails)
+    fetch('/api/save-layout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({array_id:aid,layout:layout})}).catch(()=>{});
+    // Update status and re-render
+    document.getElementById('le-status').textContent='✓ Layout saved';
+    // Apply immediately
+    if(solArrays[aid])renderSolar(solArrays[aid]);
+    setTimeout(leClose,800);
+}
 function tick(){document.getElementById('clock').textContent=new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
 function startDash(){if(dashTimer)clearInterval(dashTimer);dashTimer=setInterval(update,(parseInt(S.ri)||15)*1000)}
 
@@ -765,12 +1274,12 @@ function loadReport(){
 function showOverrideModal(m){ovMode=m;const t=document.getElementById('m-title'),b=document.getElementById('m-body'),btn=document.getElementById('m-confirm');if(m==='self_consumption'){t.textContent='🔄 Force Self Consumption';b.textContent='Switch to Self Consumption. No grid charging. Schedule paused.';btn.className='modal-btn mbtn-confirm';btn.textContent='Activate'}else{t.textContent='🛡️ Force Emergency Backup';b.textContent='Charge from grid ASAP. Schedule paused.';btn.className='modal-btn mbtn-confirm danger';btn.textContent='Activate'}selDur(document.querySelector('.modal-opt'),'1h');document.getElementById('ov-modal').classList.add('active')}
 function closeModal(){document.getElementById('ov-modal').classList.remove('active')}
 function selDur(el,d){ovDur=d;document.querySelectorAll('.modal-opt').forEach(o=>o.classList.remove('sel'));el.classList.add('sel')}
-function confirmOverride(){const dm={'1h':60,'2h':120,'4h':240,'8h':480,'until_cancel':null},mins=dm[ovDur];OV={active:true,mode:ovMode,dur:ovDur,start:Date.now(),exp:mins?Date.now()+mins*60000:null};saveOV();updateOVBanner();closeModal();document.getElementById('cancel-ov-btn').style.display='block'}
-function cancelOverride(){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'}
+function confirmOverride(){const dm={'1h':60,'2h':120,'4h':240,'8h':480,'until_cancel':null},mins=dm[ovDur];OV={active:true,mode:ovMode,dur:ovDur,start:Date.now(),exp:mins?Date.now()+mins*60000:null};saveOV();updateOVBanner();closeModal();document.getElementById('cancel-ov-btn').style.display='block';fetch('/api/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:ovMode,duration:ovDur})}).then(r=>r.json()).then(d=>{if(d.status==='ok')console.log('Override activated:',d.override);else console.error('Override failed:',d)}).catch(e=>console.error('Override API error:',e))}
+function cancelOverride(){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none';fetch('/api/override/cancel',{method:'POST'}).then(r=>r.json()).then(d=>console.log('Override cancelled:',d)).catch(e=>console.error('Cancel API error:',e))}
 function updateOVBanner(){const bn=document.getElementById('override-banner');if(!OV.active){bn.classList.remove('active');return}if(OV.exp&&Date.now()>OV.exp){cancelOverride();return}bn.classList.add('active');const nm=OV.mode==='self_consumption'?'Self Consumption':'Emergency Backup';if(OV.exp){const r=Math.max(0,OV.exp-Date.now());document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — '+Math.floor(r/3600000)+'h '+Math.floor(r%3600000/60000)+'m remaining'}else document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — until cancelled'}
 setInterval(updateOVBanner,60000);
 function saveOV(){try{localStorage.setItem('fwh_ov',JSON.stringify(OV))}catch(e){}}
-function loadOV(){try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}}
+function loadOV(){try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}fetch('/api/override').then(r=>r.json()).then(srv=>{if(srv.active&&!OV.active){OV={active:true,mode:srv.mode,dur:srv.duration,start:new Date(srv.started_at).getTime(),exp:srv.expires_at?new Date(srv.expires_at).getTime():null};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='block'}else if(!srv.active&&OV.active){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'}}).catch(()=>{})}
 
 // ===== SETTINGS =====
 function loadSettings(){try{const s=localStorage.getItem('fwh_s');if(s)S=JSON.parse(s)}catch(e){}

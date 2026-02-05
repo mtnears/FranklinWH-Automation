@@ -4,6 +4,51 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v3.4.0 — February 2026
+
+### Clock-Aligned 30-Minute Scheduling
+- Decision checks now run at fixed :00 and :30 each hour instead of interval-from-start
+- 30-minute minimum interval enforced to reduce Franklin Cloud API load — temporary conservative default until API rate limit guidance is formalized
+- Pre-peak check moved from 5 to 10 minutes before peak start
+- Eliminates timing drift caused by container start time
+
+### Solar Override Fix
+- Solar-to-battery charging rate now properly overrides "out of time" grid-charge deadlines
+- When solar ETA can beat the clock, system stays in TOU instead of switching to backup
+- Prevents unnecessary grid charging during strong solar production in tight pre-peak windows
+
+### Stale API Value Correction
+- Franklin API reports stale `gridChBat`/`soChBat` values when battery is discharging
+- Values now zeroed out automatically during discharge periods
+- Fixes misleading log entries and prevents incorrect solar estimation
+
+### PVOutput Config Integration
+- PVOutput collector reads credentials from `.env` instead of hardcoded placeholders
+- Multi-system support via `PVOUTPUT_SYSTEM_IDS` comma-separated list
+- Automatic system name mapping with fallback for unknown system IDs
+
+### Manual Override API
+- New REST endpoints: `POST /api/override` and `POST /api/override/cancel`
+- Dashboard buttons for Self Consumption and Emergency Backup modes
+- Overrides auto-expire after configurable duration (default 2 hours)
+- Override status displayed as banner on dashboard
+
+### Upgrade Notes
+Update your `.env` defaults (optional — old values still work):
+```bash
+CHECK_INTERVAL_MINUTES=30          # Was 15, now minimum 30
+PEAK_TRANSITION_BUFFER_MINUTES=10  # Was 5
+```
+Then:
+```bash
+git pull
+docker compose down
+docker compose build --no-cache
+docker compose up -d
+```
+
+---
+
 ## v3.3.0 — February 2026
 
 ### Mode Detection Fix

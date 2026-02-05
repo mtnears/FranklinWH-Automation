@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smart Battery Decision Engine - v3.2.0
+Smart Battery Decision Engine - v3.3.1
 
 API-native mode management using franklinwh library v1.0.0.
 Reads actual mode from gateway via _status() and switches modes
@@ -18,6 +18,13 @@ Configuration is loaded from environment variables / .env file.
 See .env.example for all options.
 
 Changelog:
+  v3.3.1 - Solar estimation fix: use observed solar_to_bat rate instead of
+           theoretical formula that underestimated solar by 3-4x, causing
+           unnecessary grid charging and mode flip-flopping
+         - Improved logging with charge rate (%/hr) and ETA to target
+  v3.3.0 - Mode detection fix: use name field instead of unreliable run_status
+         - Negative pricing override (SOLAR_OVERRIDE_PRICE_CENTS)
+         - Enhanced dashboard data generator
   v3.2.0 - API-native mode management via set_mode()
          - Universal mode detection via run_status field
          - Per-battery SOC and enriched status logging
@@ -179,7 +186,7 @@ def calculate_time_to_peak() -> float:
     return 0
 
 
-def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, in_peak: bool) -> tuple:
+def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, in_peak: bool, solar_to_bat_kw: float = 0.0) -> tuple:
     """
     Main decision engine: Should we charge from grid or wait for solar?
     
@@ -259,12 +266,21 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
         hours_needed_grid = (soc_deficit / config.CHARGE_RATE_PER_HOUR) + config.SAFETY_MARGIN_HOURS
         hours_until_must_start = hours_to_peak - hours_needed_grid
         
-        # Estimate solar charging potential
-        if config.SOLAR_ENABLED:
-            # Rough estimate: 70% efficiency, scale by battery capacity
-            solar_charging_potential = solar_kw * 0.7 * hours_to_peak * (config.BATTERY_CAPACITY_KWH / 10.0)
+        # Estimate solar charging potential using observed solar-to-battery rate
+        # The API's soChBat field shows actual kW flowing from solar into the battery,
+        # which is 2-4x higher than panel production (solar_kw) due to MPPT conversion
+        # and the fact that solar_kw is net panel output, not what reaches the battery.
+        if config.SOLAR_ENABLED and solar_to_bat_kw > 0:
+            # Use observed rate: convert kW into %/hr based on battery capacity
+            solar_rate_pct_hr = (solar_to_bat_kw / config.BATTERY_CAPACITY_KWH) * 100
+            solar_charging_potential = solar_rate_pct_hr * hours_to_peak
+        elif config.SOLAR_ENABLED and solar_kw >= config.MIN_SOLAR_FOR_WAIT:
+            # Fallback if solar_to_bat not available: conservative theoretical estimate
+            solar_rate_pct_hr = (solar_kw * 0.7 / config.BATTERY_CAPACITY_KWH) * 100
+            solar_charging_potential = solar_rate_pct_hr * hours_to_peak
         else:
             solar_charging_potential = 0
+            solar_rate_pct_hr = 0
         
         # Out of time - must charge now
         if hours_until_must_start <= 0:
@@ -279,12 +295,18 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
         
         # Good solar - evaluate if it's enough
         if solar_charging_potential >= soc_deficit:
-            return False, f"Solar can provide ~{solar_charging_potential:.1f}% (need {soc_deficit:.1f}%), {solar_kw:.2f}kW looks promising"
+            solar_eta = soc_deficit / solar_rate_pct_hr if solar_rate_pct_hr > 0 else 999
+            return False, (f"Solar on track: {solar_rate_pct_hr:.1f}%/hr, "
+                          f"ETA {solar_eta:.1f}h (have {hours_to_peak:.1f}h), "
+                          f"{solar_to_bat_kw:.2f}kW to battery")
         else:
             if hours_until_must_start > 2.0:
                 return False, f"Solar may fall short, but monitoring - {hours_until_must_start:.1f}h buffer remaining"
             else:
-                return True, f"Solar unlikely to provide enough ({solar_charging_potential:.1f}% < {soc_deficit:.1f}%), starting grid charge"
+                solar_eta = soc_deficit / solar_rate_pct_hr if solar_rate_pct_hr > 0 else 999
+                return True, (f"Solar too slow: {solar_rate_pct_hr:.1f}%/hr, "
+                             f"ETA {solar_eta:.1f}h > {hours_to_peak:.1f}h available, "
+                             f"need {soc_deficit:.1f}% - starting grid charge")
     
     # ===== LAYER 5: No TOU - Simple Solar Logic =====
     if config.SOLAR_ENABLED:
@@ -494,6 +516,13 @@ async def main():
         grid_charging_kw = status.get("gridChBat", 0)
         solar_charging_kw = status.get("soChBat", 0)
         
+        # The Franklin API reports stale gridChBat/soChBat values when the battery
+        # is discharging (not charging). Zero them out to avoid misleading logs
+        # and incorrect solar estimation during peak/discharge periods.
+        if battery_kw > 0.1:  # Battery is discharging (positive = discharge)
+            grid_charging_kw = 0.0
+            solar_charging_kw = 0.0
+        
         # Today's energy totals from status
         today_solar_kwh = status.get("kwh_sun", 0)
         today_grid_import_kwh = status.get("kwh_uti_in", 0)
@@ -508,7 +537,7 @@ async def main():
         hours_to_peak = calculate_time_to_peak()
         
         # Make charging decision
-        should_charge, reason = should_charge_from_grid(soc, solar_kw, hours_to_peak, in_peak)
+        should_charge, reason = should_charge_from_grid(soc, solar_kw, hours_to_peak, in_peak, solar_charging_kw)
         desired_mode = "emergency_backup" if should_charge else "home"
         desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
         

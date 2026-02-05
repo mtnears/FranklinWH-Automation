@@ -105,7 +105,9 @@ class Config:
     DYNAMIC_PRICING_ENABLED: bool = field(default_factory=lambda: get_bool('DYNAMIC_PRICING_ENABLED', False))
     WEATHER_ENABLED: bool = field(default_factory=lambda: get_bool('WEATHER_ENABLED', False))
     PVOUTPUT_ENABLED: bool = field(default_factory=lambda: get_bool('PVOUTPUT_ENABLED', False))
-    
+    ENPHASE_ENABLED: bool = field(default_factory=lambda: get_bool('ENPHASE_ENABLED', False))
+    SOLAR_ARRAYS: str = field(default_factory=lambda: os.getenv('SOLAR_ARRAYS', ''))
+
     # ===== TOU Settings =====
     PEAK_START_HOUR: int = field(default_factory=lambda: get_int('PEAK_START_HOUR', 17))
     PEAK_END_HOUR: int = field(default_factory=lambda: get_int('PEAK_END_HOUR', 20))
@@ -117,8 +119,11 @@ class Config:
     PEAK2_DAYS: str = field(default_factory=lambda: os.getenv('PEAK2_DAYS', 'weekdays'))
     
     # ===== Scheduling Settings =====
-    CHECK_INTERVAL_MINUTES: int = field(default_factory=lambda: get_int('CHECK_INTERVAL_MINUTES', 15))
-    PEAK_TRANSITION_BUFFER_MINUTES: int = field(default_factory=lambda: get_int('PEAK_TRANSITION_BUFFER_MINUTES', 5))
+    # CHECK_INTERVAL_MINUTES is fixed at 30 to stay within Franklin API
+    # rate limits. Clock-aligned at :00 and :30 each hour.
+    # The env var is accepted but clamped to minimum 30 in __post_init__.
+    CHECK_INTERVAL_MINUTES: int = 30
+    PEAK_TRANSITION_BUFFER_MINUTES: int = field(default_factory=lambda: get_int('PEAK_TRANSITION_BUFFER_MINUTES', 10))
     HOME_MODE: str = field(default_factory=lambda: os.getenv('HOME_MODE', 'tou'))
     
     # ===== Dynamic Pricing Settings =====
@@ -148,7 +153,7 @@ class Config:
     
     # ===== Decision Tuning =====
     TARGET_SOC: float = field(default_factory=lambda: get_float('TARGET_SOC', 95.0))
-    SAFETY_MARGIN_HOURS: float = field(default_factory=lambda: get_float('SAFETY_MARGIN_HOURS', 0.5))
+    SAFETY_MARGIN_HOURS: float = field(default_factory=lambda: get_float('SAFETY_MARGIN_HOURS', 0.75))
     CHARGING_STRATEGY: str = field(default_factory=lambda: os.getenv('CHARGING_STRATEGY', 'balanced'))
     
     # ===== System Paths =====
@@ -182,6 +187,10 @@ class Config:
         self.HOME_MODE = self.HOME_MODE.lower().strip()
         if self.HOME_MODE not in ('tou', 'self_consumption'):
             self.HOME_MODE = 'tou'
+        
+        # Enforce minimum check interval to protect Franklin API
+        # Even if env var sets a lower value, clamp to 30 minutes
+        self.CHECK_INTERVAL_MINUTES = max(30, self.CHECK_INTERVAL_MINUTES)
     
     @property
     def LOG_FILE(self) -> Path:
@@ -239,8 +248,8 @@ class Config:
                 errors.append("PEAK_START_HOUR must be before PEAK_END_HOUR")
         
         # Scheduling validation
-        if self.CHECK_INTERVAL_MINUTES < 1:
-            errors.append("CHECK_INTERVAL_MINUTES must be at least 1")
+        if self.CHECK_INTERVAL_MINUTES < 30:
+            errors.append("CHECK_INTERVAL_MINUTES must be at least 30 (API rate limit protection)")
         if self.CHECK_INTERVAL_MINUTES > 60:
             errors.append("CHECK_INTERVAL_MINUTES should not exceed 60")
         if self.PEAK_TRANSITION_BUFFER_MINUTES < 1:
@@ -286,6 +295,11 @@ class Config:
             features.append(f"Weather ({self.WEATHER_STATION_ID})")
         if self.PVOUTPUT_ENABLED:
             features.append("PVOutput")
+        if self.SOLAR_ARRAYS:
+            arrays = [a.strip() for a in self.SOLAR_ARRAYS.split(',') if a.strip()]
+            features.append(f"Solar Arrays ({', '.join(arrays)})")
+        elif self.ENPHASE_ENABLED:
+            features.append("Enphase Solar (legacy)")
         return features
     
     def get_disabled_features(self) -> List[str]:
@@ -368,6 +382,7 @@ class Config:
                 'dynamic_pricing_enabled': self.DYNAMIC_PRICING_ENABLED,
                 'weather_enabled': self.WEATHER_ENABLED,
                 'pvoutput_enabled': self.PVOUTPUT_ENABLED,
+                'solar_arrays': self.SOLAR_ARRAYS,
             },
             'tou': {
                 'peak_start_hour': self.PEAK_START_HOUR,

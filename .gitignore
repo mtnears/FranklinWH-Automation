@@ -213,4 +213,7 @@ data/
 web/power_dashboard_data.json
 web/weekly_reports_index.json
 *.png
+!web/House_Power_Graphic.png
 Thumbs.db
+web/solar_*.json
+web/enphase_*.json

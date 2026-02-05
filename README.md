@@ -2,7 +2,7 @@
 
 **Intelligent solar-first battery automation for Franklin WH batteries**
 
-Fully automated charging system that optimizes for Time-of-Use (TOU) electricity rates, dynamic hourly pricing, and solar self-consumption. Makes smart decisions every 15 minutes with comprehensive monitoring.
+Fully automated charging system that optimizes for Time-of-Use (TOU) electricity rates, dynamic hourly pricing, and solar self-consumption. Makes smart decisions every 30 minutes with comprehensive monitoring.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -26,28 +26,30 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 
 ---
 
-## What's New in v3.3.0
+## What's New in v3.4.0
 
-### Negative Pricing / Solar Override
-- New `SOLAR_OVERRIDE_PRICE_CENTS` setting for dynamic pricing users
-- Charges from grid even when solar is producing — captures utility credits during negative pricing
-- Overrides solar-first preference AND peak protection when grid price is at or below threshold
-- All pricing thresholds now support negative values natively
+### Clock-Aligned 30-Minute Scheduling
+- Decision checks now run at fixed :00 and :30 each hour for predictable timing
+- 30-minute minimum interval to reduce Franklin Cloud API load — this is a temporary conservative default until API rate limit guidance is formalized
+- Pre-peak check moved to 10 minutes before peak start (configurable via `PEAK_TRANSITION_BUFFER_MINUTES`)
+- Eliminates timing drift from container start time
 
-### Improved Mode Detection
-- Mode detection uses gateway `name` field instead of `run_status` for reliable operation across firmware versions
-- Switch verification with 5s initial check + 8s retry and 10-minute cooldown
+### Solar Override Fix
+- Solar charging now properly overrides grid-charge deadlines when solar-to-battery rate can beat the clock
+- Prevents unnecessary grid charging during strong solar production in tight pre-peak windows
 
-### Enhanced Dashboard Data
-- Dashboard data generator calls `_status()` API for enriched system information
-- Per-battery SOC, environment data (temperature, signal), energy totals, hardware status
-- Config export for Settings tab display
-- Gateway ID for multi-gateway support
+### Stale API Value Correction
+- Franklin API reports stale `gridChBat`/`soChBat` values during battery discharge — now zeroed out automatically
+- Ensures accurate logs and correct solar estimation during peak/discharge periods
 
-### Decision Engine Restructure
-- New Layer 0: Credit/negative price override (highest priority)
-- All price comparisons use `<=` for correct zero and negative handling
-- Removed hardcoded 2.0¢ threshold — all thresholds configurable via `.env`
+### PVOutput Config Integration
+- PVOutput collector now reads credentials from `.env` configuration instead of hardcoded values
+- Supports multiple systems via `PVOUTPUT_SYSTEM_IDS` setting
+
+### Manual Override API
+- New REST endpoints for emergency mode control: `/api/override` and `/api/override/cancel`
+- Dashboard buttons for Self Consumption and Emergency Backup modes
+- Overrides auto-expire after configurable duration (default 2 hours)
 
 ---
 
@@ -82,7 +84,7 @@ docker compose up -d
 docker logs franklin-automation 2>&1 | head -25
 ```
 
-You should see the v3.3.0 banner with your configured features and scheduled tasks.
+You should see the v3.4.0 banner with your configured features and scheduled tasks.
 
 ### 4. Access Dashboard
 Open `http://YOUR-SERVER-IP:8100` in your browser.
@@ -93,7 +95,7 @@ See [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) for complete setup det
 
 ## How It Works
 
-Every 15 minutes (configurable), plus pinned checks at peak boundaries:
+Every 30 minutes (clock-aligned at :00 and :30), plus pinned checks at peak boundaries:
 
 ```
 ┌─ Get battery stats via Franklin API (with retry logic)
@@ -150,8 +152,8 @@ All settings live in your `.env` file. See [.env.example](.env.example) for all 
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CHECK_INTERVAL_MINUTES` | `15` | Decision frequency |
-| `PEAK_TRANSITION_BUFFER_MINUTES` | `5` | Minutes before peak to check |
+| `CHECK_INTERVAL_MINUTES` | `30` | Decision frequency (minimum 30) |
+| `PEAK_TRANSITION_BUFFER_MINUTES` | `10` | Minutes before peak to check |
 | `HOME_MODE` | `tou` | Normal mode: `tou` or `self_consumption` |
 
 ### TOU Settings
@@ -201,7 +203,7 @@ See [WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md) for details.
 - **Utility:** PG&E E-TOU-D with CARE discount
 - **Location:** Georgetown, CA
 
-### Performance (v3.3.0)
+### Performance (v3.4.0)
 - **Peak Protection:** 100% success rate
 - **API Reliability:** 99.5% uptime
 - **Target SOC Achievement:** 91-94% before peak
