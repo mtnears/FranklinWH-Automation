@@ -63,10 +63,45 @@ def parse_mode_switches():
 
 
 def load_monitoring_data(days=7):
-    """Load last N days of monitoring data"""
+    """Load last N days of monitoring data.
+    
+    Handles variable column counts across versions (v3.2 had 13 columns,
+    v3.4+ added run_status, mode_name, per-battery SOC, temp, etc.)
+    by padding shorter rows to match the widest row.
+    """
     try:
-        df = pd.read_csv(LOG_FILE)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        import csv
+        
+        rows = []
+        max_cols = 0
+        with open(str(LOG_FILE), 'r') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            max_cols = len(header)
+            for row in reader:
+                if len(row) > max_cols:
+                    max_cols = len(row)
+                rows.append(row)
+        
+        # Pad all rows to max width
+        for row in rows:
+            while len(row) < max_cols:
+                row.append(None)
+        
+        # Build column names
+        col_names = list(header)
+        while len(col_names) < max_cols:
+            col_names.append(f'extra_{len(col_names)}')
+        
+        df = pd.DataFrame(rows, columns=col_names)
+        
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df.dropna(subset=['timestamp'])
+        
+        # Ensure numeric columns are numeric
+        for col in ['soc_percent', 'solar_kw', 'grid_kw', 'battery_kw', 'home_load_kw']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
         
         cutoff = datetime.now() - timedelta(days=days)
         df = df[df['timestamp'] >= cutoff]

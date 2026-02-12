@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-FranklinWH Automation Scheduler - v3.4.0
+FranklinWH Automation Scheduler - v3.5.0
 
 Master scheduler that runs all automation tasks on their configured intervals.
 This allows the Docker container to be fully self-contained - no external
 cron or Task Scheduler needed.
 
-v3.4.0 changes:
+v3.5.0 changes:
 - Manual override API: POST /api/override, DELETE /api/override, GET /api/override
 - Override writes state file + immediately switches mode via library
 - Supports configurable duration (1h, 2h, 4h, 8h, until_cancel)
@@ -214,7 +214,7 @@ def format_time(hour: int, minute: int) -> str:
 def setup_schedule():
     """Configure all scheduled tasks."""
     log("=" * 60)
-    log("FranklinWH Automation Scheduler v3.4.0")
+    log("FranklinWH Automation Scheduler v3.5.0")
     log("=" * 60)
     
     # Get scheduling config

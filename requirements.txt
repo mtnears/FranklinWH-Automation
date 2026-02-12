@@ -1,5 +1,5 @@
 # ==============================================================================
-# FranklinWH Battery Automation - Python Dependencies
+# FranklinWH Battery Automation - Python Dependencies v3.5.0
 # ==============================================================================
 
 # Core Franklin WH API
@@ -17,3 +17,16 @@ matplotlib>=3.7.0
 
 # Internal task scheduler (for Docker)
 schedule>=1.2.0
+
+# ==============================================================================
+# NEW v3.5.0 Dependencies
+# ==============================================================================
+
+# Modbus TCP integration for local data collection
+pymodbus>=3.5.0
+
+# Async HTTP client for telemetry (optional)
+aiohttp>=3.8.0
+
+# Additional async support
+asyncio-mqtt>=0.13.0

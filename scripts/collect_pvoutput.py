@@ -8,7 +8,7 @@ Reads credentials from config (.env file):
   PVOUTPUT_API_KEY - Your PVOutput API key
   PVOUTPUT_SYSTEM_IDS - Comma-separated system IDs
 
-v3.4.0 - Config-based credentials, multi-system support
+v3.5.0 - Config-based credentials, multi-system support
 """
 import requests
 import csv

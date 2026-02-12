@@ -1223,41 +1223,42 @@ async function loadLogs(){
 async function scanForReports(){
     const sel=document.getElementById('report-select'),st=document.getElementById('report-status');
     sel.innerHTML='<option value="">Scanning for reports...</option>';
-    const found=[];
-    const today=new Date();
-    // Scan weekly intervals going back 16 weeks
-    for(let i=0;i<16;i++){
-        const date=new Date(today);
-        date.setDate(date.getDate()-(i*7));
-        const mm=String(date.getMonth()+1).padStart(2,'0');
-        const dd=String(date.getDate()).padStart(2,'0');
-        const yyyy=date.getFullYear();
-        const ds=mm+'-'+dd+'-'+yyyy;
-        try{
-            const t=await fetch('logs/'+ds+'_chart_soc_timeline.png',{method:'HEAD'});
-            if(t.ok) found.push(ds);
-        }catch(e){}
-    }
-    // Also try index file
+    const found=new Set();
+    // Parse actual directory listing from nginx autoindex
+    try{
+        const r=await fetch('logs/?t='+Date.now());
+        if(r.ok){
+            const html=await r.text();
+            // Match filenames like MM-DD-YYYY_chart_soc_timeline.png
+            const re=/(\d{2}-\d{2}-\d{4})_chart_soc_timeline\.png/g;
+            let m;while((m=re.exec(html))!==null)found.add(m[1]);
+        }
+    }catch(e){console.log('Directory scan failed:',e)}
+    // Also try index file as fallback
     try{
         const r=await fetch('weekly_reports_index.json?t='+Date.now());
         if(r.ok){
             const d=await r.json();
             if(d.reports&&d.reports.length>0){
-                d.reports.forEach(rp=>{if(!found.includes(rp.date))found.push(rp.date)});
+                d.reports.forEach(rp=>{if(rp.date)found.add(rp.date)});
             }
         }
     }catch(e){}
-    // Populate
+    // Sort by date descending and populate
+    const sorted=[...found].sort((a,b)=>{
+        const pa=a.split('-'),pb=b.split('-');
+        const da=new Date(pa[2],pa[0]-1,pa[1]),db=new Date(pb[2],pb[0]-1,pb[1]);
+        return db-da;
+    });
     sel.innerHTML='<option value="">Select a report...</option>';
-    found.forEach(d=>{
+    sorted.forEach(d=>{
         const p=d.split('-');
         const dt=new Date(p[2],p[0]-1,p[1]);
         const label=dt.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
         sel.innerHTML+='<option value="'+d+'">'+label+'</option>';
     });
-    st.textContent=found.length+' report'+(found.length!==1?'s':'')+' found';
-    if(found.length>0){sel.value=found[0];loadReport()}
+    st.textContent=sorted.length+' report'+(sorted.length!==1?'s':'')+' found';
+    if(sorted.length>0){sel.value=sorted[0];loadReport()}
 }
 
 function loadReport(){

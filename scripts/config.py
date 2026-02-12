@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Configuration Management for FranklinWH Battery Automation
+Configuration Management for FranklinWH Battery Automation - v3.5.0
 
 Loads settings from environment variables (.env file) with sensible defaults.
 Provides a centralized configuration object used by all scripts.
+
+v3.5.0 Changes:
+- Added Modbus TCP integration options
+- Added conditional polling frequency based on dynamic pricing
+- Added anonymous telemetry options
+- Fixed midnight-crossing peak period validation
 
 Usage:
     from config import config
@@ -82,6 +88,33 @@ def get_optional_float(key: str) -> Optional[float]:
         return None
 
 
+def validate_peak_hours(start_hour: int, end_hour: int) -> bool:
+    """Validate peak hour configuration, handling midnight-crossing periods."""
+    # Both must be valid hours 0-23
+    if not (0 <= start_hour <= 23) or not (0 <= end_hour <= 23):
+        return False
+    
+    # Allow midnight-crossing periods (e.g., 22-6 or 17-0)
+    # The only invalid case is start == end (zero duration)
+    if start_hour == end_hour:
+        return False
+    
+    return True
+
+
+def is_peak_period(current_hour: int, start_hour: int, end_hour: int) -> bool:
+    """Check if current hour is in peak period, handling midnight-crossing."""
+    if start_hour < end_hour:
+        # Normal period (e.g., 17-20): 17 <= hour < 20
+        return start_hour <= current_hour < end_hour
+    elif start_hour > end_hour:
+        # Midnight-crossing period (e.g., 22-6): hour >= 22 OR hour < 6
+        return current_hour >= start_hour or current_hour < end_hour
+    else:
+        # start_hour == end_hour: invalid period
+        return False
+
+
 @dataclass
 class Config:
     """
@@ -108,6 +141,18 @@ class Config:
     ENPHASE_ENABLED: bool = field(default_factory=lambda: get_bool('ENPHASE_ENABLED', False))
     SOLAR_ARRAYS: str = field(default_factory=lambda: os.getenv('SOLAR_ARRAYS', ''))
 
+    # ===== NEW: Modbus Integration =====
+    MODBUS_ENABLED: bool = field(default_factory=lambda: get_bool('MODBUS_ENABLED', False))
+    MODBUS_HOST: str = field(default_factory=lambda: os.getenv('MODBUS_HOST', '192.168.5.149'))
+    MODBUS_PORT: int = field(default_factory=lambda: get_int('MODBUS_PORT', 502))
+    MODBUS_TIMEOUT: float = field(default_factory=lambda: get_float('MODBUS_TIMEOUT', 5.0))
+    MODBUS_RETRY_ATTEMPTS: int = field(default_factory=lambda: get_int('MODBUS_RETRY_ATTEMPTS', 3))
+    
+    # ===== NEW: Telemetry Options =====
+    TELEMETRY_ENABLED: bool = field(default_factory=lambda: get_bool('TELEMETRY_ENABLED', False))
+    TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
+    TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
+
     # ===== TOU Settings =====
     PEAK_START_HOUR: int = field(default_factory=lambda: get_int('PEAK_START_HOUR', 17))
     PEAK_END_HOUR: int = field(default_factory=lambda: get_int('PEAK_END_HOUR', 20))
@@ -119,10 +164,8 @@ class Config:
     PEAK2_DAYS: str = field(default_factory=lambda: os.getenv('PEAK2_DAYS', 'weekdays'))
     
     # ===== Scheduling Settings =====
-    # CHECK_INTERVAL_MINUTES is fixed at 30 to stay within Franklin API
-    # rate limits. Clock-aligned at :00 and :30 each hour.
-    # The env var is accepted but clamped to minimum 30 in __post_init__.
-    CHECK_INTERVAL_MINUTES: int = 30
+    # Dynamic polling frequency based on data source and features
+    CHECK_INTERVAL_MINUTES: int = 30  # Will be calculated in __post_init__
     PEAK_TRANSITION_BUFFER_MINUTES: int = field(default_factory=lambda: get_int('PEAK_TRANSITION_BUFFER_MINUTES', 10))
     HOME_MODE: str = field(default_factory=lambda: os.getenv('HOME_MODE', 'tou'))
     
@@ -178,50 +221,78 @@ class Config:
     
     def __post_init__(self):
         """Ensure paths are Path objects and create directories if needed."""
-        self.BASE_DIR = Path(self.BASE_DIR)
-        self.LOG_DIR = Path(self.LOG_DIR)
-        self.DATA_DIR = Path(self.DATA_DIR)
-        self.WEB_DIR = Path(self.WEB_DIR)
+        # Convert paths to Path objects
+        for attr in ['BASE_DIR', 'LOG_DIR', 'DATA_DIR', 'WEB_DIR']:
+            path_val = getattr(self, attr)
+            if isinstance(path_val, str):
+                setattr(self, attr, Path(path_val))
         
-        # Normalize HOME_MODE
-        self.HOME_MODE = self.HOME_MODE.lower().strip()
-        if self.HOME_MODE not in ('tou', 'self_consumption'):
-            self.HOME_MODE = 'tou'
+        # Calculate optimal CHECK_INTERVAL_MINUTES based on configuration
+        self._calculate_polling_interval()
         
-        # Enforce minimum check interval to protect Franklin API
-        # Even if env var sets a lower value, clamp to 30 minutes
-        self.CHECK_INTERVAL_MINUTES = max(30, self.CHECK_INTERVAL_MINUTES)
-    
-    @property
-    def LOG_FILE(self) -> Path:
-        """Path to continuous monitoring CSV."""
-        return self.LOG_DIR / "continuous_monitoring.csv"
-    
-    @property
-    def INTELLIGENCE_LOG(self) -> Path:
-        """Path to decision/intelligence log."""
-        return self.LOG_DIR / "solar_intelligence.log"
-    
-    @property
-    def STATE_FILE(self) -> Path:
-        """Path to last mode state file (legacy, used for logging only)."""
-        return self.LOG_DIR / "last_mode.txt"
-    
-    @property
-    def PEAK_STATE_FILE(self) -> Path:
-        """Path to peak state tracking file."""
-        return self.LOG_DIR / "peak_state.txt"
-    
-    @property
-    def WEATHER_LOG(self) -> Path:
-        """Path to weather data CSV."""
-        return self.LOG_DIR / "weather_data.csv"
-    
+        # Create directories
+        for directory in [self.LOG_DIR, self.DATA_DIR]:
+            directory.mkdir(parents=True, exist_ok=True)
+        
+        # Set up derived file paths
+        self.LOG_FILE = self.LOG_DIR / "continuous_monitoring.csv"
+        self.INTELLIGENCE_LOG = self.LOG_DIR / "solar_intelligence.log"
+        self.STATE_FILE = self.LOG_DIR / "battery_mode.txt"
+        self.PEAK_STATE_FILE = self.LOG_DIR / "peak_state.txt"
+        self.WEATHER_LOG = self.LOG_DIR / "weather_data.csv"
+
+    def _calculate_polling_interval(self):
+        """Calculate optimal polling interval based on features and data source."""
+        user_interval = get_int('CHECK_INTERVAL_MINUTES', 0)
+        
+        if self.MODBUS_ENABLED:
+            # With Modbus, we can poll much more frequently
+            if self.DYNAMIC_PRICING_ENABLED:
+                # Dynamic pricing benefits from frequent updates
+                default_interval = 5
+                min_interval = 1
+            else:
+                # TOU users can use moderate frequency  
+                default_interval = 10
+                min_interval = 5
+        else:
+            # Cloud API rate limiting - more conservative
+            if self.DYNAMIC_PRICING_ENABLED:
+                # Dynamic pricing users get higher frequency but still limited
+                default_interval = 15  
+                min_interval = 15
+            else:
+                # Standard TOU users
+                default_interval = 30
+                min_interval = 30
+        
+        # Use user setting if provided and valid, otherwise use calculated default
+        if user_interval > 0:
+            self.CHECK_INTERVAL_MINUTES = max(user_interval, min_interval)
+        else:
+            self.CHECK_INTERVAL_MINUTES = default_interval
+
+    def is_peak_period_now(self) -> bool:
+        """Check if current time is in any configured peak period."""
+        if not self.TOU_ENABLED:
+            return False
+        
+        from datetime import datetime
+        current_hour = datetime.now().hour
+        
+        # Check primary peak period
+        if is_peak_period(current_hour, self.PEAK_START_HOUR, self.PEAK_END_HOUR):
+            return True
+        
+        # Check secondary peak period if configured
+        if (self.PEAK2_START_HOUR is not None and self.PEAK2_END_HOUR is not None):
+            if is_peak_period(current_hour, self.PEAK2_START_HOUR, self.PEAK2_END_HOUR):
+                return True
+        
+        return False
+
     def validate(self) -> List[str]:
-        """
-        Validate configuration and return list of errors.
-        Returns empty list if configuration is valid.
-        """
+        """Validate configuration and return list of error messages."""
         errors = []
         
         # Required credentials
@@ -232,26 +303,50 @@ class Config:
         if not self.FRANKLIN_GATEWAY_ID:
             errors.append("FRANKLIN_GATEWAY_ID is required")
         
-        # Battery settings
+        # Battery configuration
         if self.BATTERY_CAPACITY_KWH <= 0:
             errors.append("BATTERY_CAPACITY_KWH must be positive")
         if self.CHARGE_RATE_PER_HOUR <= 0:
             errors.append("CHARGE_RATE_PER_HOUR must be positive")
+        if not (5 <= self.CHARGE_RATE_PER_HOUR <= 100):
+            errors.append("CHARGE_RATE_PER_HOUR should be 5-100 %/hour (got {:.1f})".format(self.CHARGE_RATE_PER_HOUR))
+        if not (10 <= self.BATTERY_CAPACITY_KWH <= 200):
+            errors.append("BATTERY_CAPACITY_KWH should be 10-200 kWh (got {:.1f})".format(self.BATTERY_CAPACITY_KWH))
         
-        # TOU settings validation
+        # Target SOC validation
+        if not (50 <= self.TARGET_SOC <= 100):
+            errors.append("TARGET_SOC should be 50-100% (got {:.1f})".format(self.TARGET_SOC))
+        
+        # TOU validation with midnight-crossing support
         if self.TOU_ENABLED:
-            if not (0 <= self.PEAK_START_HOUR <= 23):
-                errors.append("PEAK_START_HOUR must be 0-23")
-            if not (0 <= self.PEAK_END_HOUR <= 23):
-                errors.append("PEAK_END_HOUR must be 0-23")
-            if self.PEAK_START_HOUR >= self.PEAK_END_HOUR:
-                errors.append("PEAK_START_HOUR must be before PEAK_END_HOUR")
+            if not validate_peak_hours(self.PEAK_START_HOUR, self.PEAK_END_HOUR):
+                if self.PEAK_START_HOUR == self.PEAK_END_HOUR:
+                    errors.append("PEAK_START_HOUR and PEAK_END_HOUR cannot be the same (zero duration)")
+                else:
+                    errors.append(f"Invalid peak hours: {self.PEAK_START_HOUR}-{self.PEAK_END_HOUR} (must be 0-23)")
+            
+            # Secondary peak validation
+            if (self.PEAK2_START_HOUR is not None and self.PEAK2_END_HOUR is not None):
+                if not validate_peak_hours(self.PEAK2_START_HOUR, self.PEAK2_END_HOUR):
+                    if self.PEAK2_START_HOUR == self.PEAK2_END_HOUR:
+                        errors.append("PEAK2_START_HOUR and PEAK2_END_HOUR cannot be the same")
+                    else:
+                        errors.append(f"Invalid secondary peak hours: {self.PEAK2_START_HOUR}-{self.PEAK2_END_HOUR}")
+        
+        # Modbus validation
+        if self.MODBUS_ENABLED:
+            if not self.MODBUS_HOST:
+                errors.append("MODBUS_HOST is required when MODBUS_ENABLED=true")
+            if not (1 <= self.MODBUS_PORT <= 65535):
+                errors.append("MODBUS_PORT must be 1-65535")
+            if self.MODBUS_TIMEOUT <= 0:
+                errors.append("MODBUS_TIMEOUT must be positive")
         
         # Scheduling validation
-        if self.CHECK_INTERVAL_MINUTES < 30:
-            errors.append("CHECK_INTERVAL_MINUTES must be at least 30 (API rate limit protection)")
-        if self.CHECK_INTERVAL_MINUTES > 60:
-            errors.append("CHECK_INTERVAL_MINUTES should not exceed 60")
+        if self.CHECK_INTERVAL_MINUTES < 1:
+            errors.append("CHECK_INTERVAL_MINUTES must be at least 1")
+        if not self.MODBUS_ENABLED and self.CHECK_INTERVAL_MINUTES < 15:
+            errors.append("CHECK_INTERVAL_MINUTES must be at least 15 when using cloud API (rate limit protection)")
         if self.PEAK_TRANSITION_BUFFER_MINUTES < 1:
             errors.append("PEAK_TRANSITION_BUFFER_MINUTES must be at least 1")
         if self.HOME_MODE not in ('tou', 'self_consumption'):
@@ -288,13 +383,20 @@ class Config:
         if self.SOLAR_ENABLED:
             features.append("Solar")
         if self.TOU_ENABLED:
-            features.append(f"TOU ({self.PEAK_START_HOUR}:00-{self.PEAK_END_HOUR}:00)")
+            peak_desc = f"{self.PEAK_START_HOUR}:00-{self.PEAK_END_HOUR}:00"
+            if self.PEAK_START_HOUR > self.PEAK_END_HOUR:
+                peak_desc += " (crosses midnight)"
+            features.append(f"TOU ({peak_desc})")
         if self.DYNAMIC_PRICING_ENABLED:
             features.append(f"Dynamic Pricing ({self.PRICING_PROVIDER})")
+        if self.MODBUS_ENABLED:
+            features.append(f"Modbus TCP ({self.MODBUS_HOST}:{self.MODBUS_PORT})")
         if self.WEATHER_ENABLED:
             features.append(f"Weather ({self.WEATHER_STATION_ID})")
         if self.PVOUTPUT_ENABLED:
             features.append("PVOutput")
+        if self.TELEMETRY_ENABLED:
+            features.append("Anonymous Telemetry")
         if self.SOLAR_ARRAYS:
             arrays = [a.strip() for a in self.SOLAR_ARRAYS.split(',') if a.strip()]
             features.append(f"Solar Arrays ({', '.join(arrays)})")
@@ -311,17 +413,21 @@ class Config:
             features.append("TOU")
         if not self.DYNAMIC_PRICING_ENABLED:
             features.append("Dynamic Pricing")
+        if not self.MODBUS_ENABLED:
+            features.append("Modbus TCP")
         if not self.WEATHER_ENABLED:
             features.append("Weather")
         if not self.PVOUTPUT_ENABLED:
             features.append("PVOutput")
+        if not self.TELEMETRY_ENABLED:
+            features.append("Telemetry")
         return features
     
     def get_config_summary(self) -> str:
         """Return a formatted summary of current configuration."""
         lines = [
             "=" * 60,
-            "CONFIGURATION SUMMARY",
+            "CONFIGURATION SUMMARY - v3.5.0",
             "=" * 60,
             "",
             "ENABLED FEATURES:",
@@ -349,9 +455,21 @@ class Config:
             "",
             "SCHEDULING:",
             f"  Check Interval: {self.CHECK_INTERVAL_MINUTES} minutes",
+            f"  Data Source: {'Modbus TCP' if self.MODBUS_ENABLED else 'Cloud API'}",
             f"  Peak Buffer: {self.PEAK_TRANSITION_BUFFER_MINUTES} minutes before/after",
             f"  Home Mode: {self.HOME_MODE}",
         ])
+        
+        if self.TOU_ENABLED:
+            lines.extend([
+                "",
+                "TOU SETTINGS:",
+                f"  Primary Peak: {self.PEAK_START_HOUR}:00-{self.PEAK_END_HOUR}:00 {self.PEAK_DAYS}",
+            ])
+            if self.PEAK_START_HOUR > self.PEAK_END_HOUR:
+                lines.append(f"    (Crosses midnight)")
+            if self.PEAK2_START_HOUR and self.PEAK2_END_HOUR:
+                lines.append(f"  Secondary Peak: {self.PEAK2_START_HOUR}:00-{self.PEAK2_END_HOUR}:00 {self.PEAK2_DAYS}")
         
         if self.DYNAMIC_PRICING_ENABLED:
             lines.extend([
@@ -365,6 +483,15 @@ class Config:
                     else "  Solar Override: disabled (solar-first always preferred)",
             ])
         
+        if self.MODBUS_ENABLED:
+            lines.extend([
+                "",
+                "MODBUS SETTINGS:",
+                f"  Host: {self.MODBUS_HOST}:{self.MODBUS_PORT}",
+                f"  Timeout: {self.MODBUS_TIMEOUT}s",
+                f"  Retry Attempts: {self.MODBUS_RETRY_ATTEMPTS}",
+            ])
+        
         lines.append("=" * 60)
         
         return "\n".join(lines)
@@ -372,6 +499,7 @@ class Config:
     def to_dict(self) -> dict:
         """Export configuration as dictionary (excludes sensitive data)."""
         return {
+            'version': '3.5.0',
             'battery_capacity_kwh': self.BATTERY_CAPACITY_KWH,
             'charge_rate_per_hour': self.CHARGE_RATE_PER_HOUR,
             'target_soc': self.TARGET_SOC,
@@ -380,19 +508,23 @@ class Config:
                 'solar_enabled': self.SOLAR_ENABLED,
                 'tou_enabled': self.TOU_ENABLED,
                 'dynamic_pricing_enabled': self.DYNAMIC_PRICING_ENABLED,
+                'modbus_enabled': self.MODBUS_ENABLED,
                 'weather_enabled': self.WEATHER_ENABLED,
                 'pvoutput_enabled': self.PVOUTPUT_ENABLED,
+                'telemetry_enabled': self.TELEMETRY_ENABLED,
                 'solar_arrays': self.SOLAR_ARRAYS,
             },
             'tou': {
                 'peak_start_hour': self.PEAK_START_HOUR,
                 'peak_end_hour': self.PEAK_END_HOUR,
                 'peak_days': self.PEAK_DAYS,
+                'crosses_midnight': self.PEAK_START_HOUR > self.PEAK_END_HOUR,
             } if self.TOU_ENABLED else None,
             'scheduling': {
                 'check_interval_minutes': self.CHECK_INTERVAL_MINUTES,
                 'peak_transition_buffer_minutes': self.PEAK_TRANSITION_BUFFER_MINUTES,
                 'home_mode': self.HOME_MODE,
+                'data_source': 'modbus' if self.MODBUS_ENABLED else 'cloud_api',
             },
             'dynamic_pricing': {
                 'provider': self.PRICING_PROVIDER,
@@ -404,6 +536,11 @@ class Config:
                 'capacity_kw': self.SOLAR_CAPACITY_KW,
                 'min_for_wait': self.MIN_SOLAR_FOR_WAIT,
             } if self.SOLAR_ENABLED else None,
+            'modbus': {
+                'host': self.MODBUS_HOST,
+                'port': self.MODBUS_PORT,
+                'timeout': self.MODBUS_TIMEOUT,
+            } if self.MODBUS_ENABLED else None,
         }
 
 
@@ -422,3 +559,9 @@ if __name__ == "__main__":
             print(f"  - {error}")
     else:
         print("\nConfiguration is valid.")
+        
+    # Test midnight-crossing peak periods
+    from datetime import datetime
+    print(f"\nPEAK PERIOD TEST:")
+    print(f"  Current time: {datetime.now().hour}:xx")
+    print(f"  Is peak period: {config.is_peak_period_now()}")
