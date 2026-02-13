@@ -6,21 +6,6 @@ This document outlines planned features and improvements for the FranklinWH Batt
 
 ## 🔜 Up Next
 
-### Script Status Dashboard Tab
-**Priority: High**
-
-Add a new tab to the web dashboard that provides at-a-glance visibility into the health of all scheduled automation scripts. Currently, if a script starts failing silently (wrong config, API down, etc.), the only way to notice is by manually checking logs. This tab will surface problems immediately.
-
-Planned features:
-- List of all scheduled scripts with their configured frequency
-- Last run time and exit status for each script
-- Success/failure counts since the Docker container started
-- Recent failure log with error messages
-- Data source health indicators (Modbus connection, Enphase availability, Cloud API status)
-- Visual alerts for scripts that have failed recently or repeatedly
-
-Data will be parsed from the existing `scheduler.log` — no new dependencies required.
-
 ### Forecast-Aware Charging & Adaptive Solar Optimization
 **Priority: High** · [Related: Issue #_]
 
@@ -63,6 +48,17 @@ The goal is to make the system smarter about *how much* to charge and *when* to 
 
 ## 📋 Planned
 
+### Repository Audit & Cleanup
+**Priority: Medium**
+
+Full review of the codebase to clean up stale files, verify imports, and ensure the repository is well-organized for community contributors.
+
+- Identify unused scripts in `scripts/` directory (e.g. `aggregate_data.py`, `milestone_emailer.py`, `pricing.py`, `run_smart_decision.sh`)
+- Verify no scripts reference hardcoded or legacy data paths
+- Review import chains for dead code
+- Add `.gitignore` entries for dev/diagnostic tools (`modbus_*.py`, `local_telemetry_viewer.py`, etc.)
+- Ensure all scripts have consistent docstrings and version references
+
 ### Multi-Gateway Management
 **Priority: Medium**
 
@@ -76,6 +72,14 @@ Anonymous, opt-in usage telemetry to help understand how the automation is being
 ---
 
 ## ✅ Recently Completed
+
+### v3.5.1 — Script Status Dashboard & Daily Savings Fix (Feb 2026)
+- **Script Status tab**: New dashboard tab showing real-time health of all 10 scheduled scripts — status, run counts, last/next run times, clickable error history, sortable columns, auto-refresh
+- **System Health indicator**: "Scripts" dot on Live Dashboard links to Script Status tab, turns red on active failures
+- **Daily Savings fix**: Scheduler was invoking `calculate_daily_savings.py` without required `--yesterday --quiet` arguments; moved schedule from 23:55 PM to 00:05 AM for complete previous-day data
+- **Improved error logging**: Scheduler now captures stdout (not just stderr) on script failures
+- **CSV format evolution handling**: `calculate_daily_savings.py` now handles variable-width rows from the Modbus+Enphase data source transition (16–18 fields vs original 13-column header)
+- **Savings backfill**: `calculate_daily_savings.py --all` can recalculate historical savings data after upgrading from older CSV formats
 
 ### v3.5.0 — Modbus TCP + Enphase Local Integration (Feb 2026)
 - **Local-first data collection**: SOC and grid power via Modbus TCP (26ms response, was 5000ms via cloud API)

@@ -25,7 +25,7 @@ Tasks:
 - collect_enphase.py: Every 5 minutes per array (if SOLAR_ARRAYS configured)
 - daily_status_report.py: Daily at 4:30 PM (if EMAIL_ENABLED)
 - generate_weekly_charts.py: Weekly on Sunday at 2:00 AM
-- calculate_daily_savings.py: Daily at 11:55 PM
+- calculate_daily_savings.py: Daily at 00:05 AM (previous day)
 
 API:
 - Internal HTTP server on port 8101 for dashboard operations
@@ -110,6 +110,10 @@ def run_script_with_args(script_name: str, args: list, description: str):
             log(f"FAIL {description}: Failed (exit code {result.returncode})")
             if result.stderr.strip():
                 log(f"  -> Error: {result.stderr.strip()[:200]}")
+            elif result.stdout.strip():
+                # Some scripts print errors to stdout
+                last_line = result.stdout.strip().split('\n')[-1]
+                log(f"  -> Error: {last_line[:200]}")
             return False
             
     except subprocess.TimeoutExpired:
@@ -202,8 +206,8 @@ def job_weekly_charts():
 
 
 def job_daily_savings():
-    """Daily savings calculation - runs at 11:55 PM."""
-    run_script("calculate_daily_savings.py", "Daily Savings")
+    """Daily savings calculation - runs at 00:05 AM for the previous day."""
+    run_script_with_args("calculate_daily_savings.py", ["--yesterday", "--quiet"], "Daily Savings")
 
 
 def format_time(hour: int, minute: int) -> str:
@@ -315,9 +319,9 @@ def setup_schedule():
         schedule.every().day.at("16:30").do(job_daily_report)
         log("  - Daily Status Report: Daily at 4:30 PM")
     
-    # Daily savings - 11:55 PM
-    schedule.every().day.at("23:55").do(job_daily_savings)
-    log("  - Daily Savings: Daily at 11:55 PM")
+    # Daily savings - 00:05 AM (calculates previous day's savings with full data)
+    schedule.every().day.at("00:05").do(job_daily_savings)
+    log("  - Daily Savings: Daily at 00:05 AM (previous day)")
     
     # Weekly charts - Sunday 2:00 AM
     schedule.every().sunday.at("02:00").do(job_weekly_charts)

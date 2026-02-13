@@ -66,6 +66,45 @@
         .card:hover { border-color: var(--border-active); }
         .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 10px; }
 
+        /* ===== SCRIPT STATUS ===== */
+        .scripts-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--gap); flex-wrap: wrap; gap: 10px; }
+        .scripts-header-left { display: flex; align-items: center; gap: 14px; }
+        .scripts-uptime { font-size: 12px; color: var(--text-secondary); font-family: var(--font-mono); }
+        .scripts-uptime strong { color: var(--text-primary); font-weight: 500; }
+        .scripts-summary { display: flex; gap: 16px; }
+        .scripts-summary-item { font-size: 12px; font-family: var(--font-mono); padding: 4px 10px; border-radius: 6px; }
+        .scripts-summary-ok { color: var(--accent-green); background: rgba(52,211,153,.08); }
+        .scripts-summary-err { color: var(--accent-red); background: rgba(248,113,113,.08); }
+        .scripts-summary-total { color: var(--text-secondary); background: rgba(255,255,255,.04); }
+        .script-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+        .script-table th { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); white-space: nowrap; }
+        .script-table td { font-size: 13px; padding: 10px 14px; border-bottom: 1px solid rgba(99,133,255,.04); color: var(--text-secondary); vertical-align: middle; }
+        .script-table tr:hover td { background: rgba(255,255,255,.015); }
+        .script-table tr.script-err td { background: rgba(248,113,113,.03); }
+        .script-table tr.script-err:hover td { background: rgba(248,113,113,.06); }
+        .script-name { color: var(--text-primary); font-weight: 500; font-family: var(--font-mono); font-size: 12px; }
+        .script-desc { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+        .script-file { color: var(--text-muted); font-size: 10px; font-family: var(--font-mono); margin-top: 2px; opacity: 0.6; }
+        .script-sched { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+        .script-time { font-family: var(--font-mono); font-size: 12px; }
+        .script-counts { display: flex; gap: 10px; font-family: var(--font-mono); font-size: 12px; }
+        .script-ct-ok { color: var(--accent-green); }
+        .script-ct-fail { color: var(--accent-red); }
+        .script-status-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 5px; font-family: var(--font-mono); white-space: nowrap; }
+        .badge-ok { color: var(--accent-green); background: rgba(52,211,153,.1); }
+        .badge-fail { color: var(--accent-red); background: rgba(248,113,113,.1); }
+        .badge-wait { color: var(--text-muted); background: rgba(255,255,255,.04); }
+        .script-err-time { font-family: var(--font-mono); font-size: 11px; color: var(--accent-red); white-space: nowrap; }
+        .script-err-click { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
+        .script-err-click:hover { text-decoration-style: solid; }
+        .script-no-err { font-size: 11px; color: var(--text-muted); }
+        .sort-arrow { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
+        .script-table th:hover { color: var(--text-secondary); }
+        .script-detail-row td { padding: 0 !important; border-bottom: 1px solid rgba(248,113,113,.1) !important; }
+        .script-detail-box { margin: 0 14px 12px 14px; padding: 10px 14px; background: rgba(248,113,113,.04); border: 1px solid rgba(248,113,113,.12); border-radius: 8px; font-family: var(--font-mono); font-size: 11px; line-height: 1.7; color: var(--text-secondary); max-height: 200px; overflow-y: auto; }
+        .script-detail-box .err-line { color: var(--accent-red); }
+        .script-detail-box .err-ts { color: var(--text-muted); margin-right: 8px; }
+
         /* ===== LIVE DASHBOARD ===== */
         .live-grid { display: grid; grid-template-columns: 300px 1fr 300px; grid-template-rows: auto auto; gap: var(--gap); }
 
@@ -346,6 +385,7 @@
         <div class="tab-bar-left">
             <button class="tab-btn active" onclick="switchTab('live')" id="tb-live"><span class="tab-icon">📊</span> Live Dashboard</button>
             <button class="tab-btn" onclick="switchTab('sysinfo')" id="tb-sysinfo"><span class="tab-icon">🔧</span> System Info</button>
+            <button class="tab-btn" onclick="switchTab('scripts')" id="tb-scripts"><span class="tab-icon">🩺</span> Script Status</button>
             <button class="tab-btn" onclick="switchTab('weekly')" id="tb-weekly"><span class="tab-icon">📈</span> Weekly Reports</button>
             <button class="tab-btn" onclick="switchTab('logs')" id="tb-logs"><span class="tab-icon">📋</span> System Logs</button>
             <button class="tab-btn" onclick="switchTab('solar')" id="tb-solar" style="display:none"><span class="tab-icon">☀️</span> Solar Array</button>
@@ -479,6 +519,7 @@
                     <div class="health-item"><span class="hdot ok"></span> Solar</div>
                     <div class="health-item"><span class="hdot ok"></span> Grid</div>
                     <div class="health-item"><span class="hdot off"></span> Generator</div>
+                    <div class="health-item" id="health-scripts" style="cursor:pointer" onclick="switchTab('scripts')"><span class="hdot off" id="health-scripts-dot"></span> Scripts</div>
                 </div>
             </div>
             <div class="card" style="flex:1">
@@ -546,6 +587,32 @@
         </div>
     </div>
 
+    <!-- ========== SCRIPT STATUS ========== -->
+    <div class="tab-content" id="tab-scripts">
+        <div class="scripts-header">
+            <div class="scripts-header-left">
+                <button class="btn-sm" onclick="loadScriptStatus()">🔄 Refresh</button>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="scripts-auto" checked onchange="toggleScriptAR()" style="accent-color:var(--accent-blue)"> Auto-refresh</label>
+                <span class="scripts-uptime" id="scripts-uptime">Docker started: --</span>
+            </div>
+            <div class="scripts-summary" id="scripts-summary"></div>
+        </div>
+        <div class="card" style="padding:0;overflow:hidden">
+            <table class="script-table" id="script-table">
+                <thead><tr>
+                    <th style="width:24%;cursor:pointer" onclick="sortScripts('name')">Script <span id="sort-name" class="sort-arrow"></span></th>
+                    <th style="width:11%;cursor:pointer" onclick="sortScripts('sched')">Schedule <span id="sort-sched" class="sort-arrow"></span></th>
+                    <th style="width:9%;cursor:pointer" onclick="sortScripts('status')">Status <span id="sort-status" class="sort-arrow">▾</span></th>
+                    <th style="width:13%;cursor:pointer" onclick="sortScripts('lastRun')">Last Run <span id="sort-lastRun" class="sort-arrow"></span></th>
+                    <th style="width:13%;cursor:pointer" onclick="sortScripts('nextRun')">Next Run <span id="sort-nextRun" class="sort-arrow"></span></th>
+                    <th style="width:10%;cursor:pointer" onclick="sortScripts('runs')">Runs <span id="sort-runs" class="sort-arrow"></span></th>
+                    <th style="width:13%;cursor:pointer" onclick="sortScripts('lastErr')">Last Error <span id="sort-lastErr" class="sort-arrow"></span></th>
+                </tr></thead>
+                <tbody id="script-tbody"><tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">Loading script status...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- ========== WEEKLY REPORTS ========== -->
     <div class="tab-content" id="tab-weekly">
         <div class="report-controls">
@@ -588,7 +655,7 @@
             </div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">About</div>
-            <div class="info-row"><span class="info-key">Dashboard Version</span><span class="info-val">3.4.2</span></div>
+            <div class="info-row"><span class="info-key">Dashboard Version</span><span class="info-val">3.5.0</span></div>
             <div class="info-row"><span class="info-key">Last Data Update</span><span class="info-val" id="about-update">--</span></div>
             <div class="info-row"><span class="info-key">Project</span><span class="info-val"><a href="https://github.com/mtnears/FranklinWH-Automation" target="_blank" style="color:var(--accent-blue);text-decoration:none">GitHub ↗</a></span></div>
         </div>
@@ -697,7 +764,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     })();
 });
 
-function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();try{localStorage.setItem('fwh_tab',t)}catch(e){}}
+function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();if(t==='scripts'){loadScriptStatus();startScriptAR()}else{stopScriptAR()}try{localStorage.setItem('fwh_tab',t)}catch(e){}}
 
 // ===== SOLAR ARRAY TAB (Multi-Array) =====
 let solArrays={}, solActive=null, solTimer=null;
@@ -1157,7 +1224,7 @@ function renderLive(d){
 
     // Health
     if(h){const items=[{k:'battery_api',l:'Battery API'},{k:'automation_script',l:'Automation'},{k:'solar',l:'Solar'},{k:'grid_connection',l:'Grid'},{k:'generator',l:'Generator'}];
-    document.getElementById('health-grid').innerHTML=items.map(i=>{const v=h[i.k]||'unknown';let c='off';if(v==='ok'||v==='active')c='ok';else if(v==='warning'||v==='standby')c='warn';else if(v==='error')c='err';return'<div class="health-item"><span class="hdot '+c+'"></span> '+i.l+'</div>'}).join('')}
+    document.getElementById('health-grid').innerHTML=items.map(i=>{const v=h[i.k]||'unknown';let c='off';if(v==='ok'||v==='active')c='ok';else if(v==='warning'||v==='standby')c='warn';else if(v==='error')c='err';return'<div class="health-item"><span class="hdot '+c+'"></span> '+i.l+'</div>'}).join('')+'<div class="health-item" style="cursor:pointer" onclick="switchTab(\'scripts\')"><span class="hdot '+(_scriptHealthClass||'off')+'" id="health-scripts-dot"></span> Scripts</div>'}
 }
 
 function renderSI(d){
@@ -1209,6 +1276,435 @@ function startLogAR(){stopLogAR();const s=parseInt(S.lr)||30;if(s>0)logAR=setInt
 function stopLogAR(){if(logAR){clearInterval(logAR);logAR=null}}
 function toggleLogAR(){document.getElementById('log-auto').checked?startLogAR():stopLogAR()}
 
+// ===== SCRIPT STATUS =====
+let _scriptHealthClass = 'off'; // Global: 'ok', 'err', or 'off' (loading)
+let _scriptAR = null; // auto-refresh timer
+let _scriptData = []; // cached parsed data: [{name, ok, fail, lastRun, lastStatus, lastErr, errors[], sched, schedRaw, registered, meta}]
+let _scriptSort = { col: 'status', dir: 'asc' }; // default sort: status (errors first)
+let _scriptDockerStart = null;
+
+function startScriptAR() { stopScriptAR(); const s = parseInt(S.lr) || 30; if (s > 0) _scriptAR = setInterval(() => { if (document.getElementById('tab-scripts').classList.contains('active')) loadScriptStatus(); }, s * 1000); }
+function stopScriptAR() { if (_scriptAR) { clearInterval(_scriptAR); _scriptAR = null; } }
+function toggleScriptAR() { document.getElementById('scripts-auto').checked ? startScriptAR() : stopScriptAR(); }
+
+async function checkScriptHealth() {
+    try {
+        const r = await fetch('logs/scheduler.log?t=' + Date.now());
+        if (!r.ok) { _scriptHealthClass = 'off'; return; }
+        const txt = await r.text();
+        const lines = txt.trim().split('\n');
+        // Find last Docker start
+        let startIdx = 0;
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (lines[i].includes('Automation Scheduler v')) { startIdx = i; break; }
+        }
+        // Check if any script's LAST status was FAIL
+        const lastStatus = {}; // name -> 'ok'|'fail'
+        for (let i = startIdx; i < lines.length; i++) {
+            // Match both formats: "OK Name:" / "✓ Name:"
+            const ok = lines[i].match(/\] (?:OK|✓) (.+?):/);
+            if (ok) { lastStatus[ok[1]] = 'ok'; continue; }
+            // Match both formats: "FAIL Name:" / "✗ Name:" / "FAIL Name:"
+            const fail = lines[i].match(/\] (?:FAIL|✗) (.+?):/);
+            if (fail) { lastStatus[fail[1]] = 'fail'; }
+        }
+        const hasErr = Object.values(lastStatus).some(v => v === 'fail');
+        _scriptHealthClass = hasErr ? 'err' : 'ok';
+        // Update dot if it exists on the page
+        const dot = document.getElementById('health-scripts-dot');
+        if (dot) dot.className = 'hdot ' + _scriptHealthClass;
+    } catch (e) { _scriptHealthClass = 'off'; }
+}
+// Check script health on load and every 5 minutes
+checkScriptHealth();
+setInterval(checkScriptHealth, 300000);
+
+const SCRIPT_META = {
+    'Smart Decision': { desc: 'Core battery automation — mode switching and charging decisions', sched: 'Every 30 min', file: 'smart_decision.py' },
+    'Smart Decision [pre-peak]': { desc: 'Pre-peak protection check', sched: 'Daily before peak', file: 'smart_decision.py' },
+    'Smart Decision [post-peak]': { desc: 'Post-peak mode restoration', sched: 'Daily after peak', file: 'smart_decision.py' },
+    'Dashboard Data': { desc: 'Generates live dashboard JSON for the web UI', sched: 'Every 1 min', file: 'generate_dashboard_data.py' },
+    'Weather Collection': { desc: 'Collects temperature and conditions from weather station', sched: 'Every 15 min', file: 'collect_weather.py' },
+    'PVOutput Collection': { desc: 'Uploads solar production data to PVOutput.org', sched: 'Hourly at :05', file: 'collect_pvoutput.py' },
+    'Weekly Charts': { desc: 'Generates SOC timeline and daily summary charts', sched: 'Sunday 2:00 AM', file: 'generate_weekly_charts.py' },
+    'Daily Savings': { desc: 'Calculates and logs daily savings from battery optimization', sched: 'Daily 00:05 AM', file: 'calculate_daily_savings.py' },
+    'Daily Status Report': { desc: 'Sends daily email status report', sched: 'Daily 4:30 PM', file: 'daily_status_report.py' },
+};
+function getSolarMeta(name) {
+    const m = name.match(/^Solar \[(.+)\]$/);
+    if (m) return { desc: 'Collects solar production from ' + m[1] + ' array', sched: 'Every 5 min', file: 'collect_enphase.py / collect_solaredge.py' };
+    if (name === 'Enphase Solar Collection') return { desc: 'Collects solar production (legacy mode)', sched: 'Every 5 min', file: 'collect_enphase.py' };
+    return null;
+}
+
+async function loadScriptStatus() {
+    try {
+        const r = await fetch('logs/scheduler.log?t=' + Date.now());
+        if (!r.ok) throw new Error('Log not available');
+        const txt = await r.text();
+        const lines = txt.trim().split('\n');
+
+        // Find Docker start time (last occurrence of scheduler banner)
+        let dockerStart = null;
+        let startIdx = 0;
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (lines[i].includes('Automation Scheduler v')) {
+                const m = lines[i].match(/\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/);
+                if (m) { dockerStart = m[1]; startIdx = i; break; }
+            }
+        }
+        _scriptDockerStart = dockerStart;
+
+        // Parse scheduled tasks from startup log lines
+        // Only parse between "Scheduling tasks:" and "Scheduler ready." to avoid config lines
+        const registered = {};
+        const schedLineRe = /^\[.*\]\s+[•\-]\s+(.+?):\s+(.+)/;
+        let inScheduleBlock = false;
+        for (let i = startIdx; i < lines.length; i++) {
+            if (lines[i].includes('Scheduling tasks:')) { inScheduleBlock = true; continue; }
+            if (lines[i].includes('Scheduler ready.')) break;
+            if (!inScheduleBlock) continue;
+            // Skip separator lines
+            if (lines[i].match(/[-=]{10,}/)) continue;
+            const sm = lines[i].match(schedLineRe);
+            if (sm) {
+                const taskName = sm[1].trim();
+                const schedDesc = sm[2].trim();
+                const nameMap = {
+                    'Smart Decision': 'Smart Decision',
+                    'Pre-peak check': 'Smart Decision [pre-peak]',
+                    'Post-peak check': 'Smart Decision [post-peak]',
+                    'Dashboard Data': 'Dashboard Data',
+                    'Weather Collection': 'Weather Collection',
+                    'PVOutput Collection': 'PVOutput Collection',
+                    'Solar Array Collection': null,
+                    'Enphase Solar Collection': null,
+                    'Daily Status Report': 'Daily Status Report',
+                    'Daily Savings': 'Daily Savings',
+                    'Weekly Charts': 'Weekly Charts',
+                };
+                const mappedName = nameMap.hasOwnProperty(taskName) ? nameMap[taskName] : taskName;
+                if (mappedName) registered[mappedName] = { sched: schedDesc, schedRaw: schedDesc };
+            }
+        }
+
+        // Track per-script stats from run logs
+        const scripts = {};
+        const tsRe = /\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/;
+        for (let i = startIdx; i < lines.length; i++) {
+            const line = lines[i];
+            const tsMatch = line.match(tsRe);
+            const ts = tsMatch ? tsMatch[1] : '';
+
+            const okMatch = line.match(/\] (?:OK|✓) (.+?):/);
+            if (okMatch) {
+                const name = okMatch[1];
+                if (!scripts[name]) scripts[name] = { ok: 0, fail: 0, lastRun: '', lastStatus: '', lastErr: '', errors: [] };
+                scripts[name].ok++;
+                scripts[name].lastRun = ts;
+                scripts[name].lastStatus = 'ok';
+                continue;
+            }
+
+            const failMatch = line.match(/\] (?:FAIL|✗) (.+?): (.+)/);
+            if (failMatch) {
+                const name = failMatch[1];
+                const reason = failMatch[2];
+                if (!scripts[name]) scripts[name] = { ok: 0, fail: 0, lastRun: '', lastStatus: '', lastErr: '', errors: [] };
+                scripts[name].fail++;
+                scripts[name].lastRun = ts;
+                scripts[name].lastStatus = 'fail';
+                scripts[name].lastErr = ts;
+                let detail = reason;
+                if (i + 1 < lines.length && (lines[i + 1].includes('-> Error:') || lines[i + 1].includes('\u2514\u2500 Error:'))) {
+                    const errDetail = lines[i + 1].replace(/.*(?:-> Error:|\u2514\u2500 Error:)\s*/, '');
+                    detail += '\n' + errDetail;
+                }
+                scripts[name].errors.push({ ts: ts, detail: detail });
+                if (scripts[name].errors.length > 10) scripts[name].errors.shift();
+                continue;
+            }
+        }
+
+        // Merge registered + run data
+        _scriptData = [];
+        for (const [name, info] of Object.entries(registered)) {
+            const s = scripts[name] || { ok: 0, fail: 0, lastRun: '', lastStatus: '', lastErr: '', errors: [] };
+            const meta = SCRIPT_META[name] || getSolarMeta(name) || { desc: '', sched: '—' };
+            _scriptData.push({ name, ...s, sched: info.sched, schedRaw: info.schedRaw, meta });
+        }
+        for (const [name, stats] of Object.entries(scripts)) {
+            if (!registered[name]) {
+                const meta = SCRIPT_META[name] || getSolarMeta(name) || { desc: '', sched: '—' };
+                _scriptData.push({ name, ...stats, sched: meta.sched || '—', schedRaw: meta.sched || '', meta });
+            }
+        }
+
+        renderScriptStatus();
+    } catch (e) {
+        document.getElementById('script-tbody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">Unable to load script status: ' + e.message + '</td></tr>';
+    }
+}
+
+function sortScripts(col) {
+    if (_scriptSort.col === col) {
+        _scriptSort.dir = _scriptSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+        _scriptSort.col = col;
+        _scriptSort.dir = 'asc';
+    }
+    document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+    const arrow = document.getElementById('sort-' + col);
+    if (arrow) arrow.textContent = _scriptSort.dir === 'asc' ? '▾' : '▴';
+    renderScriptStatus();
+}
+
+function renderScriptStatus() {
+    const data = _scriptData;
+    if (!data.length) {
+        document.getElementById('script-tbody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">No script activity found since last Docker start.</td></tr>';
+        return;
+    }
+
+    // Sort
+    const col = _scriptSort.col, dir = _scriptSort.dir === 'asc' ? 1 : -1;
+    const sorted = [...data].sort((a, b) => {
+        let va, vb;
+        switch (col) {
+            case 'name': va = a.name.toLowerCase(); vb = b.name.toLowerCase(); break;
+            case 'sched': va = a.sched.toLowerCase(); vb = b.sched.toLowerCase(); break;
+            case 'status':
+                const pri = s => s.lastStatus === 'fail' ? 0 : s.lastStatus === '' ? 1 : 2;
+                va = pri(a); vb = pri(b);
+                if (va === vb) { va = a.name.toLowerCase(); vb = b.name.toLowerCase(); }
+                break;
+            case 'lastRun': va = a.lastRun || ''; vb = b.lastRun || ''; break;
+            case 'nextRun': va = a.schedRaw.toLowerCase(); vb = b.schedRaw.toLowerCase(); break;
+            case 'runs': va = a.ok + a.fail; vb = b.ok + b.fail; break;
+            case 'lastErr': va = a.lastErr || ''; vb = b.lastErr || ''; break;
+            default: va = a.name; vb = b.name;
+        }
+        if (va < vb) return -1 * dir;
+        if (va > vb) return 1 * dir;
+        return 0;
+    });
+
+    // Render uptime
+    const upEl = document.getElementById('scripts-uptime');
+    if (_scriptDockerStart) {
+        const started = new Date(_scriptDockerStart.replace(' ', 'T'));
+        const now = new Date();
+        const diffH = Math.floor((now - started) / 3600000);
+        const diffD = Math.floor(diffH / 24);
+        const remH = diffH % 24;
+        const upStr = diffD > 0 ? diffD + 'd ' + remH + 'h' : diffH + 'h';
+        upEl.innerHTML = 'Docker started: <strong>' + _scriptDockerStart + '</strong> (uptime: ' + upStr + ')';
+    } else {
+        upEl.textContent = 'Docker started: unknown';
+    }
+
+    // Summary
+    let totalOk = 0, totalFail = 0;
+    data.forEach(s => { totalOk += s.ok; totalFail += s.fail; });
+    const sumEl = document.getElementById('scripts-summary');
+    sumEl.innerHTML =
+        '<span class="scripts-summary-item scripts-summary-total">' + data.length + ' scripts</span>' +
+        '<span class="scripts-summary-item scripts-summary-ok">✓ ' + totalOk + ' runs</span>' +
+        (totalFail > 0 ? '<span class="scripts-summary-item scripts-summary-err">✗ ' + totalFail + ' failures</span>' : '');
+
+    // Render rows
+    const tbody = document.getElementById('script-tbody');
+    tbody.innerHTML = sorted.map((s, idx) => {
+        const meta = s.meta || { desc: '', sched: '—' };
+        const isErr = s.lastStatus === 'fail';
+        const rowClass = isErr ? 'script-err' : '';
+        const hasErrors = s.errors && s.errors.length > 0;
+        const rowId = 'script-row-' + idx;
+
+        let badge;
+        if (s.lastStatus === 'ok') badge = '<span class="script-status-badge badge-ok">● OK</span>';
+        else if (s.lastStatus === 'fail') badge = '<span class="script-status-badge badge-fail">● FAIL</span>';
+        else badge = '<span class="script-status-badge badge-wait">◌ Waiting</span>';
+
+        const schedDisplay = s.sched || meta.sched || '—';
+        const lastRun = s.lastRun ? formatScriptTime(s.lastRun) : '<span class="script-no-err">—</span>';
+        const nextRun = estimateNextRun(s.schedRaw || schedDisplay, s.lastRun);
+
+        let lastErr;
+        if (hasErrors) {
+            lastErr = '<span class="script-err-time script-err-click" onclick="toggleScriptDetail(\'' + rowId + '\')" title="Click to see error details">' + formatScriptTime(s.lastErr) + ' ▾</span>';
+        } else {
+            lastErr = '<span class="script-no-err">None</span>';
+        }
+
+        const counts = (s.ok + s.fail) > 0
+            ? '<span class="script-ct-ok">✓ ' + s.ok + '</span>' + (s.fail > 0 ? '<span class="script-ct-fail">✗ ' + s.fail + '</span>' : '')
+            : '<span class="script-no-err">—</span>';
+
+        let detailRow = '';
+        if (hasErrors) {
+            const errHtml = s.errors.slice().reverse().map(e => {
+                const elines = e.detail.split('\n');
+                return '<div><span class="err-ts">' + e.ts + '</span><span class="err-line">' + escHtml(elines[0]) + '</span>' +
+                    (elines[1] ? '<br>&nbsp;&nbsp;&nbsp;&nbsp;' + escHtml(elines[1]) : '') + '</div>';
+            }).join('');
+            detailRow = '<tr class="script-detail-row" id="' + rowId + '" style="display:none"><td colspan="7"><div class="script-detail-box">' +
+                '<div style="color:var(--text-muted);margin-bottom:6px;font-size:10px;text-transform:uppercase;letter-spacing:.5px">Error history (last ' + s.errors.length + ')</div>' +
+                errHtml + '</div></td></tr>';
+        }
+
+        const fileName = meta.file ? '<div class="script-file">' + meta.file + '</div>' : '';
+
+        return '<tr class="' + rowClass + '">' +
+            '<td><div class="script-name">' + s.name + '</div><div class="script-desc">' + (meta.desc || '') + '</div>' + fileName + '</td>' +
+            '<td><span class="script-sched">' + schedDisplay + '</span></td>' +
+            '<td>' + badge + '</td>' +
+            '<td><span class="script-time">' + lastRun + '</span></td>' +
+            '<td><span class="script-time">' + nextRun + '</span></td>' +
+            '<td><div class="script-counts">' + counts + '</div></td>' +
+            '<td>' + lastErr + '</td>' +
+            '</tr>' + detailRow;
+    }).join('');
+}
+
+function estimateNextRun(schedStr, lastRun) {
+    if (!schedStr) return '<span class="script-no-err">—</span>';
+    const now = new Date();
+    const s = schedStr.toLowerCase();
+
+    try {
+        // "Every N minutes" or "Every N min" (but not clock-aligned, handled separately)
+        const minMatch = s.match(/every (\d+) min/);
+        if (minMatch && !s.includes('clock-aligned') && !s.includes(':00 and :30')) {
+            const mins = parseInt(minMatch[1]);
+            if (lastRun) {
+                const last = new Date(lastRun.replace(' ', 'T'));
+                let next = new Date(last.getTime() + mins * 60000);
+                // If overdue, calculate next future slot from now
+                while (next <= now) next = new Date(next.getTime() + mins * 60000);
+                return fmtNextTime(next, now);
+            }
+            // No last run — estimate from Docker start + interval
+            if (_scriptDockerStart) {
+                const start = new Date(_scriptDockerStart.replace(' ', 'T'));
+                let next = new Date(start.getTime() + mins * 60000);
+                while (next <= now) next = new Date(next.getTime() + mins * 60000);
+                return fmtNextTime(next, now);
+            }
+            return '~' + mins + 'm';
+        }
+
+        // "Every 30 minutes (clock-aligned at :00 and :30)"
+        if (s.includes('clock-aligned') || s.includes(':00 and :30')) {
+            const min = now.getMinutes();
+            const next = new Date(now);
+            next.setSeconds(0, 0);
+            if (min < 30) { next.setMinutes(30); } else { next.setMinutes(0); next.setHours(next.getHours() + 1); }
+            return fmtNextTime(next, now);
+        }
+
+        // "Hourly at :05"
+        const hourlyMatch = s.match(/hourly at :(\d{2})/);
+        if (hourlyMatch) {
+            const atMin = parseInt(hourlyMatch[1]);
+            const next = new Date(now);
+            next.setSeconds(0, 0);
+            next.setMinutes(atMin);
+            if (next <= now) next.setHours(next.getHours() + 1);
+            return fmtNextTime(next, now);
+        }
+
+        // "Daily at HH:MM" or "Daily at H:MM AM/PM"
+        const dailyMatch = s.match(/daily at (\d{1,2}):(\d{2})\s*(am|pm)?/i);
+        if (dailyMatch) {
+            let h = parseInt(dailyMatch[1]), m = parseInt(dailyMatch[2]);
+            const ampm = dailyMatch[3];
+            if (ampm) { if (ampm.toLowerCase() === 'pm' && h < 12) h += 12; if (ampm.toLowerCase() === 'am' && h === 12) h = 0; }
+            const next = new Date(now);
+            next.setHours(h, m, 0, 0);
+            if (next <= now) next.setDate(next.getDate() + 1);
+            return fmtNextTime(next, now);
+        }
+
+        // "Daily ... (Nmin before peak)"
+        const beforePeakMatch = s.match(/daily at (\d{1,2}):(\d{2})/);
+        if (beforePeakMatch && s.includes('before peak')) {
+            let h = parseInt(beforePeakMatch[1]), m = parseInt(beforePeakMatch[2]);
+            const next = new Date(now);
+            next.setHours(h, m, 0, 0);
+            if (next <= now) next.setDate(next.getDate() + 1);
+            return fmtNextTime(next, now);
+        }
+
+        // "Daily ... (after peak ends)"
+        const afterPeakMatch = s.match(/daily at (\d{1,2}):(\d{2})/);
+        if (afterPeakMatch && s.includes('after peak')) {
+            let h = parseInt(afterPeakMatch[1]), m = parseInt(afterPeakMatch[2]);
+            const next = new Date(now);
+            next.setHours(h, m, 0, 0);
+            if (next <= now) next.setDate(next.getDate() + 1);
+            return fmtNextTime(next, now);
+        }
+
+        // "Sunday at HH:MM"
+        const weeklyMatch = s.match(/sunday at (\d{1,2}):(\d{2})\s*(am|pm)?/i);
+        if (weeklyMatch) {
+            let h = parseInt(weeklyMatch[1]), m = parseInt(weeklyMatch[2]);
+            const next = new Date(now);
+            const daysUntilSun = (7 - now.getDay()) % 7 || 7;
+            next.setDate(now.getDate() + daysUntilSun);
+            next.setHours(h, m, 0, 0);
+            if (next <= now) next.setDate(next.getDate() + 7);
+            return fmtNextTime(next, now);
+        }
+
+    } catch (e) {}
+    return '<span class="script-no-err">—</span>';
+}
+
+function fmtNextTime(next, now) {
+    const diffMs = next - now;
+    const diffMin = Math.floor(diffMs / 60000);
+    const isToday = next.toDateString() === now.toDateString();
+    const isTomorrow = next.toDateString() === new Date(now.getTime() + 86400000).toDateString();
+    const time = next.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+    if (diffMin <= 0) return '<span style="color:var(--accent-amber)">Due now</span>';
+    if (isToday) {
+        if (diffMin < 60) return 'Today, ' + time + ' <span style="color:var(--text-muted);font-size:10px">(' + diffMin + 'm)</span>';
+        return 'Today, ' + time;
+    }
+    if (isTomorrow) return 'Tomorrow, ' + time;
+    return next.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + time;
+}
+
+function fmtISO(d) {
+    return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' +
+        String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+}
+
+function formatScriptTime(ts) {
+    try {
+        const d = new Date(ts.replace(' ', 'T'));
+        const now = new Date();
+        const diffMin = Math.floor((now - d) / 60000);
+        if (diffMin < 1) return 'Just now';
+        if (diffMin < 60) return diffMin + 'm ago';
+        if (diffMin < 1440) return Math.floor(diffMin / 60) + 'h ' + (diffMin % 60) + 'm ago';
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return ts; }
+}
+
+function toggleScriptDetail(rowId) {
+    const row = document.getElementById(rowId);
+    if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+}
+
+function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ===== LOGS =====
 async function loadLogs(){
     const lt=document.getElementById('log-file-select').value,ln=parseInt(document.getElementById('log-lines').value),v=document.getElementById('log-viewer');
     const files={scheduler:'logs/scheduler.log',intelligence:'logs/solar_intelligence.log',monitoring:'logs/continuous_monitoring.csv'};

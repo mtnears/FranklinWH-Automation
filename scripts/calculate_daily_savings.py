@@ -86,13 +86,43 @@ def get_rates_for_date(date, config):
 
 
 def load_monitoring_data(log_path=None):
-    """Load and parse the continuous monitoring CSV."""
+    """Load and parse the continuous monitoring CSV.
+    
+    Handles format evolution where newer rows may have extra trailing columns
+    (e.g. per-battery SOC, temperature) beyond the original 13-column header.
+    Strategy: read header to get column names, then read all rows allowing
+    extra fields, keeping only the columns defined in the header.
+    """
     if log_path is None:
         log_path = LOG_DIR / 'continuous_monitoring.csv'
     
     try:
-        df = pd.read_csv(log_path)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        # Read header to get expected column names
+        with open(log_path, 'r') as f:
+            header_line = f.readline().strip()
+        header_cols = [c.strip() for c in header_line.split(',')]
+        n_cols = len(header_cols)
+        
+        # Read all data lines, splitting manually to handle variable column counts
+        rows = []
+        with open(log_path, 'r') as f:
+            next(f)  # skip header
+            for line in f:
+                fields = line.strip().split(',')
+                # Take only the first n_cols fields (ignore extra trailing columns)
+                rows.append(fields[:n_cols])
+        
+        df = pd.DataFrame(rows, columns=header_cols)
+        
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df.dropna(subset=['timestamp'])
+        
+        # Convert numeric columns
+        for col in ['soc_percent', 'solar_kw', 'grid_kw', 'battery_kw', 'home_load_kw',
+                     'battery_charge_total', 'battery_discharge_total', 'grid_import_total', 'solar_total']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
         df['date'] = df['timestamp'].dt.date
         df['hour'] = df['timestamp'].dt.hour + df['timestamp'].dt.minute / 60
         return df
