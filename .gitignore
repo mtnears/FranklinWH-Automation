@@ -217,3 +217,18 @@ web/weekly_reports_index.json
 Thumbs.db
 web/solar_*.json
 web/enphase_*.json
+
+# Credentials and cookies (NEVER commit)
+scripts/solaredge_cookies.txt
+scripts/*cookies*
+
+# Test/debug scripts and one-off investigation artifacts
+scripts/test_*.py
+scripts/probe_*.py
+scripts/local_telemetry_viewer.py
+solaredge_panel_test_results.json
+test_enphase_endpoints.sh
+
+# One-time patches and templates (redundant with .env.example)
+patch_modbus_syntax.sh
+scripts/env_template.txt

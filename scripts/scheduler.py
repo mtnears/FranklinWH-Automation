@@ -180,11 +180,12 @@ def job_solar_arrays():
                     f"Solar [{array_id}]"
                 )
             elif array_type == 'solaredge':
-                run_script_with_args(
-                    "collect_solaredge.py",
-                    ["--array-id", array_id],
-                    f"Solar [{array_id}]"
-                )
+                # SolarEdge barn collection is handled by collect_solaredge_panels.py
+                # (job_solaredge_panels, every 15 min) which writes both
+                # solaredge_panel_current.json AND solar_barn.json with real
+                # serial numbers and health data. No need to run the old
+                # collect_solaredge.py which used synthetic serial numbers.
+                pass
             else:
                 log(f"  Unknown solar array type '{array_type}' for {array_id}")
     # Legacy fallback: ENPHASE_ENABLED=true
@@ -208,6 +209,28 @@ def job_weekly_charts():
 def job_daily_savings():
     """Daily savings calculation - runs at 00:05 AM for the previous day."""
     run_script_with_args("calculate_daily_savings.py", ["--yesterday", "--quiet"], "Daily Savings")
+
+
+def job_solaredge_panels():
+    """SolarEdge per-panel data collection - runs every 15 minutes if enabled.
+    
+    Collects real per-optimizer energy data from the SolarEdge monitoring portal.
+    Only 5 HTTP calls per run regardless of panel count. Data logged to CSV
+    for health monitoring and anomaly detection.
+    """
+    if CONFIG_LOADED and getattr(config, 'SOLAREDGE_PANEL_MONITORING', False):
+        run_script("collect_solaredge_panels.py", "SolarEdge Panel Monitoring")
+
+
+def job_solar_health():
+    """Solar health monitor - runs daily after sunset.
+    
+    Analyzes all solar arrays (SolarEdge + Enphase) for panel health using
+    historical data, recent production trends, and cyclical failure detection.
+    Outputs solar_health_report.json for dashboard consumption and maintains
+    a persistent watchlist for tracking intermittent failures.
+    """
+    run_script("solar_health_monitor.py", "Solar Health Monitor")
 
 
 def format_time(hour: int, minute: int) -> str:
@@ -238,6 +261,9 @@ def setup_schedule():
         elif getattr(config, 'ENPHASE_ENABLED', False):
             log(f"  - Enphase Solar: True (legacy mode)")
         log(f"  - Email: {getattr(config, 'EMAIL_ENABLED', False)}")
+        se_panel = getattr(config, 'SOLAREDGE_PANEL_MONITORING', False)
+        if se_panel:
+            log(f"  - SolarEdge Panel Monitoring: site {getattr(config, 'SOLAREDGE_SITE_ID', 'N/A')}")
         log(f"  - Home Mode: {config.HOME_MODE}")
     
     log("-" * 60)
@@ -314,6 +340,13 @@ def setup_schedule():
         else:
             log("  - Enphase Solar Collection: Every 5 minutes (legacy)")
     
+    # SolarEdge panel monitoring - every 15 minutes (if enabled)
+    # Separate from the solar array collection above; this collects real
+    # per-optimizer energy data for health monitoring / anomaly detection
+    if CONFIG_LOADED and getattr(config, 'SOLAREDGE_PANEL_MONITORING', False):
+        schedule.every(15).minutes.do(job_solaredge_panels)
+        log(f"  - SolarEdge Panel Monitoring: Every 15 minutes (site {config.SOLAREDGE_SITE_ID})")
+    
     # Daily report - 4:30 PM (if email enabled)
     if CONFIG_LOADED and getattr(config, 'EMAIL_ENABLED', False):
         schedule.every().day.at("16:30").do(job_daily_report)
@@ -322,6 +355,15 @@ def setup_schedule():
     # Daily savings - 00:05 AM (calculates previous day's savings with full data)
     schedule.every().day.at("00:05").do(job_daily_savings)
     log("  - Daily Savings: Daily at 00:05 AM (previous day)")
+    
+    # Solar health monitor - 20:30 (after sunset, full day's data available)
+    # Runs for all solar arrays regardless of type (SolarEdge, Enphase, or both)
+    solar_arrays = getattr(config, 'SOLAR_ARRAYS', '') if CONFIG_LOADED else ''
+    enphase_legacy_health = getattr(config, 'ENPHASE_ENABLED', False) if CONFIG_LOADED else False
+    se_panel_health = getattr(config, 'SOLAREDGE_PANEL_MONITORING', False) if CONFIG_LOADED else False
+    if solar_arrays or enphase_legacy_health or se_panel_health:
+        schedule.every().day.at("20:30").do(job_solar_health)
+        log("  - Solar Health Monitor: Daily at 8:30 PM")
     
     # Weekly charts - Sunday 2:00 AM
     schedule.every().sunday.at("02:00").do(job_weekly_charts)

@@ -153,6 +153,16 @@ class Config:
     TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
     TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
 
+    # ===== NEW: SolarEdge Panel-Level Monitoring =====
+    # Optional: Scrapes SolarEdge portal for real per-optimizer energy data
+    # Requires portal login credentials (username/password, not API key)
+    # Provides per-panel health monitoring, degradation tracking, anomaly detection
+    SOLAREDGE_PANEL_MONITORING: bool = field(default_factory=lambda: get_bool('SOLAREDGE_PANEL_MONITORING', False))
+    SOLAREDGE_SITE_ID: str = field(default_factory=lambda: os.getenv('SOLAREDGE_SITE_ID',
+                                   os.getenv('SOLAR_ARRAY_BARN_SITE_ID', '')))
+    SOLAREDGE_USERNAME: str = field(default_factory=lambda: os.getenv('SOLAREDGE_USERNAME', ''))
+    SOLAREDGE_PASSWORD: str = field(default_factory=lambda: os.getenv('SOLAREDGE_PASSWORD', ''))
+
     # ===== TOU Settings =====
     PEAK_START_HOUR: int = field(default_factory=lambda: get_int('PEAK_START_HOUR', 17))
     PEAK_END_HOUR: int = field(default_factory=lambda: get_int('PEAK_END_HOUR', 20))
@@ -375,6 +385,15 @@ class Config:
                 errors.append("SOLAR_OVERRIDE_PRICE_CENTS should be <= PRICE_THRESHOLD_CENTS "
                             "(override should only trigger at more aggressive prices)")
         
+        # SolarEdge panel monitoring validation
+        if self.SOLAREDGE_PANEL_MONITORING:
+            if not self.SOLAREDGE_SITE_ID:
+                errors.append("SOLAREDGE_SITE_ID required when SOLAREDGE_PANEL_MONITORING=true")
+            if not self.SOLAREDGE_USERNAME:
+                errors.append("SOLAREDGE_USERNAME required when SOLAREDGE_PANEL_MONITORING=true")
+            if not self.SOLAREDGE_PASSWORD:
+                errors.append("SOLAREDGE_PASSWORD required when SOLAREDGE_PANEL_MONITORING=true")
+        
         return errors
     
     def get_enabled_features(self) -> List[str]:
@@ -397,6 +416,8 @@ class Config:
             features.append("PVOutput")
         if self.TELEMETRY_ENABLED:
             features.append("Anonymous Telemetry")
+        if self.SOLAREDGE_PANEL_MONITORING:
+            features.append(f"SolarEdge Panel Monitoring (site {self.SOLAREDGE_SITE_ID})")
         if self.SOLAR_ARRAYS:
             arrays = [a.strip() for a in self.SOLAR_ARRAYS.split(',') if a.strip()]
             features.append(f"Solar Arrays ({', '.join(arrays)})")
@@ -421,6 +442,8 @@ class Config:
             features.append("PVOutput")
         if not self.TELEMETRY_ENABLED:
             features.append("Telemetry")
+        if not self.SOLAREDGE_PANEL_MONITORING:
+            features.append("SolarEdge Panel Monitoring")
         return features
     
     def get_config_summary(self) -> str:
@@ -512,6 +535,7 @@ class Config:
                 'weather_enabled': self.WEATHER_ENABLED,
                 'pvoutput_enabled': self.PVOUTPUT_ENABLED,
                 'telemetry_enabled': self.TELEMETRY_ENABLED,
+                'solaredge_panel_monitoring': self.SOLAREDGE_PANEL_MONITORING,
                 'solar_arrays': self.SOLAR_ARRAYS,
             },
             'tou': {

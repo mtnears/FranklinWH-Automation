@@ -361,10 +361,54 @@ async def switch_mode(mode_target: str) -> bool:
     return await switch_battery_mode(mode_target)
 
 
+async def check_grid_connected() -> bool:
+    """
+    Check if the grid is connected via Modbus before attempting mode switches.
+    
+    Reads conn_state (register 75, Model 701 offset 3):
+      1 = grid connected
+      0 = grid disconnected / islanded
+    
+    Returns True if grid is connected (safe to switch modes).
+    Returns True if Modbus is unavailable (fail-open for cloud-only users).
+    Returns False if grid is confirmed disconnected.
+    """
+    try:
+        if not config.MODBUS_ENABLED:
+            return True  # No Modbus configured, fail-open
+        
+        modbus_source = data_manager.modbus_source
+        if not hasattr(modbus_source, 'client') or modbus_source.client is None:
+            # Try to connect if not already
+            if hasattr(modbus_source, 'connect'):
+                modbus_source.connect()
+            if not hasattr(modbus_source, 'client') or modbus_source.client is None:
+                return True  # Can't connect, fail-open
+        
+        # Read Model 701 (base address 72) — conn_state is at offset 3
+        result = modbus_source.client.read_holding_registers(72, count=8)
+        if result and not result.isError() and hasattr(result, 'registers'):
+            conn_state = result.registers[3]  # offset 3 = connection state
+            off7_state = result.registers[7]  # offset 7 = DER connect status
+            
+            if conn_state == 0:
+                log_intelligence(f"⚡ GRID DISCONNECTED — conn_state={conn_state}, "
+                               f"der_connect={off7_state} (island mode)")
+                return False
+            
+            return True
+        
+        return True  # Read failed, fail-open
+        
+    except Exception as e:
+        log_intelligence(f"Grid check error (fail-open): {e}")
+        return True  # Error reading, fail-open — don't block mode switches
+
+
 def check_manual_override() -> dict:
     """Check if manual override is active."""
     try:
-        override_file = config.LOG_DIR / "manual_override.json"
+        override_file = config.LOG_DIR / "override.json"
         if override_file.exists():
             import json
             with open(override_file, 'r') as f:
@@ -494,6 +538,18 @@ async def main() -> int:
             need_home = not should_charge and current_mode == "emergency_backup"
             
             if need_backup or need_home:
+                # Grid disconnect guard — don't attempt cloud API mode switches
+                # while the system is islanded (grid outage)
+                grid_ok = await check_grid_connected()
+                if not grid_ok:
+                    switch_target = "emergency_backup" if need_backup else "home"
+                    log_intelligence(f"⚡ Grid disconnected — skipping mode switch to {switch_target}")
+                    log_intelligence(f"Mode unchanged: {current_mode} (grid offline, island mode)")
+                    # Skip the mode switch entirely — jump to CSV logging
+                    need_backup = False
+                    need_home = False
+            
+            if need_backup or need_home:
                 # Check cooldown - don't re-issue same switch within 10 minutes
                 switch_target = "emergency_backup" if need_backup else "home"
                 cooldown_ok = True
@@ -568,6 +624,13 @@ async def main() -> int:
             data['cell_signal'] = str(battery_data.cell_signal)
         if battery_data.grid_frequency_hz is not None:
             data['grid_frequency_hz'] = f'{battery_data.grid_frequency_hz:.2f}'
+        
+        # Add grid connection state (from Modbus if available)
+        try:
+            grid_ok = await check_grid_connected()
+            data['grid_connected'] = '1' if grid_ok else '0'
+        except Exception:
+            data['grid_connected'] = 'N/A'
         
         # Add pricing data if enabled
         if config.DYNAMIC_PRICING_ENABLED:
