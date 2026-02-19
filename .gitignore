@@ -233,3 +233,4 @@ test_enphase_endpoints.sh
 # One-time patches and templates (redundant with .env.example)
 patch_modbus_syntax.sh
 scripts/env_template.txt
+data/system_profile.json
