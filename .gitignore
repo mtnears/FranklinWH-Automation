@@ -234,3 +234,7 @@ test_enphase_endpoints.sh
 patch_modbus_syntax.sh
 scripts/env_template.txt
 data/system_profile.json
+
+# But track rate schedule configs (needed by other users)
+!data/rate_schedule.json
+!data/rate_schedule.example.json
