@@ -752,7 +752,11 @@ class CloudDataSource(DataSource):
 
             if mode in ['emergency_backup', 'backup']:
                 mode_obj = Mode.emergency_backup(soc=config.RESERVE_SOC_BACKUP)
+            elif mode == 'self_consumption':
+                # v4 engine explicitly requests self_consumption — honor it directly
+                mode_obj = Mode.self_consumption(soc=config.RESERVE_SOC_HOME)
             else:
+                # v3.5 legacy "home" target — use config.HOME_MODE to decide
                 if config.HOME_MODE == 'self_consumption':
                     mode_obj = Mode.self_consumption(soc=config.RESERVE_SOC_HOME)
                 else:

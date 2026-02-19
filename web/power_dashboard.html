@@ -268,6 +268,29 @@
 
         .btn-sm { padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; font-family: var(--font-body); cursor: pointer; background: var(--bg-elevated); border: 1px solid var(--border-subtle); color: var(--text-secondary); transition: all .15s; }
         .btn-sm:hover { border-color: var(--border-active); color: var(--text-primary); }
+        .btn-report { background: rgba(167,139,250,.08); border-color: rgba(167,139,250,.25); color: var(--accent-purple); }
+        .btn-report:hover { background: rgba(167,139,250,.15); border-color: rgba(167,139,250,.4); }
+
+        /* Report Issue Modal */
+        .report-modal { max-width: 560px; }
+        .report-textarea { width: 100%; min-height: 80px; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; resize: vertical; line-height: 1.5; }
+        .report-textarea:focus { outline: none; border-color: var(--accent-blue); }
+        .report-textarea::placeholder { color: var(--text-muted); }
+        .report-progress { display: none; align-items: center; gap: 10px; padding: 12px 14px; background: var(--bg-elevated); border-radius: 8px; margin: 12px 0; font-size: 13px; color: var(--text-secondary); }
+        .report-progress.active { display: flex; }
+        .report-spinner { width: 18px; height: 18px; border: 2px solid var(--border-subtle); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin .8s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .report-preview { max-height: 200px; overflow-y: auto; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; font-family: var(--font-mono); font-size: 11px; line-height: 1.6; color: var(--text-secondary); margin: 10px 0; display: none; white-space: pre-wrap; word-break: break-all; }
+        .report-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+        .report-step { margin-bottom: 14px; }
+        .report-step-num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-blue); color: #fff; font-size: 11px; font-weight: 700; margin-right: 8px; }
+        .report-step-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+        .report-step-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; margin-left: 30px; }
+        .report-done { color: var(--accent-green); }
+        .btn-github { background: rgba(167,139,250,.12); border-color: rgba(167,139,250,.3); color: var(--accent-purple); font-weight: 600; }
+        .btn-github:hover { background: rgba(167,139,250,.2); }
+        .btn-download { background: rgba(52,211,153,.08); border-color: rgba(52,211,153,.25); color: var(--accent-green); }
+        .btn-download:hover { background: rgba(52,211,153,.15); }
         .csv-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--font-mono); }
         .csv-table th { background: var(--bg-elevated); padding: 8px 6px; text-align: left; font-weight: 600; color: var(--text-secondary); position: sticky; top: 0; border-bottom: 2px solid var(--accent-blue); }
         .csv-table td { padding: 6px; border-bottom: 1px solid var(--border-subtle); }
@@ -675,6 +698,7 @@
             <button class="btn-sm" onclick="loadLogs()">🔄 Refresh</button>
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="log-auto" checked onchange="toggleLogAR()" style="accent-color:var(--accent-blue)"> Auto-refresh (30s)</label>
             <span id="log-status" style="font-size:11px;color:var(--text-muted);margin-left:auto"></span>
+            <button class="btn-sm btn-report" onclick="showReportModal()">🐛 Report Issue</button>
         </div>
         <div class="log-viewer" id="log-viewer"><div class="log-line info">Select a log file to begin.</div></div>
     </div>
@@ -783,6 +807,52 @@
         <div class="modal-actions">
             <button class="modal-btn mbtn-cancel" onclick="closeModal()">Cancel</button>
             <button class="modal-btn mbtn-confirm" id="m-confirm" onclick="confirmOverride()">Confirm</button>
+        </div>
+    </div>
+</div>
+
+<!-- Report Issue Modal -->
+<div class="modal-overlay" id="report-modal">
+    <div class="modal report-modal">
+        <div class="modal-title">🐛 Report an Issue</div>
+        <div class="modal-body" style="margin-bottom:14px">Generate a sanitized diagnostic bundle and open a GitHub issue. Credentials and personal info are automatically stripped.</div>
+
+        <div id="report-step-1" class="report-step">
+            <span class="report-step-num">1</span><span class="report-step-label">Describe the issue</span>
+            <div class="report-step-desc">What happened? What did you expect to happen?</div>
+            <textarea class="report-textarea" id="report-desc" placeholder="e.g., Engine charged during peak hours, SOC dropped unexpectedly, mode didn't switch back after override expired..." style="margin-top:8px"></textarea>
+        </div>
+
+        <div id="report-step-2" class="report-step">
+            <span class="report-step-num">2</span><span class="report-step-label">Select time range</span>
+            <div style="display:flex;gap:6px;margin-top:8px;margin-left:30px">
+                <button class="btn-sm" onclick="selReportRange(this,'1')" style="font-size:11px">1h</button>
+                <button class="btn-sm" onclick="selReportRange(this,'6')" style="font-size:11px">6h</button>
+                <button class="btn-sm sel" onclick="selReportRange(this,'24')" style="font-size:11px;border-color:var(--accent-blue);color:var(--accent-blue)">24h</button>
+                <button class="btn-sm" onclick="selReportRange(this,'48')" style="font-size:11px">48h</button>
+            </div>
+        </div>
+
+        <div class="report-progress" id="report-progress">
+            <div class="report-spinner"></div>
+            <span id="report-progress-text">Generating diagnostic bundle...</span>
+        </div>
+
+        <div id="report-step-3" class="report-step" style="display:none">
+            <span class="report-step-num report-done">✓</span><span class="report-step-label">Review &amp; submit</span>
+            <div class="report-step-desc">Bundle generated. Review the preview below, then download and open the GitHub issue.</div>
+            <div class="report-preview" id="report-preview"></div>
+        </div>
+
+        <div class="report-actions" id="report-actions-initial">
+            <button class="modal-btn mbtn-cancel" onclick="closeReportModal()">Cancel</button>
+            <button class="modal-btn mbtn-confirm" id="report-generate-btn" onclick="generateReport()">Generate Bundle</button>
+        </div>
+
+        <div class="report-actions" id="report-actions-ready" style="display:none">
+            <button class="modal-btn mbtn-cancel" onclick="closeReportModal()">Close</button>
+            <a class="modal-btn btn-download" id="report-download-link" href="#" download style="text-decoration:none;text-align:center">⬇ Download Bundle</a>
+            <button class="modal-btn btn-github" id="report-github-btn" onclick="openGitHubIssue()">🐙 Open GitHub Issue</button>
         </div>
     </div>
 </div>
@@ -2118,6 +2188,101 @@ function updateOVBanner(){const bn=document.getElementById('override-banner');if
 setInterval(updateOVBanner,60000);
 function saveOV(){try{localStorage.setItem('fwh_ov',JSON.stringify(OV))}catch(e){}}
 function loadOV(){try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}fetch('/api/override').then(r=>r.json()).then(srv=>{if(srv.active&&!OV.active){OV={active:true,mode:srv.mode,dur:srv.duration,start:new Date(srv.started_at).getTime(),exp:srv.expires_at?new Date(srv.expires_at).getTime():null};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='block'}else if(!srv.active&&OV.active){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'}}).catch(()=>{})}
+
+// ===== REPORT ISSUE =====
+let reportRange='24', reportBundleUrl=null, reportSummary='';
+
+function showReportModal(){
+    document.getElementById('report-modal').classList.add('active');
+    document.getElementById('report-desc').value='';
+    document.getElementById('report-step-3').style.display='none';
+    document.getElementById('report-actions-initial').style.display='flex';
+    document.getElementById('report-actions-ready').style.display='none';
+    document.getElementById('report-progress').classList.remove('active');
+    document.getElementById('report-preview').style.display='none';
+    document.getElementById('report-generate-btn').disabled=false;
+    reportBundleUrl=null;
+}
+function closeReportModal(){
+    document.getElementById('report-modal').classList.remove('active');
+    if(reportBundleUrl){URL.revokeObjectURL(reportBundleUrl);reportBundleUrl=null}
+}
+function selReportRange(el,h){
+    reportRange=h;
+    el.parentElement.querySelectorAll('.btn-sm').forEach(b=>{b.style.borderColor='';b.style.color=''});
+    el.style.borderColor='var(--accent-blue)';el.style.color='var(--accent-blue)';
+}
+
+async function generateReport(){
+    const desc=document.getElementById('report-desc').value.trim();
+    const prog=document.getElementById('report-progress');
+    const progText=document.getElementById('report-progress-text');
+    const genBtn=document.getElementById('report-generate-btn');
+
+    genBtn.disabled=true;
+    prog.classList.add('active');
+    progText.textContent='Generating diagnostic bundle...';
+
+    try{
+        const r=await fetch('/api/diagnostic-bundle',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({hours:parseInt(reportRange),description:desc})
+        });
+
+        if(!r.ok) throw new Error('Server returned '+r.status);
+
+        const data=await r.json();
+
+        if(data.status!=='ok') throw new Error(data.error||'Bundle generation failed');
+
+        // Download the zip file
+        progText.textContent='Downloading bundle...';
+        const zipR=await fetch(data.download_url+'?t='+Date.now());
+        if(!zipR.ok) throw new Error('Could not download bundle');
+        const blob=await zipR.blob();
+        reportBundleUrl=URL.createObjectURL(blob);
+
+        // Store summary and github URL
+        reportSummary=data.summary||'';
+        const ghUrl=data.github_url||'';
+
+        // Update UI — show step 3
+        prog.classList.remove('active');
+        document.getElementById('report-step-3').style.display='block';
+        document.getElementById('report-actions-initial').style.display='none';
+        document.getElementById('report-actions-ready').style.display='flex';
+
+        // Set download link
+        const dlLink=document.getElementById('report-download-link');
+        dlLink.href=reportBundleUrl;
+        dlLink.download=data.filename||'diagnostic_bundle.zip';
+
+        // Set github URL
+        if(ghUrl){
+            document.getElementById('report-github-btn').onclick=function(){window.open(ghUrl,'_blank')};
+        }
+
+        // Show preview
+        const preview=document.getElementById('report-preview');
+        preview.style.display='block';
+        preview.textContent=reportSummary;
+
+    }catch(e){
+        prog.classList.remove('active');
+        genBtn.disabled=false;
+        // Show error inline
+        const preview=document.getElementById('report-preview');
+        preview.style.display='block';
+        preview.textContent='Error: '+e.message+'\n\nYou can still manually report issues at:\nhttps://github.com/mtnears/FranklinWH-Automation/issues/new';
+        preview.style.color='var(--accent-red)';
+    }
+}
+
+function openGitHubIssue(){
+    // Fallback if button onclick wasn't set
+    window.open('https://github.com/mtnears/FranklinWH-Automation/issues/new?labels=bug,v4-beta','_blank');
+}
 
 // ===== SETTINGS =====
 function loadSettings(){try{const s=localStorage.getItem('fwh_s');if(s)S=JSON.parse(s)}catch(e){}

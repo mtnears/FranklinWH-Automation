@@ -33,6 +33,7 @@ API:
 - POST /api/override: Activate manual mode override
 - DELETE /api/override: Cancel active override
 - GET /api/override: Get current override status
+- POST /api/diagnostic-bundle: Generate sanitized diagnostic bundle for issue reporting
 """
 import schedule
 import time
@@ -493,6 +494,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self._set_override()
         elif self.path == '/api/override/cancel':
             self._cancel_override()
+        elif self.path == '/api/diagnostic-bundle':
+            self._generate_diagnostic_bundle()
         else:
             self._json_response(404, {'error': 'Not found'})
 
@@ -579,6 +582,76 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json_response(200, {'status': 'ok', 'override': {'active': False}})
         except Exception as e:
             log(f"  Override cancel error: {e}")
+            self._json_response(500, {'error': str(e)})
+
+    def _generate_diagnostic_bundle(self):
+        """Generate a sanitized diagnostic bundle for issue reporting."""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length > 0 else b'{}'
+            payload = json.loads(body) if body else {}
+
+            hours = min(payload.get('hours', 24), 168)  # Cap at 1 week
+            description = payload.get('description', '')[:500]  # Cap description
+
+            # Import and configure the diagnostic bundle generator
+            from diagnostic_bundle import (
+                generate_bundle, generate_github_url, build_summary,
+                BASE_DIR as DB_BASE, LOG_DIR as DB_LOG, DATA_DIR as DB_DATA,
+                WEB_DIR as DB_WEB
+            )
+            import diagnostic_bundle as db
+
+            # Point diagnostic_bundle at our actual paths
+            db.BASE_DIR = SCRIPT_DIR.parent
+            db.LOG_DIR = OVERRIDE_FILE.parent  # Same as config.LOG_DIR
+            db.DATA_DIR = DATA_DIR
+            db.WEB_DIR = WEB_DIR_PATH
+
+            # Generate the bundle — output into the logs directory
+            # nginx serves /logs/ from the container's /logs/ mount (= host logs dir)
+            output_dir = OVERRIDE_FILE.parent  # Same as config.LOG_DIR
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            zip_path = generate_bundle(
+                hours=hours,
+                max_log_lines=500,
+                output_dir=output_dir,
+            )
+
+            # Build summary for preview
+            summary = build_summary(hours)
+
+            # Build GitHub issue URL
+            github_url = generate_github_url(
+                user_description=description,
+                hours=hours,
+            )
+
+            # Return download URL (relative to web root) + metadata
+            filename = zip_path.name
+            download_url = f"logs/{filename}"
+
+            log(f"  Diagnostic bundle generated: {filename} ({zip_path.stat().st_size / 1024:.1f} KB)")
+
+            self._json_response(200, {
+                'status': 'ok',
+                'filename': filename,
+                'download_url': download_url,
+                'github_url': github_url,
+                'summary': summary,
+                'size_kb': round(zip_path.stat().st_size / 1024, 1),
+            })
+
+        except json.JSONDecodeError:
+            self._json_response(400, {'error': 'Invalid JSON'})
+        except ImportError as e:
+            log(f"  Diagnostic bundle import error: {e}")
+            self._json_response(500, {'error': f'diagnostic_bundle.py not found: {e}'})
+        except Exception as e:
+            log(f"  Diagnostic bundle error: {e}")
+            import traceback
+            traceback.print_exc()
             self._json_response(500, {'error': str(e)})
 
     def _save_layout(self):

@@ -569,8 +569,14 @@ async def main() -> int:
                 soc, solar_kw, hours_to_peak, in_peak, solar_to_bat_kw
             )
         
-        desired_mode = "emergency_backup" if should_charge else "home"
-        desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
+        # v4 engine: idle mode is always self_consumption (never TOU)
+        # v3.5 legacy: idle mode is config.HOME_MODE (typically "tou")
+        if ADAPTIVE_ENGINE_LOADED:
+            desired_mode = "emergency_backup" if should_charge else "self_consumption"
+            desired_mode_label = "BACKUP" if should_charge else "SELF_CONSUMPTION"
+        else:
+            desired_mode = "emergency_backup" if should_charge else "home"
+            desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
         
         # Log decision with data source info
         log_intelligence("=" * 70)
@@ -623,29 +629,29 @@ async def main() -> int:
         log_intelligence(f"Charging: Grid→Bat: {grid_to_bat_kw:.2f}kW, Solar→Bat: {solar_to_bat_kw:.2f}kW")
         log_intelligence(f"Status: {peak_status}")
         log_intelligence(f"Decision: {reason}")
-        log_intelligence(f"Action: {'Grid charge (backup mode)' if should_charge else f'Solar-first ({config.HOME_MODE} mode)'}")
+        log_intelligence(f"Action: {'Grid charge (backup mode)' if should_charge else f'Solar-first ({desired_mode_label.lower()} mode)'}")
         
         # Determine if mode switch is needed
         mode_switched = False
         if not config.TOU_ENABLED or not in_peak:
             need_backup = should_charge and current_mode != "emergency_backup"
-            need_home = not should_charge and current_mode == "emergency_backup"
+            need_idle = not should_charge and current_mode == "emergency_backup"
             
-            if need_backup or need_home:
+            if need_backup or need_idle:
                 # Grid disconnect guard — don't attempt cloud API mode switches
                 # while the system is islanded (grid outage)
                 grid_ok = await check_grid_connected()
                 if not grid_ok:
-                    switch_target = "emergency_backup" if need_backup else "home"
+                    switch_target = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else "home")
                     log_intelligence(f"⚡ Grid disconnected — skipping mode switch to {switch_target}")
                     log_intelligence(f"Mode unchanged: {current_mode} (grid offline, island mode)")
                     # Skip the mode switch entirely — jump to CSV logging
                     need_backup = False
-                    need_home = False
+                    need_idle = False
             
-            if need_backup or need_home:
+            if need_backup or need_idle:
                 # Check cooldown - don't re-issue same switch within 10 minutes
-                switch_target = "emergency_backup" if need_backup else "home"
+                switch_target = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else "home")
                 cooldown_ok = True
                 try:
                     cooldown_file = config.LOG_DIR / "last_mode_switch.txt"
@@ -666,7 +672,7 @@ async def main() -> int:
                 if cooldown_ok:
                     mode_switched = await switch_mode(switch_target)
                     if mode_switched:
-                        label = "emergency_backup" if need_backup else config.HOME_MODE
+                        label = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else config.HOME_MODE)
                         from_mode = current_mode
                         log_intelligence(f"Mode changed: {from_mode} -> {label}")
                         # Record switch for cooldown
