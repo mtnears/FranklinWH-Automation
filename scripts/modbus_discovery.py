@@ -1,560 +1,527 @@
 #!/usr/bin/env python3
 """
-FranklinWH aGate Modbus SunSpec Discovery Script
-=================================================
-Queries the aGate via Modbus TCP to discover available SunSpec models
-and read all accessible registers. This helps determine what data is
-available locally vs. what requires the cloud API.
+modbus_discovery.py — Modbus Auto-Discovery for FranklinWH Battery Automation v4.0
 
-Usage:
-    python3 modbus_discovery.py <AGATE_IP_ADDRESS>
+Reads system configuration and live data directly from the aGate via Modbus TCP.
+Eliminates the need for manual configuration of battery count, capacity, reserve,
+and provides real-time readings for SOC, power flows, mode, and health.
 
-The aGate typically listens on Modbus TCP port 502 (default).
-You must have Modbus enabled on your aGate (via SPAN panel toggle in the app).
+Register Map (confirmed on Ken's 2-battery system, Feb 2026):
+  Standard SunSpec:
+    M701 (AC Measurement) base=72:  grid power, voltage, frequency, temps
+    M702 (DC/Nameplate)   base=227: max charge/discharge ratings
+    M713 (DER Status)     base=1035: SOC, SoH, battery voltage, rated power
+  Franklin Extended (proprietary):
+    15502: PV total power (watts)
+    15506: Home load (watts)
+    15507: On-grid mode (0=Backup, 1=TOU, 2=Self-Consumption, 3=Manual)
+    15508: Self-consumption reserve (%)
+    15509: TOU reserve (%)
 
-SunSpec reference:
-- Base address starts at 40000 or 0 with SunSpec ID "SunS" (0x53756e53)
-- Each model has: Model ID (1 reg), Model Length (1 reg), then data registers
-- Model ID 0xFFFF marks end of model list
+Requires: pymodbus (pip install pymodbus)
 """
 
-import sys
-import struct
-import time
-from pymodbus.client import ModbusTcpClient
-from pymodbus.exceptions import ModbusException
+import logging
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
 
-# Common SunSpec Model IDs and their descriptions
-SUNSPEC_MODELS = {
-    1: "Common (Manufacturer, Model, Serial, Version)",
-    101: "Single Phase Inverter (AC Current, Voltage, Power, Frequency, Energy)",
-    102: "Split Phase Inverter",
-    103: "Three Phase Inverter",
-    111: "Single Phase Inverter (float)",
-    112: "Split Phase Inverter (float)",
-    113: "Three Phase Inverter (float)",
-    120: "Nameplate Ratings",
-    121: "Basic Settings",
-    122: "Measurements & Status",
-    123: "Immediate Controls",
-    124: "Basic Storage Controls",
-    126: "Static Volt-VAR",
-    127: "Freq-Watt Param",
-    128: "Dynamic Reactive Current",
-    131: "Watt-Power Factor",
-    132: "Volt-Watt",
-    133: "Basic Scheduling",
-    134: "Freq-Watt Curve",
-    135: "Low Freq Ride Through",
-    136: "High Freq Ride Through",
-    137: "Low Volt Ride Through",
-    138: "High Volt Ride Through",
-    139: "Low Volt Momentary Cessation",
-    140: "High Volt Momentary Cessation",
-    141: "Scheduling",
-    142: "DER Capacity",
-    143: "DER Connect/Disconnect",
-    144: "DER Enter Service",
-    145: "DER AC Measurement",
-    160: "Multiple MPPT Inverter Extension",
-    201: "Single Phase Meter (AC)",
-    202: "Split Phase Meter (AC)",
-    203: "Three Phase Meter (AC)",
-    211: "Single Phase Meter (float)",
-    212: "Split Phase Meter (float)",
-    213: "Three Phase Meter (float)",
-    302: "Irradiance Model",
-    303: "Back of Module Temperature",
-    304: "Inclinometer",
-    305: "GPS",
-    401: "String Combiner (Current)",
-    402: "String Combiner (Advanced)",
-    403: "String Combiner (Current, float)",
-    404: "String Combiner (Advanced, float)",
-    501: "Solar Module",
-    502: "Solar Module (float)",
-    601: "Tracker Controller",
-    701: "DER AC Measurement",
-    702: "DER DC Measurement",
-    703: "DER Watt-Hours",
-    704: "DER Capacity (new)",
-    705: "DER Enter Service",
-    706: "DER Volt-Var",
-    707: "DER Trip (LV, HV, LF, HF)",
-    708: "DER Frequency Droop",
-    709: "DER Watt-Var",
-    710: "DER Watt-Power Factor",
-    711: "DER Volt-Watt",
-    712: "DER Connect/Disconnect",
-    713: "DER Status",
-    714: "DER Current Limit",
-    715: "DER Power Limit",
-    # Battery/Storage related
-    801: "Battery (Base Model)",
-    802: "Battery (Extended)",
-    803: "Lithium-Ion Battery Model",
-    804: "Lithium-Ion String Model",
-    805: "Lithium-Ion Module Model",
-    64001: "Vendor Specific (Outback)",
-    64110: "Vendor Specific (SolarEdge)",
-    64111: "Vendor Specific (SolarEdge Battery)",
-    64112: "Vendor Specific (SolarEdge Storage)",
+logger = logging.getLogger('modbus_discovery')
+
+# ---------------------------------------------------------------------------
+# Register Addresses
+# ---------------------------------------------------------------------------
+
+# SunSpec Model 701 (AC Measurement) — base address 72
+M701_BASE = 72
+M701_GRID_POWER = 80         # offset 8: AC active power, watts, signed
+M701_VOLTAGE_LN = 85         # offset 13: Line-to-neutral voltage, ÷10 = volts
+M701_VOLTAGE_LL = 86         # offset 14: Line-to-line voltage, ÷10 = volts
+M701_FREQUENCY = 88          # offset 16: Frequency, ÷1000 = Hz
+M701_TEMP_AMB = 105          # offset 33: Ambient temperature, ÷10 = °C
+M701_TEMP_CAB = 106          # offset 34: Cabinet temperature, ÷10 = °C
+M701_CONN_STATE = 75         # offset 3: Grid connection state
+
+# SunSpec Model 702 (DC/Nameplate) — base address 227
+M702_BASE = 227
+
+# SunSpec Model 713 (DER Status) — base address 1035
+M713_BASE = 1035
+M713_RATED_POWER = 1035      # offset 0: Rated power in watts (30000 = 30kW)
+M713_SOC = 1037              # offset 2: SOC, ÷10 = percent
+M713_SOH = 1038              # offset 3: SoH, ÷10 = percent
+
+# Franklin Extended Registers (proprietary, 15000+ range)
+EXT_BASE = 15500
+EXT_PV_TOTAL = 15502         # Total PV/solar power in watts
+EXT_HOME_LOAD = 15506        # Home load in watts
+EXT_ONGRID_MODE = 15507      # 0=Backup, 1=TOU, 2=Self-Consumption, 3=Manual
+EXT_SELF_RESERVE = 15508     # Self-consumption reserve percent
+EXT_TOU_RESERVE = 15509      # TOU reserve percent
+
+# Constants
+APOWER_CAPACITY_KWH = 13.6   # Single FranklinWH aPower battery capacity
+APOWER_RATED_W = 15000        # Single aPower rated power (watts)
+MODBUS_DEFAULT_PORT = 502
+MODBUS_DEFAULT_UNIT = 2       # aGate uses unit ID 2
+
+# Mode mapping
+MODE_MAP = {
+    0: 'emergency_backup',
+    1: 'time_of_use',
+    2: 'self_consumption',
+    3: 'manual',
 }
-
-# Detailed register maps for models we care about most
-MODEL_101_REGISTERS = {
-    # offset: (name, length_in_regs, type, unit, scale_factor_offset)
-    0: ("A (AC Current Total)", 1, "uint16", "A", 4),
-    1: ("AphA (Phase A Current)", 1, "uint16", "A", 4),
-    2: ("AphB (Phase B Current)", 1, "uint16", "A", 4),
-    3: ("AphC (Phase C Current)", 1, "uint16", "A", 4),
-    4: ("A_SF (Current Scale Factor)", 1, "int16", "SF", None),
-    5: ("PPVphAB (Phase AB Voltage)", 1, "uint16", "V", 9),
-    6: ("PPVphBC (Phase BC Voltage)", 1, "uint16", "V", 9),
-    7: ("PPVphCA (Phase CA Voltage)", 1, "uint16", "V", 9),
-    8: ("PhVphA (Phase A Voltage)", 1, "uint16", "V", 9),
-    9: ("V_SF (Voltage Scale Factor)", 1, "int16", "SF", None),
-    10: ("W (AC Power)", 1, "int16", "W", 12),
-    11: ("Hz (Frequency)", 1, "uint16", "Hz", 13),
-    12: ("W_SF (Power Scale Factor)", 1, "int16", "SF", None),
-    13: ("Hz_SF (Frequency Scale Factor)", 1, "int16", "SF", None),
-    14: ("VA (Apparent Power)", 1, "int16", "VA", 17),
-    15: ("VAR (Reactive Power)", 1, "int16", "var", 18),
-    16: ("PF (Power Factor)", 1, "int16", "%", 19),
-    17: ("VA_SF (Apparent Power SF)", 1, "int16", "SF", None),
-    18: ("VAR_SF (Reactive Power SF)", 1, "int16", "SF", None),
-    19: ("PF_SF (Power Factor SF)", 1, "int16", "SF", None),
-    20: ("WH (AC Energy)", 2, "acc32", "Wh", 22),
-    22: ("WH_SF (Energy Scale Factor)", 1, "int16", "SF", None),
-    23: ("DCA (DC Current)", 1, "uint16", "A", 25),
-    24: ("DCV (DC Voltage)", 1, "uint16", "V", 25),
-    25: ("DCW_SF (DC SF)", 1, "int16", "SF", None),
-    26: ("DCW (DC Power)", 1, "int16", "W", 25),
-    27: ("TmpCab (Cabinet Temp)", 1, "int16", "°C", 30),
-    28: ("TmpSnk (Heat Sink Temp)", 1, "int16", "°C", 30),
-    29: ("TmpTrns (Transformer Temp)", 1, "int16", "°C", 30),
-    30: ("Tmp_SF (Temp Scale Factor)", 1, "int16", "SF", None),
-    31: ("St (Operating State)", 1, "enum16", "", None),
-    32: ("StVnd (Vendor State)", 1, "enum16", "", None),
-}
-
-OPERATING_STATES = {
-    1: "Off",
-    2: "Sleeping",
-    3: "Starting",
-    4: "MPPT (Running)",
-    5: "Throttled",
-    6: "Shutting Down",
-    7: "Fault",
-    8: "Standby",
-}
+MODE_MAP_REVERSE = {v: k for k, v in MODE_MAP.items()}
 
 
-def read_sunspec_id(client, base_addr):
-    """Check for SunSpec 'SunS' identifier at given base address."""
-    result = client.read_holding_registers(base_addr, count=2)
-    if result.isError():
-        return False
-    # SunSpec ID is "SunS" = 0x53756e53
-    val = (result.registers[0] << 16) | result.registers[1]
-    return val == 0x53756E53
+# ---------------------------------------------------------------------------
+# Data Classes
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ModbusSystemInfo:
+    """Static system configuration discovered from Modbus."""
+    battery_count: int = 1
+    total_capacity_kwh: float = APOWER_CAPACITY_KWH
+    capacity_per_battery_kwh: float = APOWER_CAPACITY_KWH
+    rated_power_w: int = APOWER_RATED_W
+    max_charge_w: int = 5000
+    max_discharge_w: int = 5000
+    soh_percent: float = 0.0
+    discovery_source: str = 'defaults'
+
+    @property
+    def max_charge_kw(self) -> float:
+        return self.max_charge_w / 1000.0
+
+    @property
+    def max_discharge_kw(self) -> float:
+        return self.max_discharge_w / 1000.0
 
 
-def read_registers_safe(client, address, count):
-    """Read registers with error handling."""
-    try:
-        result = client.read_holding_registers(address, count=count)
-        if result.isError():
-            return None
-        return result.registers
-    except Exception as e:
-        print(f"  Error reading address {address}: {e}")
-        return None
+@dataclass
+class ModbusLiveData:
+    """Real-time readings from Modbus."""
+    soc_percent: float = 0.0
+    soh_percent: float = 0.0
+    grid_power_w: int = 0
+    solar_power_w: int = 0
+    home_load_w: int = 0
+    battery_power_w: int = 0          # From ext register if available
+    voltage_v: float = 0.0
+    frequency_hz: float = 0.0
+    temp_ambient_c: float = 0.0
+    temp_cabinet_c: float = 0.0
+    grid_connected: bool = True
+    mode: str = 'unknown'
+    mode_raw: int = -1
+    reserve_pct: float = 20.0         # Active mode's reserve
+    self_reserve_pct: float = 20.0
+    tou_reserve_pct: float = 20.0
+    read_ok: bool = False
+    read_time_ms: float = 0.0
+    errors: list = field(default_factory=list)
+
+    @property
+    def solar_kw(self) -> float:
+        return self.solar_power_w / 1000.0
+
+    @property
+    def grid_kw(self) -> float:
+        return self.grid_power_w / 1000.0
+
+    @property
+    def home_load_kw(self) -> float:
+        return self.home_load_w / 1000.0
+
+    @property
+    def battery_kw(self) -> float:
+        return self.battery_power_w / 1000.0
 
 
-def decode_string(registers):
-    """Decode SunSpec string from register values."""
-    raw = b""
-    for reg in registers:
-        raw += struct.pack(">H", reg)
-    return raw.decode("ascii", errors="replace").rstrip("\x00").strip()
+# ---------------------------------------------------------------------------
+# Modbus Client Wrapper
+# ---------------------------------------------------------------------------
 
+class ModbusDiscovery:
+    """Reads system configuration and live data from the aGate via Modbus TCP.
 
-def decode_int16(registers, offset=0):
-    """Decode signed 16-bit integer."""
-    val = registers[offset]
-    if val >= 0x8000:
-        val -= 0x10000
-    # Check for "not implemented" values
-    if val == -32768:  # 0x8000
-        return None
-    return val
+    Usage:
+        discovery = ModbusDiscovery('192.168.5.149')
 
+        # One-time: discover system parameters
+        info = discovery.discover_system()
 
-def decode_uint16(registers, offset=0):
-    """Decode unsigned 16-bit integer."""
-    val = registers[offset]
-    if val == 0xFFFF:  # not implemented
-        return None
-    return val
+        # Every cycle: read live data
+        live = discovery.read_live()
+    """
 
+    def __init__(self, host: str, port: int = MODBUS_DEFAULT_PORT,
+                 unit: int = MODBUS_DEFAULT_UNIT, timeout: float = 5.0):
+        self.host = host
+        self.port = port
+        self.unit = unit
+        self.timeout = timeout
+        self._client = None
 
-def decode_uint32(registers, offset=0):
-    """Decode unsigned 32-bit integer from 2 registers."""
-    val = (registers[offset] << 16) | registers[offset + 1]
-    if val == 0xFFFFFFFF:
-        return None
-    return val
+    def _connect(self) -> bool:
+        """Connect to the aGate. Returns True if successful."""
+        if self._client is not None:
+            try:
+                if self._client.is_socket_open():
+                    return True
+            except Exception:
+                pass
 
-
-def discover_models(client, base_addr=40000):
-    """Walk the SunSpec model chain starting from base address."""
-    models = []
-    addr = base_addr + 2  # Skip past the SunS identifier
-
-    max_iterations = 50  # Safety limit
-    iteration = 0
-
-    while iteration < max_iterations:
-        iteration += 1
-        regs = read_registers_safe(client, addr, 2)
-        if regs is None:
-            print(f"  Failed to read at address {addr}, stopping discovery")
-            break
-
-        model_id = regs[0]
-        model_len = regs[1]
-
-        # End marker
-        if model_id == 0xFFFF:
-            print(f"\n  End of model list at address {addr}")
-            break
-
-        # Sanity check
-        if model_len == 0 or model_len > 2000:
-            print(f"  Suspicious model length {model_len} at address {addr}, stopping")
-            break
-
-        model_name = SUNSPEC_MODELS.get(model_id, f"Unknown Model")
-        data_addr = addr + 2  # Data starts after model_id and length
-
-        models.append({
-            "model_id": model_id,
-            "model_name": model_name,
-            "address": addr,
-            "data_address": data_addr,
-            "length": model_len,
-        })
-
-        print(f"  Model {model_id}: {model_name}")
-        print(f"    Address: {addr}, Data starts: {data_addr}, Length: {model_len} registers")
-
-        # Move to next model
-        addr = data_addr + model_len
-
-    return models
-
-
-def read_common_model(client, model):
-    """Read and display Model 1 (Common) data."""
-    addr = model["data_address"]
-    length = model["length"]
-
-    regs = read_registers_safe(client, addr, min(length, 66))
-    if regs is None:
-        print("  Could not read Common model data")
-        return
-
-    print("\n  === Common Model (Model 1) ===")
-
-    # Manufacturer: 16 registers (32 chars) starting at offset 0
-    if len(regs) >= 16:
-        manufacturer = decode_string(regs[0:16])
-        print(f"  Manufacturer:  {manufacturer}")
-
-    # Model: 16 registers starting at offset 16
-    if len(regs) >= 32:
-        model_str = decode_string(regs[16:32])
-        print(f"  Model:         {model_str}")
-
-    # Options: 8 registers starting at offset 32
-    if len(regs) >= 40:
-        options = decode_string(regs[32:40])
-        print(f"  Options:       {options}")
-
-    # Version: 8 registers starting at offset 40
-    if len(regs) >= 48:
-        version = decode_string(regs[40:48])
-        print(f"  Version:       {version}")
-
-    # Serial Number: 16 registers starting at offset 48
-    if len(regs) >= 64:
-        serial = decode_string(regs[48:64])
-        print(f"  Serial Number: {serial}")
-
-    # Device Address: offset 64
-    if len(regs) >= 65:
-        dev_addr = regs[64]
-        print(f"  Device Addr:   {dev_addr}")
-
-    return {
-        "manufacturer": manufacturer if len(regs) >= 16 else "N/A",
-        "model": model_str if len(regs) >= 32 else "N/A",
-    }
-
-
-def read_inverter_model(client, model):
-    """Read and display Model 101/102/103 (Inverter) data."""
-    addr = model["data_address"]
-    length = model["length"]
-
-    regs = read_registers_safe(client, addr, min(length, 40))
-    if regs is None:
-        print("  Could not read Inverter model data")
-        return
-
-    print(f"\n  === Inverter Model (Model {model['model_id']}) ===")
-
-    results = {}
-
-    # Read scale factors first
-    sf_map = {}
-    for offset, (name, reg_len, dtype, unit, sf_ref) in MODEL_101_REGISTERS.items():
-        if "SF" in name and offset < len(regs):
-            sf_map[offset] = decode_int16(regs, offset)
-
-    # Now read all values
-    for offset in sorted(MODEL_101_REGISTERS.keys()):
-        if offset >= len(regs):
-            break
-        name, reg_len, dtype, unit, sf_offset = MODEL_101_REGISTERS[offset]
-
-        if "SF" in unit:
-            continue  # Skip scale factors in display
-
-        if dtype == "uint16":
-            raw = decode_uint16(regs, offset)
-        elif dtype == "int16":
-            raw = decode_int16(regs, offset)
-        elif dtype == "enum16":
-            raw = decode_uint16(regs, offset)
-        elif dtype == "acc32" and offset + 1 < len(regs):
-            raw = decode_uint32(regs, offset)
-        else:
-            raw = regs[offset]
-
-        if raw is None:
-            print(f"  {name}: Not Implemented")
-            results[name] = None
-            continue
-
-        # Apply scale factor
-        scaled = raw
-        if sf_offset is not None and sf_offset in sf_map and sf_map[sf_offset] is not None:
-            sf = sf_map[sf_offset]
-            scaled = raw * (10 ** sf)
-
-        # Special handling for operating state
-        if "Operating State" in name and dtype == "enum16":
-            state_name = OPERATING_STATES.get(raw, f"Unknown ({raw})")
-            print(f"  {name}: {state_name} (raw: {raw})")
-        elif dtype == "acc32":
-            print(f"  {name}: {scaled:.1f} {unit}  (raw: {raw})")
-        else:
-            if isinstance(scaled, float):
-                print(f"  {name}: {scaled:.2f} {unit}  (raw: {raw})")
-            else:
-                print(f"  {name}: {scaled} {unit}  (raw: {raw})")
-
-        results[name] = scaled
-
-    return results
-
-
-def read_raw_registers(client, model):
-    """Read and dump raw register values for any model."""
-    addr = model["data_address"]
-    length = model["length"]
-
-    print(f"\n  === Raw Data: Model {model['model_id']} ({model['model_name']}) ===")
-    print(f"  Reading {length} registers starting at address {addr}")
-
-    # Read in chunks of 50 registers
-    all_regs = []
-    remaining = length
-    current_addr = addr
-
-    while remaining > 0:
-        chunk = min(remaining, 50)
-        regs = read_registers_safe(client, current_addr, chunk)
-        if regs is None:
-            print(f"  Failed at address {current_addr}")
-            break
-        all_regs.extend(regs)
-        current_addr += chunk
-        remaining -= chunk
-
-    if not all_regs:
-        return
-
-    # Display in a readable format
-    for i, val in enumerate(all_regs):
-        signed = val - 0x10000 if val >= 0x8000 else val
-        # Try to decode as ASCII (2 chars per register)
         try:
-            chars = struct.pack(">H", val).decode("ascii", errors="replace")
-            char_display = f'  "{chars}"' if chars.isprintable() else ""
-        except:
-            char_display = ""
+            from pymodbus.client import ModbusTcpClient
+            self._client = ModbusTcpClient(self.host, port=self.port, timeout=self.timeout)
+            if self._client.connect():
+                logger.debug(f"Modbus connected to {self.host}:{self.port}")
+                return True
+            else:
+                logger.warning(f"Modbus connection failed to {self.host}:{self.port}")
+                return False
+        except ImportError:
+            logger.error("pymodbus not installed — run: pip install pymodbus")
+            return False
+        except Exception as e:
+            logger.warning(f"Modbus connection error: {e}")
+            return False
 
-        offset_addr = addr + i
-        print(f"    [{i:3d}] addr={offset_addr:5d}  raw=0x{val:04X} ({val:6d}) signed=({signed:6d}){char_display}")
+    def _disconnect(self):
+        """Close the Modbus connection."""
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+
+    def _read_registers(self, address: int, count: int) -> Optional[list]:
+        """Read holding registers. Returns list of uint16 values or None on error."""
+        try:
+            result = self._client.read_holding_registers(address, count=count)
+            if result and not result.isError():
+                return result.registers
+            return None
+        except Exception as e:
+            logger.debug(f"Modbus read error at {address}: {e}")
+            return None
+
+    def _read_signed(self, address: int) -> Optional[int]:
+        """Read a single register as a signed 16-bit value."""
+        regs = self._read_registers(address, 1)
+        if regs is None:
+            return None
+        val = regs[0]
+        if val >= 0x8000:
+            val -= 0x10000
+        return val
+
+    # -------------------------------------------------------------------
+    # System Discovery (run once at startup)
+    # -------------------------------------------------------------------
+
+    def discover_system(self) -> ModbusSystemInfo:
+        """Discover static system parameters from Modbus.
+
+        Reads:
+          - M713: rated power → battery count
+          - M713: SoH
+          - M702: max charge/discharge ratings
+          - EXT: reserves
+
+        Returns ModbusSystemInfo with discovered values, or defaults on failure.
+        """
+        info = ModbusSystemInfo()
+
+        if not self._connect():
+            logger.warning("Modbus discovery failed — using defaults")
+            return info
+
+        try:
+            import time
+            start = time.time()
+
+            # --- M713: Rated power, SOC, SoH ---
+            m713 = self._read_registers(M713_BASE, 10)
+            if m713:
+                rated_w = m713[0]
+                soh_raw = m713[3]
+
+                if rated_w > 0 and rated_w != 0xFFFF:
+                    info.rated_power_w = rated_w
+                    info.battery_count = max(1, round(rated_w / APOWER_RATED_W))
+                    info.capacity_per_battery_kwh = APOWER_CAPACITY_KWH
+                    info.total_capacity_kwh = info.battery_count * APOWER_CAPACITY_KWH
+
+                if soh_raw > 0 and soh_raw != 0xFFFF:
+                    info.soh_percent = soh_raw / 10.0
+
+            # --- M702: Max charge/discharge ratings ---
+            m702 = self._read_registers(M702_BASE, 10)
+            if m702:
+                # M702 nameplate: check first few registers for ratings
+                # David's code reads WChaRteMax and WDisChaRteMax
+                # From your --status output: Max Power=20000, Charge=16000, Discharge=20000
+                # These are at specific offsets in M702 — scan for plausible values
+                for i, val in enumerate(m702):
+                    if val > 1000 and val != 0xFFFF:
+                        logger.debug(f"M702 offset {i}: {val}")
+
+                # Try the standard nameplate positions
+                # From Ken's M702 dump: offset 0=20000(max power), 8=16000(charge), 9=20000(discharge)
+                # Matches David's --status: Max Power=20000, Charge=16000, Discharge=20000
+                if len(m702) > 9:
+                    max_charge = m702[8] if m702[8] > 1000 and m702[8] != 0xFFFF else None
+                    max_discharge = m702[9] if m702[9] > 1000 and m702[9] != 0xFFFF else None
+                    max_power = m702[0] if m702[0] > 1000 and m702[0] != 0xFFFF else None
+
+                    if max_charge:
+                        info.max_charge_w = max_charge
+                    if max_discharge:
+                        info.max_discharge_w = max_discharge
+                    elif max_power:
+                        info.max_discharge_w = max_power
+
+            elapsed_ms = (time.time() - start) * 1000
+            info.discovery_source = 'modbus'
+            logger.info(
+                f"Modbus discovery: {info.battery_count}x {info.capacity_per_battery_kwh} kWh "
+                f"= {info.total_capacity_kwh} kWh, SoH={info.soh_percent:.1f}%, "
+                f"charge_max={info.max_charge_kw:.1f} kW, "
+                f"discharge_max={info.max_discharge_kw:.1f} kW "
+                f"({elapsed_ms:.0f}ms)"
+            )
+
+        except Exception as e:
+            logger.warning(f"Modbus discovery error: {e}")
+
+        return info
+
+    # -------------------------------------------------------------------
+    # Live Data Reading (run every cycle)
+    # -------------------------------------------------------------------
+
+    def read_live(self) -> ModbusLiveData:
+        """Read all live data points from Modbus in a single session.
+
+        Reads:
+          - M713: SOC, SoH
+          - M701: grid power, voltage, frequency, temps, grid status
+          - EXT: solar, home load, mode, reserves
+
+        Returns ModbusLiveData with all available readings.
+        """
+        data = ModbusLiveData()
+
+        if not self._connect():
+            data.errors.append("connection_failed")
+            return data
+
+        try:
+            import time
+            start = time.time()
+
+            # --- M713: SOC, SoH (registers 1035-1044) ---
+            m713 = self._read_registers(M713_BASE, 10)
+            if m713:
+                soc_raw = m713[2]   # offset 2
+                soh_raw = m713[3]   # offset 3
+                if soc_raw > 0 and soc_raw != 0xFFFF:
+                    data.soc_percent = soc_raw / 10.0
+                if soh_raw > 0 and soh_raw != 0xFFFF:
+                    data.soh_percent = soh_raw / 10.0
+            else:
+                data.errors.append("m713_read_failed")
+
+            # --- M701: Grid power, voltage, frequency, temps ---
+            # Read grid connection state (register 75)
+            conn = self._read_registers(M701_CONN_STATE, 1)
+            if conn:
+                # Value 1 = connected, 0 = disconnected (confirmed in grid disconnect testing)
+                data.grid_connected = (conn[0] == 1)
+
+            # Grid power (register 80, signed)
+            grid_signed = self._read_signed(M701_GRID_POWER)
+            if grid_signed is not None:
+                data.grid_power_w = grid_signed
+
+            # Voltage (register 85, ÷10)
+            voltage_regs = self._read_registers(M701_VOLTAGE_LN, 2)
+            if voltage_regs:
+                data.voltage_v = voltage_regs[0] / 10.0
+
+            # Frequency (register 88, ÷1000)
+            freq_regs = self._read_registers(M701_FREQUENCY, 1)
+            if freq_regs:
+                data.frequency_hz = freq_regs[0] / 1000.0
+
+            # Temperatures (registers 105-106, ÷10)
+            temp_regs = self._read_registers(M701_TEMP_AMB, 2)
+            if temp_regs:
+                data.temp_ambient_c = temp_regs[0] / 10.0
+                data.temp_cabinet_c = temp_regs[1] / 10.0
+
+            # --- Extended Registers: solar, home load, mode, reserves ---
+            ext = self._read_registers(EXT_BASE, 15)
+            if ext:
+                # PV total (offset 2 from base = register 15502)
+                pv_val = ext[2]
+                if pv_val != 0xFFFF:
+                    data.solar_power_w = pv_val
+
+                # Home load (offset 6 from base = register 15506)
+                load_val = ext[6]
+                if load_val != 0xFFFF:
+                    data.home_load_w = load_val
+
+                # Battery power (also at offset 6, but this IS the home load)
+                # Battery power can be derived: home_load + grid_export - grid_import - solar
+                # Or use the M701 values. For now, derive from power balance.
+                # battery_power = home_load - solar - grid (when grid positive = import)
+                # Actually: let's compute it
+                # Power balance: solar + grid + battery = home_load
+                # So: battery = home_load - solar - grid
+                data.battery_power_w = data.home_load_w - data.solar_power_w - data.grid_power_w
+
+                # Mode (offset 7 from base = register 15507)
+                mode_raw = ext[7]
+                data.mode_raw = mode_raw
+                data.mode = MODE_MAP.get(mode_raw, f'unknown_{mode_raw}')
+
+                # Reserves (offset 8-9 from base = registers 15508-15509)
+                data.self_reserve_pct = float(ext[8])
+                data.tou_reserve_pct = float(ext[9])
+
+                # Active reserve based on current mode
+                if data.mode in ('self_consumption', 'manual'):
+                    data.reserve_pct = data.self_reserve_pct
+                elif data.mode == 'time_of_use':
+                    data.reserve_pct = data.tou_reserve_pct
+                else:
+                    data.reserve_pct = max(data.self_reserve_pct, data.tou_reserve_pct)
+            else:
+                data.errors.append("ext_read_failed")
+
+            elapsed_ms = (time.time() - start) * 1000
+            data.read_time_ms = elapsed_ms
+            data.read_ok = len(data.errors) == 0
+
+            if data.read_ok:
+                logger.debug(
+                    f"Modbus live: SOC={data.soc_percent:.1f}% "
+                    f"Solar={data.solar_kw:.2f}kW Grid={data.grid_kw:.2f}kW "
+                    f"Load={data.home_load_kw:.2f}kW Mode={data.mode} "
+                    f"Reserve={data.reserve_pct}% ({elapsed_ms:.0f}ms)"
+                )
+            else:
+                logger.warning(f"Modbus live read partial: errors={data.errors}")
+
+        except Exception as e:
+            data.errors.append(f"exception: {e}")
+            logger.warning(f"Modbus live read error: {e}")
+
+        return data
+
+    def close(self):
+        """Clean up the connection."""
+        self._disconnect()
 
 
-def scan_for_battery_data(client, models):
-    """Look for battery-specific data in any available model."""
-    print("\n" + "=" * 60)
-    print("BATTERY / STORAGE DATA SCAN")
-    print("=" * 60)
+# ---------------------------------------------------------------------------
+# Convenience: One-shot discovery without persistent connection
+# ---------------------------------------------------------------------------
 
-    # Check for standard battery models
-    battery_models = [m for m in models if m["model_id"] in (801, 802, 803, 804, 805, 124)]
-    if battery_models:
-        print(f"\n  Found {len(battery_models)} battery-related model(s)!")
-        for m in battery_models:
-            read_raw_registers(client, m)
-    else:
-        print("\n  No standard SunSpec battery models found (801-805, 124)")
-        print("  Battery SOC may be in vendor-specific registers or not exposed via Modbus")
-
-
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 modbus_discovery.py <AGATE_IP_ADDRESS> [port]")
-        print("\nExample: python3 modbus_discovery.py 192.168.1.100")
-        print("\nTo find your aGate IP:")
-        print("  - Check your router's DHCP client list")
-        print("  - Look for device named 'agate' or 'franklin'")
-        print("  - Or check the FranklinWH app for network info")
-        sys.exit(1)
-
-    host = sys.argv[1]
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 502
-
-    print(f"FranklinWH aGate Modbus SunSpec Discovery")
-    print(f"=" * 50)
-    print(f"Target: {host}:{port}")
-    print()
-
-    client = ModbusTcpClient(host, port=port, timeout=10)
-
-    if not client.connect():
-        print(f"ERROR: Could not connect to {host}:{port}")
-        print("Make sure:")
-        print("  1. The aGate IP address is correct")
-        print("  2. Modbus is enabled (SPAN panel toggle in Franklin app)")
-        print("  3. You're on the same network as the aGate")
-        sys.exit(1)
-
-    print(f"Connected to {host}:{port}")
-    print()
-
-    # Try standard SunSpec base addresses
-    base_addr = None
-    for try_addr in [40000, 0, 50000]:
-        print(f"Checking for SunSpec ID at base address {try_addr}...")
-        if read_sunspec_id(client, try_addr):
-            base_addr = try_addr
-            print(f"  Found SunSpec identifier at address {base_addr}!")
-            break
-        else:
-            print(f"  Not found at {try_addr}")
-
-    if base_addr is None:
-        print("\nERROR: No SunSpec identifier found at standard addresses")
-        print("The aGate may not have SunSpec Modbus enabled")
-        print("\nTrying raw register scan of common areas...")
-
-        # Try reading some registers anyway
-        for test_addr in [0, 100, 1000, 40000]:
-            regs = read_registers_safe(client, test_addr, 10)
-            if regs and any(r != 0 for r in regs):
-                print(f"  Found data at address {test_addr}: {regs}")
-
-        client.close()
-        sys.exit(1)
-
-    # Discover all models
-    print(f"\nDiscovering SunSpec models starting at {base_addr}...")
-    print("-" * 50)
-    models = discover_models(client, base_addr)
-
-    if not models:
-        print("No models found!")
-        client.close()
-        sys.exit(1)
-
-    print(f"\nFound {len(models)} model(s)")
-    print()
-
-    # Read Common Model (Model 1)
-    common_models = [m for m in models if m["model_id"] == 1]
-    for m in common_models:
-        read_common_model(client, m)
-
-    # Read Inverter Models
-    inverter_models = [m for m in models if m["model_id"] in (101, 102, 103, 111, 112, 113)]
-    for m in inverter_models:
-        read_inverter_model(client, m)
-
-    # Read all other models (raw dump)
-    other_models = [m for m in models if m["model_id"] not in (1, 101, 102, 103, 111, 112, 113)]
-    for m in other_models:
-        read_raw_registers(client, m)
-
-    # Scan for battery data specifically
-    scan_for_battery_data(client, models)
-
-    # Summary comparison
-    print("\n" + "=" * 60)
-    print("SUMMARY: Modbus vs Cloud API Data Availability")
-    print("=" * 60)
-    print()
-    print("Data Point               Modbus  Cloud API  Notes")
-    print("-" * 60)
-
-    found_models = set(m["model_id"] for m in models)
-
-    checks = [
-        ("SOC (%)",               801 in found_models or 802 in found_models,  True,  "Critical for automation"),
-        ("Battery Power (W)",     any(m in found_models for m in (101,102,103,111,112,113)), True, "p_fhp equivalent"),
-        ("Grid Power (W)",        201 in found_models or 202 in found_models,  True,  "p_uti equivalent"),
-        ("Solar Power (W)",       160 in found_models,                         True,  "p_sun equivalent"),
-        ("Home Load (W)",         False,                                        True,  "p_load - likely cloud only"),
-        ("AC Voltage/Current",    any(m in found_models for m in (101,102,103)), True, "Inverter model"),
-        ("Frequency",             any(m in found_models for m in (101,102,103)), True, "Inverter model"),
-        ("Cabinet/Ambient Temp",  any(m in found_models for m in (101,102,103)), True, "Inverter model"),
-        ("Operating State",       any(m in found_models for m in (101,102,103)), True, "Inverter model"),
-        ("Operating Mode",        False,                                        True,  "Franklin-specific, cloud only"),
-        ("Mode Switching",        False,                                        True,  "WRITE required, cloud only"),
-        ("Lifetime Energy",       any(m in found_models for m in (101,102,103)), True, "WH accumulator"),
-        ("Per-Battery Stats",     False,                                        True,  "Franklin-specific"),
-        ("Smart Circuit Data",    False,                                        True,  "Franklin-specific"),
-        ("run_status/mode codes", False,                                        True,  "Franklin-specific"),
-    ]
-
-    for name, modbus, cloud, notes in checks:
-        mb = "  ✓  " if modbus else "  ✗  "
-        cl = "    ✓    " if cloud else "    ✗    "
-        print(f"  {name:<24}{mb}{cl}  {notes}")
-
-    print()
-    print("NOTE: Modbus data rounds to nearest 100W for power values")
-    print("      Cloud API provides finer granularity")
-
-    client.close()
-    print("\nDone!")
+def discover_from_modbus(host: str, port: int = MODBUS_DEFAULT_PORT,
+                         timeout: float = 5.0) -> Optional[ModbusSystemInfo]:
+    """Quick one-shot system discovery. Returns None if Modbus unavailable."""
+    try:
+        disc = ModbusDiscovery(host, port, timeout=timeout)
+        info = disc.discover_system()
+        disc.close()
+        if info.discovery_source == 'modbus':
+            return info
+        return None
+    except Exception as e:
+        logger.warning(f"Modbus discovery failed: {e}")
+        return None
 
 
-if __name__ == "__main__":
-    main()
+def read_live_from_modbus(host: str, port: int = MODBUS_DEFAULT_PORT,
+                          timeout: float = 5.0) -> Optional[ModbusLiveData]:
+    """Quick one-shot live data read. Returns None if Modbus unavailable."""
+    try:
+        disc = ModbusDiscovery(host, port, timeout=timeout)
+        data = disc.read_live()
+        disc.close()
+        if data.read_ok:
+            return data
+        return None
+    except Exception as e:
+        logger.warning(f"Modbus live read failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# CLI — Run standalone for testing
+# ---------------------------------------------------------------------------
+
+if __name__ == '__main__':
+    import sys
+    import os
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
+
+    # Get host from args or environment
+    host = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('MODBUS_HOST', '192.168.5.149')
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else int(os.environ.get('MODBUS_PORT', '502'))
+
+    print(f"\n{'=' * 60}")
+    print(f"MODBUS DISCOVERY — {host}:{port}")
+    print(f"{'=' * 60}")
+
+    disc = ModbusDiscovery(host, port)
+
+    # System discovery
+    print(f"\n--- System Discovery ---")
+    info = disc.discover_system()
+    print(f"  Source:           {info.discovery_source}")
+    print(f"  Battery count:    {info.battery_count}")
+    print(f"  Capacity/battery: {info.capacity_per_battery_kwh} kWh")
+    print(f"  Total capacity:   {info.total_capacity_kwh} kWh")
+    print(f"  Rated power:      {info.rated_power_w} W")
+    print(f"  Max charge:       {info.max_charge_w} W ({info.max_charge_kw:.1f} kW)")
+    print(f"  Max discharge:    {info.max_discharge_w} W ({info.max_discharge_kw:.1f} kW)")
+    print(f"  SoH:              {info.soh_percent:.1f}%")
+
+    # Live data
+    print(f"\n--- Live Data ---")
+    live = disc.read_live()
+    print(f"  Read OK:          {live.read_ok}")
+    print(f"  Read time:        {live.read_time_ms:.0f}ms")
+    if live.errors:
+        print(f"  Errors:           {live.errors}")
+    print(f"  SOC:              {live.soc_percent:.1f}%")
+    print(f"  SoH:              {live.soh_percent:.1f}%")
+    print(f"  Solar:            {live.solar_kw:.2f} kW ({live.solar_power_w} W)")
+    print(f"  Grid:             {live.grid_kw:.2f} kW ({live.grid_power_w} W)")
+    print(f"  Home load:        {live.home_load_kw:.2f} kW ({live.home_load_w} W)")
+    print(f"  Battery:          {live.battery_kw:.2f} kW ({live.battery_power_w} W)")
+    print(f"  Grid connected:   {live.grid_connected}")
+    print(f"  Voltage:          {live.voltage_v:.1f} V")
+    print(f"  Frequency:        {live.frequency_hz:.3f} Hz")
+    print(f"  Temp (ambient):   {live.temp_ambient_c:.1f} °C")
+    print(f"  Temp (cabinet):   {live.temp_cabinet_c:.1f} °C")
+    print(f"  Mode:             {live.mode} (raw={live.mode_raw})")
+    print(f"  Reserve (active): {live.reserve_pct}%")
+    print(f"  Self reserve:     {live.self_reserve_pct}%")
+    print(f"  TOU reserve:      {live.tou_reserve_pct}%")
+
+    disc.close()
+    print(f"\nDone.")

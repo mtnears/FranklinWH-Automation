@@ -191,6 +191,8 @@ class SystemCapacity:
     usable_capacity_kwh: float = 0.0
     max_charge_kw: float = DEFAULT_MAX_CHARGE_KW
     max_discharge_kw: float = DEFAULT_MAX_DISCHARGE_KW
+    soh_percent: float = 0.0          # State of Health from Modbus
+    discovery_source: str = 'defaults' # 'modbus', 'config', or 'defaults'
 
     def __post_init__(self):
         self.total_capacity_kwh = self.battery_count * self.capacity_per_battery_kwh
@@ -463,14 +465,38 @@ def build_solar_profile(rows: list) -> SolarProfile:
 
 
 def discover_capacity(rows: list, config: Optional[dict] = None) -> SystemCapacity:
-    """Determine system capacity from data and/or config.
+    """Determine system capacity from Modbus, config, and/or historical data.
     
-    Looks at max observed charge/discharge rates and SOC ranges to validate
-    configured values. Uses config overrides where provided.
+    Priority order:
+      1. Modbus auto-discovery (if MODBUS_ENABLED and host available)
+      2. Config overrides from .env (BATTERY_COUNT, BACKUP_RESERVE_PCT)
+      3. Defaults + historical data analysis
+
+    Modbus provides: battery count, capacity, max charge/discharge, SoH, reserve %.
+    Config provides: user overrides (always honored if set).
+    Historical data: validates max observed charge/discharge rates.
     """
     config = config or {}
 
-    # Find max observed rates
+    # --- Attempt Modbus auto-discovery ---
+    modbus_info = None
+    modbus_host = config.get('modbus_host') or os.environ.get('MODBUS_HOST')
+    modbus_enabled = config.get('modbus_enabled', os.environ.get('MODBUS_ENABLED', 'false').lower() == 'true')
+
+    if modbus_enabled and modbus_host:
+        try:
+            from modbus_discovery import discover_from_modbus
+            modbus_port = int(config.get('modbus_port') or os.environ.get('MODBUS_PORT', '502'))
+            modbus_info = discover_from_modbus(modbus_host, modbus_port)
+            if modbus_info:
+                logger.info(f"Modbus auto-discovery successful: {modbus_info.battery_count} batteries, "
+                            f"{modbus_info.total_capacity_kwh} kWh, SoH={modbus_info.soh_percent:.1f}%")
+        except ImportError:
+            logger.debug("modbus_discovery module not available — using config/defaults")
+        except Exception as e:
+            logger.warning(f"Modbus discovery failed: {e} — using config/defaults")
+
+    # --- Find max observed rates from historical data ---
     max_charge = 0.0
     max_discharge = 0.0
     for row in rows:
@@ -480,19 +506,74 @@ def discover_capacity(rows: list, config: Optional[dict] = None) -> SystemCapaci
         elif battery > 0:
             max_discharge = max(max_discharge, battery)
 
-    battery_count = config.get('battery_count', DEFAULT_BATTERY_COUNT)
-    capacity_per = config.get('capacity_per_battery_kwh', DEFAULT_CAPACITY_KWH)
-    backup_reserve = config.get('backup_reserve_pct', DEFAULT_BACKUP_RESERVE_PCT)
+    # --- Resolve values: Modbus → Config → Defaults ---
+    # Config explicitly set by user always wins
+    if 'battery_count' in config:
+        battery_count = config['battery_count']
+    elif modbus_info:
+        battery_count = modbus_info.battery_count
+    else:
+        battery_count = DEFAULT_BATTERY_COUNT
+
+    if 'capacity_per_battery_kwh' in config:
+        capacity_per = config['capacity_per_battery_kwh']
+    elif modbus_info:
+        capacity_per = modbus_info.capacity_per_battery_kwh
+    else:
+        capacity_per = DEFAULT_CAPACITY_KWH
+
+    if 'backup_reserve_pct' in config:
+        backup_reserve = config['backup_reserve_pct']
+    elif modbus_info:
+        # Read live reserve from Modbus
+        try:
+            from modbus_discovery import read_live_from_modbus
+            modbus_port = int(config.get('modbus_port') or os.environ.get('MODBUS_PORT', '502'))
+            live = read_live_from_modbus(modbus_host, modbus_port)
+            if live:
+                backup_reserve = live.reserve_pct
+                logger.info(f"Modbus reserve: {backup_reserve}% (mode={live.mode})")
+            else:
+                backup_reserve = DEFAULT_BACKUP_RESERVE_PCT
+        except Exception:
+            backup_reserve = DEFAULT_BACKUP_RESERVE_PCT
+    else:
+        backup_reserve = DEFAULT_BACKUP_RESERVE_PCT
+
+    # Max charge/discharge: use Modbus ratings if available, validate against history
+    if modbus_info:
+        best_charge = modbus_info.max_charge_kw
+        best_discharge = modbus_info.max_discharge_kw
+    else:
+        best_charge = DEFAULT_MAX_CHARGE_KW * battery_count
+        best_discharge = DEFAULT_MAX_DISCHARGE_KW * battery_count
+
+    # Use the higher of Modbus rating or observed historical max
+    best_charge = max(best_charge, max_charge)
+    best_discharge = max(best_discharge, max_discharge)
 
     cap = SystemCapacity(
         battery_count=battery_count,
         capacity_per_battery_kwh=capacity_per,
         backup_reserve_pct=backup_reserve,
-        max_charge_kw=round(max(max_charge, DEFAULT_MAX_CHARGE_KW), 2),
-        max_discharge_kw=round(max(max_discharge, DEFAULT_MAX_DISCHARGE_KW), 2),
+        max_charge_kw=round(best_charge, 2),
+        max_discharge_kw=round(best_discharge, 2),
     )
 
-    logger.info(f"System capacity: {cap.battery_count}x {cap.capacity_per_battery_kwh} kWh = "
+    # Store SoH if discovered
+    if modbus_info and modbus_info.soh_percent > 0:
+        cap.soh_percent = modbus_info.soh_percent
+
+    # Set discovery source
+    if modbus_info and modbus_info.discovery_source == 'modbus':
+        cap.discovery_source = 'modbus'
+    elif any(k in config for k in ('battery_count', 'capacity_per_battery_kwh', 'backup_reserve_pct')):
+        cap.discovery_source = 'config'
+    else:
+        cap.discovery_source = 'defaults'
+
+    source = modbus_info.discovery_source if modbus_info else 'config/defaults'
+    logger.info(f"System capacity ({source}): {cap.battery_count}x {cap.capacity_per_battery_kwh} kWh = "
                 f"{cap.total_capacity_kwh} kWh, usable={cap.usable_capacity_kwh:.1f} kWh, "
                 f"max charge={cap.max_charge_kw} kW, max discharge={cap.max_discharge_kw} kW")
     return cap
@@ -567,6 +648,8 @@ def save_profile(profile: SystemProfile, output_path: str):
             'usable_capacity_kwh': profile.capacity.usable_capacity_kwh,
             'max_charge_kw': profile.capacity.max_charge_kw,
             'max_discharge_kw': profile.capacity.max_discharge_kw,
+            'soh_percent': profile.capacity.soh_percent,
+            'discovery_source': profile.capacity.discovery_source,
         },
     }
 
@@ -609,6 +692,8 @@ def load_profile(input_path: str) -> Optional[SystemProfile]:
         backup_reserve_pct=cap_data.get('backup_reserve_pct', DEFAULT_BACKUP_RESERVE_PCT),
         max_charge_kw=cap_data.get('max_charge_kw', DEFAULT_MAX_CHARGE_KW),
         max_discharge_kw=cap_data.get('max_discharge_kw', DEFAULT_MAX_DISCHARGE_KW),
+        soh_percent=cap_data.get('soh_percent', 0.0),
+        discovery_source=cap_data.get('discovery_source', 'loaded'),
     )
 
     profile = SystemProfile(
@@ -667,6 +752,9 @@ if __name__ == '__main__':
     print(f"  {c.battery_count}x {c.capacity_per_battery_kwh} kWh = {c.total_capacity_kwh} kWh total")
     print(f"  Usable: {c.usable_capacity_kwh:.1f} kWh (reserve={c.backup_reserve_pct}%)")
     print(f"  Max charge: {c.max_charge_kw} kW | Max discharge: {c.max_discharge_kw} kW")
+    print(f"  Discovery: {c.discovery_source}")
+    if c.soh_percent > 0:
+        print(f"  SoH: {c.soh_percent:.1f}%")
 
     print(f"\n--- Grid Charge Curve ---")
     print(f"  {'SOC':>6}  {'Rate':>8}  {'Max':>8}  {'Samples':>8}")
