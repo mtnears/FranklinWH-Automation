@@ -215,6 +215,7 @@ web/weekly_reports_index.json
 *.png
 !web/House_Power_Graphic.png
 Thumbs.db
+*.bak
 web/solar_*.json
 web/enphase_*.json
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Configuration Management for FranklinWH Battery Automation - v3.5.0
+Configuration Management for FranklinWH Battery Automation - v3.5.1
 
 Loads settings from environment variables (.env file) with sensible defaults.
 Provides a centralized configuration object used by all scripts.
@@ -208,6 +208,12 @@ class Config:
     TARGET_SOC: float = field(default_factory=lambda: get_float('TARGET_SOC', 95.0))
     SAFETY_MARGIN_HOURS: float = field(default_factory=lambda: get_float('SAFETY_MARGIN_HOURS', 0.75))
     CHARGING_STRATEGY: str = field(default_factory=lambda: os.getenv('CHARGING_STRATEGY', 'balanced'))
+    
+    # Reserve SOC for mode switching (passed to franklinwh library)
+    # BACKUP reserve: SOC target when in Emergency Backup / grid-charging mode
+    # HOME reserve: minimum SOC to maintain in normal TOU/Self-Consumption mode
+    RESERVE_SOC_BACKUP: int = field(default_factory=lambda: get_int('RESERVE_SOC_BACKUP', 100))
+    RESERVE_SOC_HOME: int = field(default_factory=lambda: get_int('RESERVE_SOC_HOME', 20))
     
     # ===== System Paths =====
     BASE_DIR: Path = field(default_factory=lambda: Path(os.getenv('BASE_DIR', '/app')))
@@ -450,7 +456,7 @@ class Config:
         """Return a formatted summary of current configuration."""
         lines = [
             "=" * 60,
-            "CONFIGURATION SUMMARY - v3.5.0",
+            "CONFIGURATION SUMMARY - v3.5.1",
             "=" * 60,
             "",
             "ENABLED FEATURES:",
@@ -522,7 +528,7 @@ class Config:
     def to_dict(self) -> dict:
         """Export configuration as dictionary (excludes sensitive data)."""
         return {
-            'version': '3.5.0',
+            'version': '3.5.1',
             'battery_capacity_kwh': self.BATTERY_CAPACITY_KWH,
             'charge_rate_per_hour': self.CHARGE_RATE_PER_HOUR,
             'target_soc': self.TARGET_SOC,

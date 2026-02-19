@@ -33,6 +33,203 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+# ── Panel Specifications (from install plans) ───────────────────
+# Populated per array_id; add new arrays here as needed.
+PANEL_SPECS = {
+    "house": {
+        "model": "Hyundai HiN-T435NF(BK)",
+        "nameplate_w": 435,
+        "ptc_w": 407.2,
+        "install_date": "2025-09-05",
+        "tilt_deg": 22,           # estimated roof pitch
+        "azimuth_deg": 295,       # WNW from Google Earth
+        "microinverter": "Enphase IQ8M-72-M-US",
+        "degradation_year1_pct": 2.0,
+        "degradation_annual_pct": 0.5,
+        "circuits": 2,
+        "panels_per_circuit": 8,
+    },
+}
+
+# Health classification thresholds (ratio vs peer average)
+HEALTH_THRESHOLDS = {
+    "excellent": 1.05,   # ≥105% of peer avg
+    "good": 0.95,        # 95-105%
+    "fair": 0.85,        # 85-95%
+    "watch": 0.75,       # 75-85%
+    # below 75% = "alert"
+}
+
+
+def calc_panel_age_years(install_date_str):
+    """Calculate panel age in years from install date."""
+    install = datetime.strptime(install_date_str, "%Y-%m-%d")
+    delta = datetime.now() - install
+    return round(delta.days / 365.25, 2)
+
+
+def calc_expected_degradation(spec):
+    """Calculate expected degradation based on manufacturer warranty curve."""
+    age = calc_panel_age_years(spec["install_date"])
+    if age <= 0:
+        return {"age_years": 0, "expected_pct_remaining": 100.0,
+                "effective_ptc_w": spec["ptc_w"]}
+    # Year 1: initial degradation
+    year1_factor = 1.0 - (spec["degradation_year1_pct"] / 100)
+    if age <= 1:
+        factor = 1.0 - (spec["degradation_year1_pct"] / 100) * age
+    else:
+        additional_years = age - 1
+        factor = year1_factor * (1 - spec["degradation_annual_pct"] / 100 * additional_years)
+    return {
+        "age_years": age,
+        "expected_pct_remaining": round(factor * 100, 1),
+        "effective_ptc_w": round(spec["ptc_w"] * factor, 1),
+    }
+
+
+def classify_health(ratio):
+    """Classify panel health based on ratio vs peer average."""
+    if ratio >= HEALTH_THRESHOLDS["excellent"]:
+        return "excellent"
+    elif ratio >= HEALTH_THRESHOLDS["good"]:
+        return "good"
+    elif ratio >= HEALTH_THRESHOLDS["fair"]:
+        return "fair"
+    elif ratio >= HEALTH_THRESHOLDS["watch"]:
+        return "watch"
+    return "alert"
+
+
+def analyze_health(inverter_data, array_id="house"):
+    """
+    Analyze panel health using peer comparison.
+
+    For Enphase, we have real-time watts + daily averages for every panel,
+    all on the same roof face. This makes the entire array one peer group.
+
+    Returns health dict to merge into output JSON.
+    """
+    spec = PANEL_SPECS.get(array_id)
+    if not spec:
+        return {}
+
+    panels = list(inverter_data.values())
+    if not panels:
+        return {}
+
+    # ── Degradation info ──
+    degradation = calc_expected_degradation(spec)
+
+    # ── Real-time health (current watts) ──
+    current_watts = [p.get("current_watts", 0) for p in panels]
+    producing = [w for w in current_watts if w > 0]
+    realtime_analysis = {}
+    if len(producing) >= 4:  # Need enough producing panels for meaningful comparison
+        rt_avg = sum(producing) / len(producing)
+        for serial, p in inverter_data.items():
+            w = p.get("current_watts", 0)
+            if w > 0:
+                ratio = w / rt_avg if rt_avg > 0 else 1.0
+                realtime_analysis[serial] = {
+                    "ratio_vs_array": round(ratio, 3),
+                    "status": classify_health(ratio),
+                }
+
+    # ── Daily average health ──
+    daily_avgs = {s: p.get("avg_today_watts", 0) for s, p in inverter_data.items()}
+    active_avgs = {s: v for s, v in daily_avgs.items() if v > 0}
+    daily_analysis = {}
+    if len(active_avgs) >= 4:
+        day_mean = sum(active_avgs.values()) / len(active_avgs)
+        for serial, avg in active_avgs.items():
+            ratio = avg / day_mean if day_mean > 0 else 1.0
+            daily_analysis[serial] = {
+                "ratio_vs_array_today": round(ratio, 3),
+                "status_today": classify_health(ratio),
+            }
+
+    # ── Max-ever health (lifetime proxy) ──
+    max_evers = {s: p.get("max_ever_watts", 0) for s, p in inverter_data.items()}
+    active_maxes = {s: v for s, v in max_evers.items() if v > 0}
+    lifetime_analysis = {}
+    if active_maxes:
+        max_avg = sum(active_maxes.values()) / len(active_maxes)
+        for serial, mx in active_maxes.items():
+            ratio = mx / max_avg if max_avg > 0 else 1.0
+            lifetime_analysis[serial] = {
+                "ratio_max_ever": round(ratio, 3),
+                "status_lifetime": classify_health(ratio),
+            }
+
+    # ── Merge health into per-panel data ──
+    for serial, p in inverter_data.items():
+        rt = realtime_analysis.get(serial, {})
+        da = daily_analysis.get(serial, {})
+        lt = lifetime_analysis.get(serial, {})
+
+        # Primary status: use realtime if producing, else daily, else lifetime
+        if rt:
+            status = rt["status"]
+            primary_ratio = rt["ratio_vs_array"]
+        elif da:
+            status = da["status_today"]
+            primary_ratio = da["ratio_vs_array_today"]
+        elif lt:
+            status = lt["status_lifetime"]
+            primary_ratio = lt["ratio_max_ever"]
+        else:
+            status = "good"  # No data yet
+            primary_ratio = 1.0
+
+        p["health"] = {
+            "status": status,
+            "ratio_vs_array": primary_ratio,
+            "ratio_realtime": rt.get("ratio_vs_array", 0),
+            "ratio_today_avg": da.get("ratio_vs_array_today", 0),
+            "ratio_max_ever": lt.get("ratio_max_ever", 0),
+        }
+
+    # ── Array-wide health summary ──
+    statuses = [p.get("health", {}).get("status", "good") for p in inverter_data.values()]
+    health_counts = {s: statuses.count(s) for s in ["excellent", "good", "fair", "watch", "alert"]}
+
+    underperformers = []
+    for serial, p in inverter_data.items():
+        h = p.get("health", {})
+        if h.get("status") in ("watch", "alert"):
+            underperformers.append({
+                "serial_number": serial,
+                "status": h["status"],
+                "ratio_vs_array": h.get("ratio_vs_array", 0),
+                "current_watts": p.get("current_watts", 0),
+                "avg_today_watts": p.get("avg_today_watts", 0),
+            })
+
+    max_ever_vals = [v for v in max_evers.values() if v > 0]
+    spread_pct = round((max(max_ever_vals) - min(max_ever_vals)) / (sum(max_ever_vals) / len(max_ever_vals)) * 100, 1) if max_ever_vals else 0
+
+    return {
+        "panel_spec": {
+            "model": spec["model"],
+            "nameplate_w": spec["nameplate_w"],
+            "ptc_w": spec["ptc_w"],
+            "install_date": spec["install_date"],
+            "age_years": degradation["age_years"],
+            "microinverter": spec["microinverter"],
+        },
+        "degradation": degradation,
+        "array_stats": {
+            "panel_count": len(panels),
+            "max_ever_avg": round(sum(max_evers.values()) / len(max_evers), 1) if max_evers else 0,
+            "max_ever_spread_pct": spread_pct,
+            "max_ever_min": min(max_ever_vals) if max_ever_vals else 0,
+            "max_ever_max": max(max_ever_vals) if max_ever_vals else 0,
+        },
+        "health_counts": health_counts,
+        "underperformers": underperformers,
+    }
+
 # ── Path Setup ──────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -319,6 +516,16 @@ def build_output(cfg: dict, inverters: list, layout: dict,
     """Build the output JSON consumed by the dashboard."""
     now = datetime.now()
 
+    # Load full daily history for max_ever scanning across all retained days
+    history_file = DATA_DIR / f"enphase_daily_history_{cfg['array_id']}.json"
+    all_daily_history = {}
+    if history_file.exists():
+        try:
+            with open(history_file, "r") as f:
+                all_daily_history = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            all_daily_history = {}
+
     inverter_data = {}
     total_watts = 0
     total_max_ever = 0
@@ -327,9 +534,19 @@ def build_output(cfg: dict, inverters: list, layout: dict,
     for inv in inverters:
         serial = inv.get("serialNumber", "")
         current_watts = inv.get("lastReportWatts", 0)
-        max_ever = inv.get("maxReportWatts", 0)
+        firmware_max = inv.get("maxReportWatts", 0)
         last_report = inv.get("lastReportDate", 0)
         dev_type = inv.get("devType", 0)
+
+        # max_ever_watts: scan daily history for highest observed watts
+        # This is consistent with how SolarEdge computes it
+        best_watts = firmware_max  # firmware value as starting point
+        for d_date, d_panels in all_daily_history.items():
+            if serial in d_panels:
+                day_max = d_panels[serial].get("max_watts_today", 0)
+                day_peak = d_panels[serial].get("peak_max", 0)
+                best_watts = max(best_watts, day_max, day_peak)
+        max_ever = best_watts or current_watts
 
         total_watts += current_watts
         total_max_ever += max_ever
@@ -412,6 +629,7 @@ def build_output(cfg: dict, inverters: list, layout: dict,
         "underperformers": underperformers,
         "layout": layout,
         "collection_status": "ok",
+        "health": analyze_health(inverter_data, cfg["array_id"]),
     }
 
 

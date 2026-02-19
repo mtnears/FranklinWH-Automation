@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smart Battery Decision Engine - v3.5.0
+Smart Battery Decision Engine - v3.5.1
 
 Unified data collection with Modbus TCP and Franklin Cloud API support.
 Features midnight-crossing peak period handling and performance monitoring.
@@ -62,11 +62,10 @@ if config.DYNAMIC_PRICING_ENABLED:
     except ImportError:
         config.DYNAMIC_PRICING_ENABLED = False
 
-if config.WEATHER_ENABLED:
-    try:
-        from weather import get_solar_forecast
-    except ImportError:
-        config.WEATHER_ENABLED = False
+# Weather/forecast integration placeholder
+# Note: weather.py module not yet implemented. The WEATHER_ENABLED toggle
+# and get_solar_forecast() interface are reserved for v4.0 forecast engine.
+# collect_weather.py handles raw weather data collection separately.
 
 
 def log_intelligence(message: str):
@@ -269,14 +268,9 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
         return False, "Past peak period - solar charging preferred"
     
     # 5. WEATHER FORECAST INTEGRATION
+    # Note: Reserved for v4.0 forecast-aware engine. The weather module
+    # interface (get_solar_forecast) is not yet implemented.
     cloudy_forecast = False
-    if config.WEATHER_ENABLED:
-        try:
-            forecast = get_solar_forecast()
-            if forecast and forecast.get('cloud_cover_tomorrow', 0) > config.CLOUDY_THRESHOLD_PERCENT:
-                cloudy_forecast = True
-        except Exception:
-            pass  # Weather errors shouldn't stop automation
     
     if cloudy_forecast:
         return True, f"Cloudy forecast - charge overnight (weather override)"
@@ -437,7 +431,7 @@ async def main() -> int:
     
     try:
         log_intelligence("=" * 70)
-        log_intelligence("FranklinWH Smart Decision Engine v3.5.0")
+        log_intelligence("FranklinWH Smart Decision Engine v3.5.1")
         
         # Check for manual override first
         override = check_manual_override()

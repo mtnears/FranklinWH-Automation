@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FranklinWH Automation Scheduler - v3.5.0
+FranklinWH Automation Scheduler - v3.5.1
 
 Master scheduler that runs all automation tasks on their configured intervals.
 This allows the Docker container to be fully self-contained - no external
@@ -241,7 +241,7 @@ def format_time(hour: int, minute: int) -> str:
 def setup_schedule():
     """Configure all scheduled tasks."""
     log("=" * 60)
-    log("FranklinWH Automation Scheduler v3.5.0")
+    log("FranklinWH Automation Scheduler v3.5.1")
     log("=" * 60)
     
     # Get scheduling config
@@ -413,13 +413,13 @@ async def _do_mode_switch(mode_name: str) -> bool:
     
     if mode_name == 'emergency_backup':
         mode_obj = Mode.emergency_backup()
-        mode_obj.soc = 100
+        mode_obj.soc = config.RESERVE_SOC_BACKUP
     elif mode_name == 'self_consumption':
         mode_obj = Mode.self_consumption()
-        mode_obj.soc = 20
+        mode_obj.soc = config.RESERVE_SOC_HOME
     elif mode_name == 'time_of_use':
         mode_obj = Mode.time_of_use()
-        mode_obj.soc = 20
+        mode_obj.soc = config.RESERVE_SOC_HOME
     else:
         raise ValueError(f"Unknown mode: {mode_name}")
     

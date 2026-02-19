@@ -294,8 +294,12 @@
         .solar-stat:nth-child(3) .solar-stat-value { color: var(--accent-blue); }
         .solar-stat:nth-child(4) { border-left: 3px solid var(--accent-purple); }
         .solar-stat:nth-child(4) .solar-stat-value { color: var(--accent-purple); }
-        .solar-main { display: grid; grid-template-columns: 1fr 320px; gap: var(--gap); margin-bottom: var(--gap); }
-        .solar-array-card { min-height: 320px; display: flex; flex-direction: column; }
+        .solar-main { margin-bottom: var(--gap); }
+        .solar-info-strip { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--gap); margin-bottom: var(--gap); }
+        .solar-info-strip .solar-detail-panel { min-height: 120px; max-height: 260px; overflow-y: auto; }
+        @media(max-width:1000px) { .solar-info-strip { grid-template-columns: 1fr 1fr; } }
+        @media(max-width:700px) { .solar-info-strip { grid-template-columns: 1fr; } }
+        .solar-array-card { display: flex; flex-direction: column; }
         .solar-array-name { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin-bottom: 14px; }
         .solar-array-grid { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; justify-content: center; }
         .solar-array-row { display: flex; gap: 8px; justify-content: center; }
@@ -306,17 +310,56 @@
         .solar-panel.panel-med { background: rgba(79,143,255,.15); border-color: rgba(79,143,255,.3); }
         .solar-panel.panel-high { background: rgba(251,191,36,.12); border-color: rgba(251,191,36,.25); }
         .solar-panel.panel-peak { background: rgba(251,191,36,.2); border-color: rgba(251,191,36,.4); }
+        .solar-panel.health-watch, .solar-compact-tile.health-watch { box-shadow: inset 0 0 0 2px var(--accent-amber); }
+        .solar-panel.health-alert, .solar-compact-tile.health-alert { box-shadow: inset 0 0 0 2px var(--accent-red); animation: pulse-alert 2s ease-in-out infinite; }
+        .solar-panel.health-fair, .solar-compact-tile.health-fair { box-shadow: inset 0 0 0 1px rgba(251,191,36,.4); }
+        .solar-panel.health-excellent, .solar-compact-tile.health-excellent { box-shadow: inset 0 0 0 1px rgba(52,211,153,.3); }
+        .solar-compact-tile.health-good { box-shadow: inset 0 0 0 1px rgba(52,211,153,.15); }
+        @keyframes pulse-alert { 0%,100%{box-shadow:inset 0 0 0 2px var(--accent-red)} 50%{box-shadow:inset 0 0 0 2px rgba(248,113,113,.4)} }
+        .health-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+        .health-badge.hb-ok { background: rgba(52,211,153,.1); color: var(--accent-green); }
+        .health-badge.hb-warn { background: rgba(251,191,36,.1); color: var(--accent-amber); }
+        .health-badge.hb-err { background: rgba(248,113,113,.1); color: var(--accent-red); }
+        .health-badge.hb-mon { background: rgba(79,143,255,.1); color: var(--accent-blue); }
+        .panel-health-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 8px; border-radius: 6px; font-size: 11px; }
+        .panel-health-row.ph-excellent { background: rgba(52,211,153,.06); color: var(--accent-green); }
+        .panel-health-row.ph-good { background: rgba(52,211,153,.04); color: var(--text-secondary); }
+        .panel-health-row.ph-fair { background: rgba(251,191,36,.06); color: var(--accent-amber); }
+        .panel-health-row.ph-watch { background: rgba(251,191,36,.08); color: var(--accent-amber); }
+        .panel-health-row.ph-alert { background: rgba(248,113,113,.08); color: var(--accent-red); }
+        .solar-health-summary { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:8px 12px; background:rgba(255,255,255,.02); border-radius:8px; margin-bottom:8px; font-size:12px; color:var(--text-secondary); }
+        .solar-health-summary .shs-label { font-weight:600; color:var(--text-primary); }
+        .solar-health-summary .shs-item { display:flex; align-items:center; gap:4px; }
+        .solar-health-summary .shs-dot { width:8px; height:8px; border-radius:50%; }
         .solar-panel-watts { font-family: var(--font-mono); font-size: 16px; font-weight: 600; }
         .solar-panel-unit { font-size: 10px; color: var(--text-muted); }
         .solar-panel-serial { font-size: 8px; color: var(--text-muted); letter-spacing: .3px; margin-top: 2px; }
         .solar-spacer { width: 90px; height: 68px; border-radius: 8px; background: transparent; border: none; }
+        /* Compact tiles for wide arrays (>10 panels per row) */
+        .solar-compact-grid { display: flex; flex-direction: column; gap: 3px; flex: 1; justify-content: center; }
+        .solar-compact-col-headers { display: flex; gap: 2px; padding-left: 20px; padding-right: 2px; width: 100%; }
+        .solar-compact-col-hdr { flex: 1; min-width: 20px; text-align: center; font-size: 7px; font-weight: 600; color: var(--text-muted); letter-spacing: .3px; }
+        .solar-compact-row { display: flex; gap: 2px; width: 100%; align-items: center; }
+        .solar-compact-row-label { font-size: 10px; font-weight: 600; color: var(--text-muted); width: 18px; flex-shrink: 0; text-align: center; }
+        .solar-compact-tiles { display: flex; gap: 2px; flex: 1; }
+        .solar-compact-tile { flex: 1; min-width: 20px; height: 40px; border-radius: 5px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--border-subtle); transition: all .15s; position: relative; overflow: hidden; }
+        .solar-compact-tile:hover { border-color: var(--border-active); transform: translateY(-1px); z-index: 2; }
+        .solar-compact-tile.ct-selected { border-color: var(--solar-color); box-shadow: 0 0 0 1px var(--solar-color); z-index: 3; }
+        .solar-compact-tile .ct-watts { font-family: var(--font-mono); font-size: 11px; font-weight: 600; line-height: 1; }
+        .solar-compact-tile .ct-id { font-size: 7px; color: var(--text-muted); letter-spacing: .3px; margin-top: 1px; line-height: 1; }
+        .solar-compact-tile.panel-off .ct-watts { color: var(--text-muted); }
+        .solar-compact-tile.panel-low .ct-watts { color: var(--accent-blue); }
+        .solar-compact-tile.panel-med .ct-watts { color: #6aafff; }
+        .solar-compact-tile.panel-high .ct-watts { color: var(--solar-color); }
+        .solar-compact-tile.panel-peak .ct-watts { color: #fcd34d; }
+        .solar-compact-tile[data-tooltip]:hover::after { content: attr(data-tooltip); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--bg-elevated); border: 1px solid var(--border-active); color: var(--text-primary); font-size: 10px; font-family: var(--font-mono); padding: 4px 8px; border-radius: 4px; white-space: nowrap; z-index: 100; pointer-events: none; }
+        .solar-compact-spacer { flex: 1; min-width: 20px; height: 40px; border-radius: 5px; background: transparent; border: none; }
         .solar-panel.panel-off .solar-panel-watts { color: var(--text-muted); }
         .solar-panel.panel-low .solar-panel-watts { color: var(--accent-blue); }
         .solar-panel.panel-med .solar-panel-watts { color: #6aafff; }
         .solar-panel.panel-high .solar-panel-watts { color: var(--solar-color); }
         .solar-panel.panel-peak .solar-panel-watts { color: #fcd34d; }
-        .solar-detail-card { display: flex; flex-direction: column; gap: var(--gap); }
-        .solar-detail-panel { flex: 1; }
+        .solar-detail-panel { }
         .solar-detail-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 10px; }
         .solar-alerts { padding: 10px; background: rgba(52,211,153,.06); border: 1px solid rgba(52,211,153,.15); border-radius: 8px; font-size: 12px; color: var(--accent-green); }
         .solar-alerts.has-alerts { background: rgba(251,191,36,.06); border-color: rgba(251,191,36,.15); color: var(--accent-amber); }
@@ -328,6 +371,7 @@
         .solar-inv-table th { text-align: left; padding: 8px 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); background: var(--bg-elevated); border-bottom: 2px solid var(--border-subtle); }
         .solar-inv-table td { padding: 7px 10px; border-bottom: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 12px; }
         .solar-inv-table tr:hover { background: rgba(255,255,255,.02); }
+        .solar-inv-table tr.ct-row-selected { background: rgba(251,191,36,.08); }
         .solar-inv-bar { width: 100%; height: 6px; background: rgba(255,255,255,.05); border-radius: 3px; overflow: hidden; }
         .solar-inv-bar-fill { height: 100%; border-radius: 3px; transition: width .5s; }
         /* Layout Editor */
@@ -363,7 +407,7 @@
         .se-btn-rmrow { position: absolute; top: 4px; right: 8px; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; }
         .se-btn-rmrow:hover { color: var(--accent-red); background: rgba(248,113,113,.1); }
         .se-save-status { font-size: 12px; color: var(--accent-green); margin-left: auto; }
-        @media(max-width:1200px) { .solar-main { grid-template-columns: 1fr; } .solar-summary { grid-template-columns: repeat(2,1fr); } }
+        @media(max-width:1200px) { .solar-summary { grid-template-columns: repeat(2,1fr); } .solar-info-strip { grid-template-columns: 1fr 1fr; } }
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
     </style>
 </head>
@@ -679,22 +723,22 @@
                     <div style="text-align:center;padding:40px;color:var(--text-muted)">Loading solar data...</div>
                 </div>
             </div>
-            <div class="solar-detail-card">
-                <div class="card solar-detail-panel" id="sol-detail">
-                    <div class="solar-detail-title">Panel Detail</div>
-                    <div style="color:var(--text-muted);font-size:13px;padding:20px 0">Click a panel to view details</div>
-                </div>
-                <div class="card">
-                    <div class="solar-detail-title">Alerts</div>
-                    <div class="solar-alerts" id="sol-alerts">✓ All panels performing normally</div>
-                </div>
-                <div class="card">
-                    <div class="solar-detail-title">Gateway</div>
-                    <div class="solar-gw-info" id="sol-gateway">
-                        <span>IP: <span class="gw-val">--</span></span>
-                        <span>Serial: <span class="gw-val">--</span></span>
-                        <span>Panels: <span class="gw-val">--</span></span>
-                    </div>
+        </div>
+        <div class="solar-info-strip">
+            <div class="card solar-detail-panel" id="sol-detail">
+                <div class="solar-detail-title">Panel Detail</div>
+                <div class="sol-detail-placeholder" style="color:var(--text-muted);font-size:13px">Click a panel to view details</div>
+            </div>
+            <div class="card">
+                <div class="solar-detail-title">Alerts</div>
+                <div class="solar-alerts" id="sol-alerts">✓ All panels performing normally</div>
+            </div>
+            <div class="card">
+                <div class="solar-detail-title">Gateway</div>
+                <div class="solar-gw-info" id="sol-gateway">
+                    <span>IP: <span class="gw-val">--</span></span>
+                    <span>Serial: <span class="gw-val">--</span></span>
+                    <span>Panels: <span class="gw-val">--</span></span>
                 </div>
             </div>
         </div>
@@ -759,6 +803,7 @@ document.addEventListener('DOMContentLoaded',()=>{
         // Try legacy file
         if(!found){try{const r=await fetch('enphase_solar_data.json?t='+Date.now(),{method:'HEAD'});if(r.ok)found=true}catch(e){}}
         if(found){document.getElementById('tb-solar').style.display='flex';loadSolar()}
+        else{await fetchPanelHealth()} // Still fetch health data even if no solar_*.json found
         // Restore last active tab
         try{const t=localStorage.getItem('fwh_tab');if(t&&document.getElementById('tab-'+t)){switchTab(t)}}catch(e){}
     })();
@@ -768,6 +813,113 @@ function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.cla
 
 // ===== SOLAR ARRAY TAB (Multi-Array) =====
 let solArrays={}, solActive=null, solTimer=null;
+let solPanelHealth={}; // Health data from solaredge_panel_current.json
+let solHealthReport=null; // Health report from solar_health_monitor.py
+
+async function fetchPanelHealth(){
+    try{
+        const r=await fetch('solaredge_panel_current.json?t='+Date.now());
+        if(r.ok){solPanelHealth=await r.json()}
+    }catch(e){}
+    // Also load the health report (generated daily by solar_health_monitor.py)
+    try{
+        const r2=await fetch('solar_health_report.json?t='+Date.now());
+        if(r2.ok){solHealthReport=await r2.json()}
+    }catch(e){}
+    return solPanelHealth;
+}
+
+function getPanelHealthStatus(serial){
+    // Priority: health report (historical analysis) > real-time collector data
+    // The health report has deeper analysis (lifetime, monthly trends, cyclical patterns)
+    if(solHealthReport&&solHealthReport.panels){
+        // Check both direct serial and enphase-prefixed
+        const rp=solHealthReport.panels[serial]||solHealthReport.panels['enphase_'+serial];
+        if(rp){
+            return{
+                status:rp.status,
+                ratio_vs_string:rp.recent_ratio||1,
+                ratio_vs_array:rp.lifetime_ratio||1,
+                lifetime_daily_avg_wh:0,
+                details:rp.details||[],
+                monthly_classification:rp.monthly_classification||'',
+                cyclical_score:rp.cyclical_score||0,
+                bad_month_count:rp.bad_month_count||0,
+                source:'health_report'
+            };
+        }
+    }
+    // Fallback to real-time collector data
+    // Look up a panel's health by serial number
+    // 1. Check solaredge_panel_current.json (SolarEdge full health data)
+    if(solPanelHealth&&solPanelHealth.optimizers){
+        const opt=solPanelHealth.optimizers.find(o=>o.serial_number===serial);
+        if(opt&&opt.health)return opt.health;
+    }
+    // 2. Check current array data (works for both Enphase and SolarEdge)
+    const d=solActive?solArrays[solActive]:null;
+    if(d&&d.inverters&&d.inverters[serial]){
+        const p=d.inverters[serial];
+        // Enphase: health is embedded directly per-inverter
+        if(p.health&&p.health.status)return p.health;
+        // SolarEdge fallback: health_status field
+        if(p.health_status)return{
+            status:p.health_status,
+            ratio_vs_string:p.health_ratio_vs_string||1,
+            ratio_vs_array:p.health_ratio_vs_array||1,
+            lifetime_daily_avg_wh:p.lifetime_daily_avg_wh||0,
+            today_ratio_vs_string:0,today_ratio_vs_array:0
+        };
+    }
+    return null;
+}
+
+function getArrayHealthSummary(){
+    // Prefer the health report (deep analysis) over real-time data
+    if(solHealthReport&&solHealthReport.health_counts){
+        const hc=solHealthReport.health_counts;
+        const ups=(solHealthReport.underperformers||[]).length;
+        const total=Object.values(hc).reduce((a,b)=>a+b,0);
+        let worst='ok',msg='';
+        if(hc.alert>0){worst='error';msg=ups+' panel'+(ups>1?'s':'')+' need attention'}
+        else if(hc.watch>0){worst='warning';msg=hc.watch+' panel'+(hc.watch>1?'s':'')+' on watch'}
+        else if(hc.fair>2){worst='warning';msg=hc.fair+' panels below average'}
+        else{msg='All '+total+' panels healthy'}
+        // Add watchlist info if available
+        const wl=solHealthReport.watchlist;
+        if(wl&&wl.currently_healthy_but_watched>0){
+            msg+=' ('+wl.currently_healthy_but_watched+' on watchlist)';
+        }
+        return{status:worst,counts:hc,ups:ups,message:msg,source:'health_report'};
+    }
+    // Fallback to real-time aggregation
+    let worst='ok', totalCounts={excellent:0,good:0,fair:0,watch:0,alert:0}, totalUps=0, msg='';
+    // Check SolarEdge panel health data
+    if(solPanelHealth&&solPanelHealth.health){
+        const h=solPanelHealth.health;
+        const hc=h.health_counts||{};
+        for(const k in hc)(totalCounts[k]=(totalCounts[k]||0)+(hc[k]||0));
+        totalUps+=(h.underperformers||[]).length;
+    }
+    // Check each loaded array for embedded health
+    for(const aid in solArrays){
+        const d=solArrays[aid];
+        if(d&&d.health&&d.health.health_counts){
+            const hc=d.health.health_counts;
+            // Only add if not already counted (avoid double-counting SolarEdge barn)
+            if(aid!=='barn'||!solPanelHealth||!solPanelHealth.health){
+                for(const k in hc)(totalCounts[k]=(totalCounts[k]||0)+(hc[k]||0));
+                totalUps+=(d.health.underperformers||[]).length;
+            }
+        }
+    }
+    const total=Object.values(totalCounts).reduce((a,b)=>a+b,0);
+    if(totalCounts.alert>0){worst='error';msg=totalUps+' panel'+(totalUps>1?'s':'')+' need attention'}
+    else if(totalCounts.watch>0){worst='warning';msg=totalUps+' panel'+(totalUps>1?'s':'')+' underperforming'}
+    else if(totalCounts.fair>2){worst='warning';msg=totalCounts.fair+' panels below average'}
+    else{msg='All '+total+' panels healthy'}
+    return{status:worst,counts:totalCounts,ups:totalUps,message:msg};
+}
 
 async function loadSolar(){
     // Discover available arrays
@@ -828,6 +980,8 @@ async function loadSolar(){
     // Auto-refresh
     if(solTimer)clearInterval(solTimer);
     solTimer=setInterval(()=>{if(document.getElementById('tab-solar').classList.contains('active'))refreshSolarArrays()},60000);
+    // Fetch panel health data for SolarEdge arrays
+    await fetchPanelHealth();
 }
 
 async function loadOneArray(aid,found){
@@ -839,6 +993,7 @@ async function loadOneArray(aid,found){
 
 async function refreshSolarArrays(){
     for(const aid of Object.keys(solArrays)){await loadOneArray(aid,solArrays)}
+    await fetchPanelHealth();
     if(solActive&&solArrays[solActive])renderSolar(solArrays[solActive]);
 }
 
@@ -865,48 +1020,106 @@ function renderSolar(d){
     document.getElementById('sol-avg').innerHTML=Math.round(s.average_watts||s.avg_watts||0)+'<span class="solar-stat-unit"> W</span>';
     const spread=s.spread||0;
     document.getElementById('sol-spread').innerHTML=spread+'<span class="solar-stat-unit"> W</span>';
-    // Array layout
+    // Array layout — always uses compact grid for consistent display
     const arrays=lay.arrays||[];
     let html='';
+    const rowLetters='ABCDEFGHIJKLMNOP';
     if(arrays.length>0){
         arrays.forEach(arr=>{
-            html+='<div class="solar-array-name">'+(arr.name||d.array_name||'Array')+'</div><div class="solar-array-grid">';
-            (arr.rows||[]).forEach(row=>{
-                html+='<div class="solar-array-row">';
-                row.forEach(serial=>{
-                    if(serial.startsWith('__spacer')){
-                        html+='<div class="solar-spacer"></div>';
-                    }else{
-                        const p=inv[serial]||{current_watts:0,max_ever_watts:1};
-                        const w=p.current_watts||0;
-                        const cls=panelClass(w,p.max_ever_watts||300);
-                        html+='<div class="solar-panel '+cls+'" onclick="showPanelDetail(\''+serial+'\')" title="SN: '+serial+'">';
-                        html+='<div class="solar-panel-watts">'+w+'</div><div class="solar-panel-unit">W</div>';
-                        html+='<div class="solar-panel-serial">'+serial.slice(-4)+'</div></div>';
-                    }
-                });
-                html+='</div>';
-            });
-            html+='</div>';
+            const rows=arr.rows||[];
+            html+='<div class="solar-array-name">'+(arr.name||d.array_name||'Array')+'</div>';
+            html+=renderCompactGrid(rows,inv,aid);
         });
     }else{
+        // No layout defined — auto-arrange into rows for compact display
         const serials=Object.keys(inv);
-        html+='<div class="solar-array-name">'+(d.array_name||'All Panels')+'</div><div class="solar-array-grid"><div class="solar-array-row" style="flex-wrap:wrap">';
-        serials.forEach(serial=>{
-            const p=inv[serial]||{};const w=p.current_watts||0;
-            const cls=panelClass(w,p.max_ever_watts||300);
-            html+='<div class="solar-panel '+cls+'" onclick="showPanelDetail(\''+serial+'\')">';
-            html+='<div class="solar-panel-watts">'+w+'</div><div class="solar-panel-unit">W</div>';
-            html+='<div class="solar-panel-serial">'+serial.slice(-4)+'</div></div>';
-        });
-        html+='</div></div>';
+        const perRow=serials.length>20?20:Math.min(serials.length,10);
+        const autoRows=[];
+        for(let i=0;i<serials.length;i+=perRow)autoRows.push(serials.slice(i,i+perRow));
+        html+='<div class="solar-array-name">'+(d.array_name||'All Panels')+'</div>';
+        html+=renderCompactGrid(autoRows,inv,aid);
     }
     document.getElementById('sol-arrays').innerHTML=html;
-    // Alerts
-    const alerts=d.underperformers||[];
+    // Health Summary — prefer health report (deep analysis) over real-time
+    let healthHtml='';
+    let hData=null;
+    let activeUPs=[];
+    
+    // Check if health report has per-array data
+    const hrArrayKey=(aid==='barn'||d.array_type==='solaredge')?'barn':'house';
+    const hrArray=solHealthReport&&solHealthReport.summary&&solHealthReport.summary.arrays?solHealthReport.summary.arrays[hrArrayKey]:null;
+    
+    if(hrArray&&hrArray.health_counts){
+        // Use health report data
+        const hc=hrArray.health_counts;
+        const dotColors={excellent:'var(--accent-green)',good:'var(--accent-green)',fair:'var(--accent-amber)',watch:'var(--accent-amber)',alert:'var(--accent-red)'};
+        healthHtml='<div class="solar-health-summary">';
+        healthHtml+='<span class="shs-label">Panel Health</span>';
+        for(const st of ['excellent','good','fair','watch','alert']){
+            if((hc[st]||0)>0){
+                healthHtml+='<span class="shs-item"><span class="shs-dot" style="background:'+dotColors[st]+'"></span>'+hc[st]+' '+st+'</span>';
+            }
+        }
+        const model=hrArray.model||'';
+        const age=hrArray.age_years||'';
+        const sys=hrArray.system||'';
+        if(model)healthHtml+='<span style="color:var(--text-muted)">|</span><span style="color:var(--text-muted)">'+model+(age?' · '+age+'yr':'')+'</span>';
+        healthHtml+='</div>';
+        
+        // Get underperformers for this array from health report
+        const allUPs=solHealthReport.underperformers||[];
+        const arrayString=(hrArrayKey==='barn')?null:'Enphase';
+        activeUPs=allUPs.filter(u=>{
+            if(hrArrayKey==='house')return u.string==='Enphase';
+            return u.string!=='Enphase';
+        });
+    }else{
+        // Fallback to real-time data
+        const arrayHealth=d.health||null;
+        const seHealth=(d.array_type==='solaredge'&&solPanelHealth)?solPanelHealth.health:null;
+        hData=seHealth||arrayHealth;
+        if(hData){
+            const hc=hData.health_counts||{};
+            const deg=hData.degradation||{};
+            const spec=hData.panel_spec||{};
+            const dotColors={excellent:'var(--accent-green)',good:'var(--accent-green)',fair:'var(--accent-amber)',watch:'var(--accent-amber)',alert:'var(--accent-red)'};
+            healthHtml='<div class="solar-health-summary">';
+            healthHtml+='<span class="shs-label">Panel Health</span>';
+            for(const st of ['excellent','good','fair','watch','alert']){
+                if((hc[st]||0)>0){
+                    healthHtml+='<span class="shs-item"><span class="shs-dot" style="background:'+dotColors[st]+'"></span>'+hc[st]+' '+st+'</span>';
+                }
+            }
+            if(spec.model)healthHtml+='<span style="color:var(--text-muted)">|</span><span style="color:var(--text-muted)">'+spec.model+(spec.age_years?' · '+spec.age_years+'yr':'')+(deg.expected_pct_remaining?' · '+Math.round(deg.expected_pct_remaining)+'% capacity':'')+'</span>';
+            healthHtml+='</div>';
+        }
+        const alerts=d.underperformers||[];
+        const healthUPs=hData?(hData.underperformers||[]):[];
+        const seUPs=(d.array_type==='solaredge'&&solPanelHealth&&solPanelHealth.health)?(solPanelHealth.health.underperformers||[]):[];
+        activeUPs=seUPs.length>0?seUPs:(healthUPs.length>0?healthUPs:alerts);
+    }
     const alertEl=document.getElementById('sol-alerts');
-    if(alerts.length>0){alertEl.className='solar-alerts has-alerts';alertEl.innerHTML='⚠ '+alerts.length+' underperforming: '+alerts.map(a=>(a.serial||'').slice(-4)+' ('+Math.round(a.pct_of_avg||0)+'%)').join(', ')}
-    else{alertEl.className='solar-alerts';alertEl.innerHTML='✓ All panels performing normally'}
+    if(activeUPs.length>0){
+        alertEl.className='solar-alerts has-alerts';
+        // Count by severity
+        const alertCount=activeUPs.filter(a=>a.status==='alert').length;
+        const watchCount=activeUPs.filter(a=>a.status==='watch').length;
+        const upText=activeUPs.slice(0,8).map(a=>{
+            const sn=a.serial_number||a.serial||'';
+            const st=a.status||'watch';
+            const icon=st==='alert'?'🔴':st==='watch'?'🟠':'🟡';
+            const detail=a.details&&a.details[0]?a.details[0]:'';
+            const shortDetail=detail.length>40?detail.slice(0,40)+'…':detail;
+            return '<span style="cursor:pointer" onclick="showPanelDetail(\''+sn+'\')" title="'+detail+'">'+icon+' '+sn.slice(-4)+'</span>';
+        }).join(' ');
+        let summaryText='';
+        if(alertCount>0)summaryText+=alertCount+' alert'+(alertCount>1?'s':'');
+        if(watchCount>0)summaryText+=(summaryText?' · ':'')+watchCount+' watch';
+        alertEl.innerHTML=healthHtml+'⚠ '+summaryText+': '+upText+(activeUPs.length>8?' +' +(activeUPs.length-8)+' more':'');
+    }else{
+        alertEl.className='solar-alerts';
+        alertEl.innerHTML=healthHtml+'✓ All panels performing within normal range';
+    }
     // Gateway
     const gwIp = gw.ip === 'cloud' ? '☁️ Cloud API' : (gw.ip||'--');
     let gwHtml = '<span>IP: <span class="gw-val">'+gwIp+'</span></span><span>Serial: <span class="gw-val">'+(gw.serial||'--')+'</span></span><span>Panels: <span class="gw-val">'+(s.panel_count||'--')+' '+(gw.model||'')+'</span></span>';
@@ -915,16 +1128,85 @@ function renderSolar(d){
     // Inverter table
     const maxW=Math.max(...Object.values(inv).map(v=>v.max_ever_watts||0),1);
     const sorted=Object.entries(inv).sort((a,b)=>(b[1].current_watts||0)-(a[1].current_watts||0));
+    // Build grid ID lookup from compact grid if present
+    const gridIdMap={};
+    document.querySelectorAll('.solar-compact-tile[data-serial][data-grid]').forEach(el=>{gridIdMap[el.dataset.serial]=el.dataset.grid});
+    const hasGridIds=Object.keys(gridIdMap).length>0;
+    // Update table header if grid IDs available
+    const thead=document.querySelector('.solar-inv-table thead tr');
+    if(thead&&hasGridIds&&!thead.querySelector('.th-grid')){
+        const th=document.createElement('th');th.className='th-grid';th.textContent='Grid';
+        thead.insertBefore(th,thead.firstChild);
+    }else if(thead&&!hasGridIds){
+        const existing=thead.querySelector('.th-grid');if(existing)existing.remove();
+    }
     let tbody='';
     sorted.forEach(([serial,p])=>{
-        const w=p.current_watts||0,mxT=p.max_today_watts||0,mxE=p.max_ever_watts||0,avg=Math.round(p.avg_today_watts||0),samp=p.samples_today||0;
+        const w=Math.round(p.current_watts||0),mxT=Math.round(p.max_today_watts||0),mxE=Math.round(p.max_ever_watts||0),avg=Math.round(p.avg_today_watts||0),samp=p.samples_today||0;
         const pct=mxE>0?Math.round(w/mxE*100):0;
         const barColor=w===0?'var(--text-muted)':pct>75?'var(--solar-color)':pct>50?'var(--accent-blue)':'rgba(79,143,255,.5)';
-        tbody+='<tr onclick="showPanelDetail(\''+serial+'\')" style="cursor:pointer"><td>...'+serial.slice(-4)+'</td><td>'+w+' W</td><td>'+mxT+' W</td><td>'+mxE+' W</td><td>'+avg+' W</td><td>'+samp+'</td>';
+        const gid=gridIdMap[serial]||'';
+        tbody+='<tr data-serial="'+serial+'" onclick="compactTileClick(\''+serial+'\',\'table\')" style="cursor:pointer">';
+        if(hasGridIds)tbody+='<td style="color:var(--accent-blue);font-weight:600">'+gid+'</td>';
+        tbody+='<td>'+serial+'</td><td>'+w+' W</td><td>'+mxT+' W</td><td>'+mxE+' W</td><td>'+avg+' W</td><td>'+samp+'</td>';
         tbody+='<td style="width:120px"><div class="solar-inv-bar"><div class="solar-inv-bar-fill" style="width:'+pct+'%;background:'+barColor+'"></div></div></td></tr>';
     });
     document.getElementById('sol-inv-body').innerHTML=tbody||'<tr><td colspan="7" style="text-align:center;color:var(--text-muted)">No data</td></tr>';
 }
+function renderCompactGrid(rows,inv,aid){
+    const rowLetters='ABCDEFGHIJKLMNOP';
+    const maxPerRow=Math.max(...rows.map(r=>r.filter(s=>!s.startsWith('__spacer')).length),0);
+    let h='<div class="solar-compact-grid">';
+    // Column headers
+    h+='<div class="solar-compact-col-headers">';
+    for(let c=1;c<=maxPerRow;c++)h+='<div class="solar-compact-col-hdr">'+c+'</div>';
+    h+='</div>';
+    // Rows
+    rows.forEach((row,ri)=>{
+        const letter=rowLetters[ri]||String(ri+1);
+        h+='<div class="solar-compact-row">';
+        h+='<div class="solar-compact-row-label">'+letter+'</div>';
+        h+='<div class="solar-compact-tiles">';
+        let col=0;
+        row.forEach(serial=>{
+            if(serial.startsWith('__spacer')){
+                h+='<div class="solar-compact-spacer"></div>';
+                col++;
+            }else{
+                col++;
+                const p=inv[serial]||{current_watts:0,max_ever_watts:1};
+                const w=p.current_watts||0;
+                const cls=panelClass(w,p.max_ever_watts||300);
+                const ph=getPanelHealthStatus(serial);
+                const hcls=ph?(' health-'+(ph.status||'')):'';
+                const gridId=letter+col;
+                const tooltip=gridId+' | '+serial.slice(-4)+' | '+w+'W'+(ph?' | '+ph.status:'');
+                h+='<div class="solar-compact-tile '+cls+hcls+'" data-serial="'+serial+'" data-grid="'+gridId+'" data-tooltip="'+tooltip+'" onclick="compactTileClick(\''+serial+'\')">';
+                h+='<div class="ct-watts">'+w+'</div>';
+                h+='<div class="ct-id">'+gridId+'</div></div>';
+            }
+        });
+        h+='</div></div>';
+    });
+    h+='</div>';
+    return h;
+}
+
+function compactTileClick(serial,source){
+    // Highlight clicked tile
+    document.querySelectorAll('.solar-compact-tile.ct-selected').forEach(el=>el.classList.remove('ct-selected'));
+    const tile=document.querySelector('.solar-compact-tile[data-serial="'+serial+'"]');
+    if(tile)tile.classList.add('ct-selected');
+    // Highlight corresponding row in inverter table (no page scroll)
+    document.querySelectorAll('.solar-inv-table tr.ct-row-selected').forEach(el=>el.classList.remove('ct-row-selected'));
+    const rows=document.querySelectorAll('.solar-inv-table tr[data-serial]');
+    rows.forEach(r=>{if(r.dataset.serial===serial)r.classList.add('ct-row-selected')});
+    // Show detail panel
+    showPanelDetail(serial);
+    // Scroll behavior: clicking from table scrolls page to top so grid selection is visible
+    if(source==='table'){window.scrollTo({top:0,behavior:'smooth'})}
+}
+
 function panelClass(w,maxEver){
     if(w===0)return'panel-off';
     const pct=maxEver>0?w/maxEver*100:0;
@@ -935,14 +1217,63 @@ function showPanelDetail(serial){
     if(!d||!d.inverters||!d.inverters[serial])return;
     const p=d.inverters[serial],el=document.getElementById('sol-detail');
     const lastT=p.last_report_time?new Date(p.last_report_time*1000).toLocaleTimeString():(p.last_report_human||'--');
-    el.innerHTML='<div class="solar-detail-title">Panel ...'+serial.slice(-4)+'</div>'
-        +'<div class="info-row"><span class="info-key">Serial</span><span class="info-val">'+serial+'</span></div>'
-        +'<div class="info-row"><span class="info-key">Current</span><span class="info-val" style="color:var(--solar-color)">'+(p.current_watts||0)+' W</span></div>'
-        +'<div class="info-row"><span class="info-key">Max Today</span><span class="info-val">'+(p.max_today_watts||0)+' W</span></div>'
-        +'<div class="info-row"><span class="info-key">Max Ever</span><span class="info-val">'+(p.max_ever_watts||0)+' W</span></div>'
+    // Check if this panel has a grid ID from compact layout
+    const gridEl=document.querySelector('.solar-compact-tile[data-serial="'+serial+'"]');
+    const gridId=gridEl?gridEl.dataset.grid:'';
+    const panelLabel=gridId?('Panel '+gridId+' ('+serial+')'):'Panel '+serial;
+    let detailHtml='<div class="solar-detail-title">'+panelLabel+'</div>'
+        +'<div class="info-row"><span class="info-key">Current</span><span class="info-val" style="color:var(--solar-color)">'+Math.round(p.current_watts||0)+' W</span></div>'
+        +'<div class="info-row"><span class="info-key">Max Today</span><span class="info-val">'+Math.round(p.max_today_watts||0)+' W</span></div>'
+        +'<div class="info-row"><span class="info-key">Max Ever</span><span class="info-val">'+Math.round(p.max_ever_watts||0)+' W</span></div>'
         +'<div class="info-row"><span class="info-key">Avg Today</span><span class="info-val">'+Math.round(p.avg_today_watts||0)+' W</span></div>'
         +'<div class="info-row"><span class="info-key">Samples</span><span class="info-val">'+(p.samples_today||0)+'</span></div>'
         +'<div class="info-row"><span class="info-key">Last Report</span><span class="info-val">'+lastT+'</span></div>';
+    // Add health data if available from panel monitoring
+    const ph=getPanelHealthStatus(serial);
+    // Panel specs from array health data
+    const arrHealth=d.health||null;
+    const seHealthData=(d.array_type==='solaredge'&&solPanelHealth)?solPanelHealth.health:null;
+    const specData=seHealthData||arrHealth;
+    if(specData&&specData.panel_spec){
+        const sp=specData.panel_spec;
+        const deg=specData.degradation||{};
+        detailHtml+='<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border-subtle);font-size:11px;color:var(--text-muted)">';
+        detailHtml+='<div style="font-weight:600;color:var(--text-secondary);margin-bottom:4px">Panel Specs</div>';
+        detailHtml+='<div class="info-row"><span class="info-key">Model</span><span class="info-val">'+sp.model+'</span></div>';
+        detailHtml+='<div class="info-row"><span class="info-key">Rated Output</span><span class="info-val">'+sp.nameplate_w+'W STC / '+(sp.ptc_w||'--')+'W PTC</span></div>';
+        if(sp.microinverter)detailHtml+='<div class="info-row"><span class="info-key">Microinverter</span><span class="info-val">'+sp.microinverter+'</span></div>';
+        if(deg.age_years)detailHtml+='<div class="info-row"><span class="info-key">Age</span><span class="info-val">'+deg.age_years+' years</span></div>';
+        if(deg.expected_pct_remaining)detailHtml+='<div class="info-row"><span class="info-key">Expected Capacity</span><span class="info-val">'+deg.expected_pct_remaining+'% ('+(deg.effective_ptc_w||deg.degraded_ptc_w||'--')+'W PTC)</span></div>';
+        detailHtml+='</div>';
+    }
+    if(ph){
+        const statusLabels={excellent:'★ Excellent',good:'✓ Good',fair:'~ Fair',watch:'⚠ Watch',alert:'✗ Alert'};
+        const statusClass='ph-'+(ph.status||'good');
+        detailHtml+='<div class="panel-health-row '+statusClass+'">'
+            +'<strong>Health: '+( statusLabels[ph.status]||ph.status)+'</strong></div>';
+        // Show available ratios (Enphase has realtime+daily+max_ever; SolarEdge has string+array)
+        if(ph.ratio_realtime>0)detailHtml+='<div class="info-row"><span class="info-key">Realtime vs Array</span><span class="info-val">'+Math.round(ph.ratio_realtime*100)+'%</span></div>';
+        if(ph.ratio_today_avg>0)detailHtml+='<div class="info-row"><span class="info-key">Today Avg vs Array</span><span class="info-val">'+Math.round(ph.ratio_today_avg*100)+'%</span></div>';
+        if(ph.ratio_max_ever>0)detailHtml+='<div class="info-row"><span class="info-key">Max Ever vs Array</span><span class="info-val">'+Math.round(ph.ratio_max_ever*100)+'%</span></div>';
+        if(ph.ratio_vs_string>0&&ph.ratio_vs_string!==ph.ratio_vs_array)detailHtml+='<div class="info-row"><span class="info-key">vs String Avg</span><span class="info-val">'+Math.round(ph.ratio_vs_string*100)+'%</span></div>';
+        if(ph.ratio_vs_array>0&&!ph.ratio_realtime)detailHtml+='<div class="info-row"><span class="info-key">vs Array Avg</span><span class="info-val">'+Math.round(ph.ratio_vs_array*100)+'%</span></div>';
+        if(ph.lifetime_daily_avg_wh>0)detailHtml+='<div class="info-row"><span class="info-key">Lifetime Daily Avg</span><span class="info-val">'+Math.round(ph.lifetime_daily_avg_wh)+' Wh</span></div>';
+    }
+    // Add SolarEdge energy data if available
+    const seFromHealth=solPanelHealth&&solPanelHealth.optimizers?solPanelHealth.optimizers.find(o=>o.serial_number===serial):null;
+    const seFromDash=d.inverters[serial];
+    const seOpt=seFromHealth||((seFromDash&&seFromDash.today_wh!=null)?seFromDash:null);
+    if(seOpt&&seOpt.today_wh!=null){
+            detailHtml+='<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border-subtle)">';
+            detailHtml+='<div class="info-row"><span class="info-key">Today</span><span class="info-val">'+(seOpt.today_wh/1000).toFixed(2)+' kWh</span></div>';
+            detailHtml+='<div class="info-row"><span class="info-key">This Week</span><span class="info-val">'+(seOpt.week_wh/1000).toFixed(2)+' kWh</span></div>';
+            detailHtml+='<div class="info-row"><span class="info-key">This Month</span><span class="info-val">'+(seOpt.month_wh/1000).toFixed(1)+' kWh</span></div>';
+            detailHtml+='<div class="info-row"><span class="info-key">Lifetime</span><span class="info-val">'+(seOpt.lifetime_wh/1000000).toFixed(2)+' MWh</span></div>';
+            detailHtml+='<div class="info-row"><span class="info-key">Inverter</span><span class="info-val">'+((seOpt.inverter||seOpt.parent_name)||'--')+'</span></div>';
+            detailHtml+='<div class="info-row"><span class="info-key">String</span><span class="info-val">'+(seOpt.string||'--')+'</span></div>';
+            detailHtml+='</div>';
+    }
+    el.innerHTML=detailHtml;
 }
 
 // ===== Layout Editor =====
@@ -1011,7 +1342,7 @@ function leRender(){
                 const p=inv[item]||{};
                 rhtml+='<div class="se-panel" draggable="true" data-serial="'+item+'" ondragstart="leDragStart(event,\''+item+'\')" ondragend="leDragEnd(event)">';
                 rhtml+='<div class="se-serial">'+item.slice(-4)+'</div>';
-                rhtml+='<div class="se-watts">'+(p.max_ever_watts||0)+' W max</div></div>';
+                rhtml+='<div class="se-watts">'+Math.round(p.max_ever_watts||0)+' W max</div></div>';
             }
         });
         if(row.length===0)rhtml+='<span style="color:var(--text-muted);font-size:12px;padding:8px">Drop panels here</span>';
@@ -1025,7 +1356,7 @@ function leRender(){
         const p=inv[serial]||{};
         uhtml+='<div class="se-panel" draggable="true" data-serial="'+serial+'" ondragstart="leDragStart(event,\''+serial+'\')" ondragend="leDragEnd(event)">';
         uhtml+='<div class="se-serial">'+serial.slice(-4)+'</div>';
-        uhtml+='<div class="se-watts">'+(p.max_ever_watts||0)+' W max</div></div>';
+        uhtml+='<div class="se-watts">'+Math.round(p.max_ever_watts||0)+' W max</div></div>';
     });
     if(leData.unassigned.length===0)uhtml+='<span style="color:var(--text-muted);font-size:12px;padding:8px">✓ All panels assigned</span>';
     uEl.innerHTML=uhtml;
@@ -1224,7 +1555,17 @@ function renderLive(d){
 
     // Health
     if(h){const items=[{k:'battery_api',l:'Battery API'},{k:'automation_script',l:'Automation'},{k:'solar',l:'Solar'},{k:'grid_connection',l:'Grid'},{k:'generator',l:'Generator'}];
-    document.getElementById('health-grid').innerHTML=items.map(i=>{const v=h[i.k]||'unknown';let c='off';if(v==='ok'||v==='active')c='ok';else if(v==='warning'||v==='standby')c='warn';else if(v==='error')c='err';return'<div class="health-item"><span class="hdot '+c+'"></span> '+i.l+'</div>'}).join('')+'<div class="health-item" style="cursor:pointer" onclick="switchTab(\'scripts\')"><span class="hdot '+(_scriptHealthClass||'off')+'" id="health-scripts-dot"></span> Scripts</div>'}
+    document.getElementById('health-grid').innerHTML=items.map(i=>{
+        let v=h[i.k]||'unknown';let c='off';let extra='';
+        if(i.k==='solar'&&solPanelHealth&&solPanelHealth.health){
+            const hs=getArrayHealthSummary();
+            if(hs.status==='error'){v='error';c='err';extra=' <span style="font-size:10px;opacity:.7">('+hs.message+')</span>'}
+            else if(hs.status==='warning'){v='warning';c='warn';extra=' <span style="font-size:10px;opacity:.7">('+hs.message+')</span>'}
+            else{if(v==='ok'||v==='active')c='ok';else if(v==='warning'||v==='standby')c='warn';else if(v==='error')c='err'}
+        }else{if(v==='ok'||v==='active')c='ok';else if(v==='warning'||v==='standby')c='warn';else if(v==='error')c='err'}
+        return'<div class="health-item" '+(i.k==='solar'?'style="cursor:pointer" onclick="switchTab(\'solar\')"':'')+'><span class="hdot '+c+'"></span> '+i.l+extra+'</div>'
+    }).join('')+'<div class="health-item" style="cursor:pointer" onclick="switchTab(\'scripts\')">' +
+    '<span class="hdot '+(_scriptHealthClass||'off')+'" id="health-scripts-dot"></span> Scripts</div>'}
 }
 
 function renderSI(d){

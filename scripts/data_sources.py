@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FranklinWH Data Source Manager - v3.5.0
+FranklinWH Data Source Manager - v3.5.1
 
 Unified data collection from Modbus TCP, Enphase local solar, and Franklin
 Cloud API. Designed to minimize cloud API usage by sourcing data locally
@@ -751,12 +751,12 @@ class CloudDataSource(DataSource):
             client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
 
             if mode in ['emergency_backup', 'backup']:
-                mode_obj = Mode.emergency_backup(soc=100)
+                mode_obj = Mode.emergency_backup(soc=config.RESERVE_SOC_BACKUP)
             else:
                 if config.HOME_MODE == 'self_consumption':
-                    mode_obj = Mode.self_consumption(soc=20)
+                    mode_obj = Mode.self_consumption(soc=config.RESERVE_SOC_HOME)
                 else:
-                    mode_obj = Mode.time_of_use(soc=20)
+                    mode_obj = Mode.time_of_use(soc=config.RESERVE_SOC_HOME)
 
             await client.set_mode(mode_obj)
             logger.info(f'Mode switch successful: {mode}')
@@ -1012,7 +1012,7 @@ if __name__ == "__main__":
 
     async def test():
         print("=" * 60)
-        print("FranklinWH Data Source Manager v3.5.0 - Self Test")
+        print("FranklinWH Data Source Manager v3.5.1 - Self Test")
         print("=" * 60)
         print(f"Modbus enabled: {config.MODBUS_ENABLED} (available: {MODBUS_AVAILABLE})")
         print(f"Cloud API enabled: {data_manager.cloud_source.enabled}")
