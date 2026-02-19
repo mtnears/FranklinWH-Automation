@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-Smart Battery Decision Engine - v3.5.1
+Smart Battery Decision Engine - v3.5.1 / v4.0 Adaptive Engine Bridge
 
 Unified data collection with Modbus TCP and Franklin Cloud API support.
 Features midnight-crossing peak period handling and performance monitoring.
+
+v4.0 bridge:
+- When ADAPTIVE_ENGINE_ENABLED=true, delegates decisions to adaptive_engine.py
+- All data collection, mode switching, and CSV logging remain in this file
+- The adaptive engine replaces should_charge_from_grid() only
+- Falls back to v3.5 logic if adaptive engine fails
 
 Configuration-driven battery automation that supports:
 - Hybrid Modbus/Cloud API data collection
@@ -28,6 +34,7 @@ Architecture:
 - Automatic fallback when primary data source fails
 
 Changelog:
+  v4.0.0 - Adaptive engine bridge: ADAPTIVE_ENGINE_ENABLED toggle
   v3.5.0 - Modbus TCP integration with automatic fallback
          - Fixed midnight-crossing peak periods (PEAK_END_HOUR can now be < PEAK_START_HOUR)
          - Connection performance monitoring and health tracking
@@ -61,6 +68,32 @@ if config.DYNAMIC_PRICING_ENABLED:
         from pricing import get_current_price, should_charge_at_current_price
     except ImportError:
         config.DYNAMIC_PRICING_ENABLED = False
+
+# v4.0 Adaptive Engine (optional)
+ADAPTIVE_ENGINE_LOADED = False
+adaptive_engine_instance = None
+
+if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
+    try:
+        from adaptive_engine import create_engine, SystemState, Decision
+        adaptive_engine_instance = create_engine(
+            csv_path=str(config.LOG_FILE),
+            profile_path=str(config.DATA_DIR / 'system_profile.json'),
+            rate_schedule_path=str(config.DATA_DIR / 'rate_schedule.json'),
+            config={
+                'battery_count': getattr(config, 'BATTERY_COUNT', 2),
+                'capacity_per_battery_kwh': getattr(config, 'BATTERY_CAPACITY_KWH', 13.6),
+                'backup_reserve_pct': getattr(config, 'BACKUP_RESERVE_PCT', 20),
+                'target_soc': config.TARGET_SOC,
+                'decision_interval_minutes': getattr(config, 'DECISION_INTERVAL_MINUTES', 15),
+                'override_path': str(config.LOG_DIR / 'override.json'),
+            },
+        )
+        ADAPTIVE_ENGINE_LOADED = True
+    except Exception as e:
+        print(f"Warning: Adaptive engine failed to load, falling back to v3.5 logic: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Weather/forecast integration placeholder
 # Note: weather.py module not yet implemented. The WEATHER_ENABLED toggle
@@ -320,6 +353,57 @@ def should_charge_from_grid(soc: float, solar_kw: float, hours_to_peak: float, i
         return False, f"Time available: {hours_to_peak:.1f}h to peak, wait for solar"
 
 
+def adaptive_engine_decision(battery_data, current_mode: str, in_peak: bool, hours_to_peak: float) -> tuple:
+    """
+    Bridge to the v4.0 adaptive engine.
+    
+    Translates battery_data into a SystemState, runs the engine,
+    and returns (should_charge: bool, reason: str) in the same format
+    as should_charge_from_grid() for seamless integration.
+    """
+    now = datetime.now()
+    
+    # Map grid status to boolean
+    grid_online = True
+    if hasattr(battery_data, 'grid_status'):
+        gs = str(battery_data.grid_status).lower()
+        if 'disconnect' in gs or 'offline' in gs or 'island' in gs:
+            grid_online = False
+    
+    # Build SystemState
+    state = SystemState(
+        timestamp=now,
+        soc_percent=battery_data.soc_percent,
+        solar_kw=battery_data.solar_power_kw,
+        grid_kw=battery_data.grid_power_kw,
+        battery_kw=battery_data.battery_power_kw,
+        home_load_kw=battery_data.home_load_kw,
+        grid_online=grid_online,
+        current_mode=current_mode,
+    )
+    
+    # Add dynamic pricing if available
+    if config.DYNAMIC_PRICING_ENABLED:
+        try:
+            state.dynamic_price_cents = get_current_price()
+        except Exception:
+            pass
+    
+    # Run the engine
+    decision = adaptive_engine_instance.evaluate(state)
+    
+    # Translate to v3.5 format: (should_charge, reason)
+    should_charge = (decision.action == "switch_to_backup")
+    reason = f"[v4 P{decision.priority_level}] {decision.reason}"
+    
+    # Log engine metrics if present
+    if decision.metrics:
+        metrics_str = ", ".join(f"{k}={v}" for k, v in decision.metrics.items())
+        log_intelligence(f"Engine metrics: {metrics_str}")
+    
+    return should_charge, reason
+
+
 def detect_mode(battery_data) -> str:
     """
     Detect current battery operating mode from data.
@@ -431,7 +515,8 @@ async def main() -> int:
     
     try:
         log_intelligence("=" * 70)
-        log_intelligence("FranklinWH Smart Decision Engine v3.5.1")
+        engine_label = "v4.0 Adaptive" if ADAPTIVE_ENGINE_LOADED else "v3.5.1"
+        log_intelligence(f"FranklinWH Smart Decision Engine {engine_label}")
         
         # Check for manual override first
         override = check_manual_override()
@@ -467,8 +552,23 @@ async def main() -> int:
         # Calculate time to peak
         hours_to_peak = calculate_time_to_peak()
         
-        # Make charging decision
-        should_charge, reason = should_charge_from_grid(soc, solar_kw, hours_to_peak, in_peak, solar_to_bat_kw)
+        # Make charging decision — v4.0 adaptive engine or v3.5 legacy
+        if ADAPTIVE_ENGINE_LOADED:
+            try:
+                should_charge, reason = adaptive_engine_decision(
+                    battery_data, current_mode, in_peak, hours_to_peak
+                )
+            except Exception as e:
+                log_intelligence(f"Adaptive engine error, falling back to v3.5: {e}")
+                should_charge, reason = should_charge_from_grid(
+                    soc, solar_kw, hours_to_peak, in_peak, solar_to_bat_kw
+                )
+                reason = f"[v3.5 fallback] {reason}"
+        else:
+            should_charge, reason = should_charge_from_grid(
+                soc, solar_kw, hours_to_peak, in_peak, solar_to_bat_kw
+            )
+        
         desired_mode = "emergency_backup" if should_charge else "home"
         desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
         
@@ -634,6 +734,15 @@ async def main() -> int:
             except Exception:
                 data['grid_price_cents'] = 'N/A'
         
+        # Add adaptive engine info if active
+        if ADAPTIVE_ENGINE_LOADED:
+            data['engine'] = 'v4_adaptive'
+            status = adaptive_engine_instance.get_status()
+            if status.get('last_decision'):
+                data['engine_priority'] = str(status['last_decision']['priority_level'])
+            if status.get('curtailed_kwh', 0) > 0:
+                data['curtailed_kwh'] = f"{status['curtailed_kwh']:.3f}"
+        
         # Write to CSV
         file_exists = config.LOG_FILE.exists()
         
@@ -649,7 +758,8 @@ async def main() -> int:
         bat_info = f" ({num_batteries} batteries)" if num_batteries > 1 else ""
         switch_info = " [SWITCHED]" if mode_switched else ""
         source_info = f" via {battery_data.source.upper()}"
-        print(f"Decision: {desired_mode_label} mode ({reason}){bat_info}{switch_info}{source_info}")
+        engine_info = " [v4]" if ADAPTIVE_ENGINE_LOADED else ""
+        print(f"Decision: {desired_mode_label} mode ({reason}){bat_info}{switch_info}{source_info}{engine_info}")
         
     except Exception as e:
         log_intelligence(f"ERROR: {e}")

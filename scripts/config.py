@@ -153,6 +153,15 @@ class Config:
     TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
     TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
 
+    # ===== NEW: V4.0 Adaptive Decision Engine =====
+    # When enabled, smart_decision.py delegates to adaptive_engine.py
+    # which uses forecast-aware charging, learned system profiles, and
+    # full rate schedule awareness. Falls back to v3.5 logic on error.
+    ADAPTIVE_ENGINE_ENABLED: bool = field(default_factory=lambda: get_bool('ADAPTIVE_ENGINE_ENABLED', False))
+    DECISION_INTERVAL_MINUTES: int = field(default_factory=lambda: get_int('DECISION_INTERVAL_MINUTES', 15))
+    BATTERY_COUNT: int = field(default_factory=lambda: get_int('BATTERY_COUNT', 2))
+    BACKUP_RESERVE_PCT: float = field(default_factory=lambda: get_float('BACKUP_RESERVE_PCT', 20.0))
+
     # ===== NEW: SolarEdge Panel-Level Monitoring =====
     # Optional: Scrapes SolarEdge portal for real per-optimizer energy data
     # Requires portal login credentials (username/password, not API key)
@@ -424,6 +433,8 @@ class Config:
             features.append("Anonymous Telemetry")
         if self.SOLAREDGE_PANEL_MONITORING:
             features.append(f"SolarEdge Panel Monitoring (site {self.SOLAREDGE_SITE_ID})")
+        if self.ADAPTIVE_ENGINE_ENABLED:
+            features.append("V4.0 Adaptive Engine")
         if self.SOLAR_ARRAYS:
             arrays = [a.strip() for a in self.SOLAR_ARRAYS.split(',') if a.strip()]
             features.append(f"Solar Arrays ({', '.join(arrays)})")
@@ -448,6 +459,8 @@ class Config:
             features.append("PVOutput")
         if not self.TELEMETRY_ENABLED:
             features.append("Telemetry")
+        if not self.ADAPTIVE_ENGINE_ENABLED:
+            features.append("V4.0 Adaptive Engine")
         if not self.SOLAREDGE_PANEL_MONITORING:
             features.append("SolarEdge Panel Monitoring")
         return features
@@ -456,7 +469,7 @@ class Config:
         """Return a formatted summary of current configuration."""
         lines = [
             "=" * 60,
-            "CONFIGURATION SUMMARY - v3.5.1",
+            "CONFIGURATION SUMMARY - v3.5.1 / v4.0",
             "=" * 60,
             "",
             "ENABLED FEATURES:",
@@ -541,6 +554,7 @@ class Config:
                 'weather_enabled': self.WEATHER_ENABLED,
                 'pvoutput_enabled': self.PVOUTPUT_ENABLED,
                 'telemetry_enabled': self.TELEMETRY_ENABLED,
+                'adaptive_engine_enabled': self.ADAPTIVE_ENGINE_ENABLED,
                 'solaredge_panel_monitoring': self.SOLAREDGE_PANEL_MONITORING,
                 'solar_arrays': self.SOLAR_ARRAYS,
             },

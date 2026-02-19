@@ -264,6 +264,9 @@ def setup_schedule():
         se_panel = getattr(config, 'SOLAREDGE_PANEL_MONITORING', False)
         if se_panel:
             log(f"  - SolarEdge Panel Monitoring: site {getattr(config, 'SOLAREDGE_SITE_ID', 'N/A')}")
+        adaptive = getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False)
+        if adaptive:
+            log(f"  - V4.0 Adaptive Engine: ENABLED")
         log(f"  - Home Mode: {config.HOME_MODE}")
     
     log("-" * 60)
