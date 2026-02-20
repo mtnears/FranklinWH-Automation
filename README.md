@@ -12,6 +12,7 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ## Key Features
 
+- **Three-Mode Strategy** — TOU (solar → battery), Self-Consumption (battery → home during peak), Emergency Backup (grid gap-fill only). Maximizes solar utilization while minimizing grid charging costs
 - **Adaptive Decision Engine** — 8-phase priority system (P1-P8) continuously asks "what is the optimal mode right now?" instead of following rigid time-based rules
 - **Forecast-Aware Charging** — Calculates dynamic charging gap based on SOC, expected solar, and time to peak. Limits morning grid charging on high-solar days to leave headroom for free solar
 - **Curtailment Protection** — Detects when battery is full during solar production and switches modes to prevent wasting free energy
@@ -34,14 +35,43 @@ The v4 adaptive engine runs every cycle and evaluates an 8-phase priority stack:
 P1  Emergency override (manual override active, grid disconnected)
 P2  Grid disconnect protection (skip mode switches during outages)
 P3  Peak imminent — ensure target SOC is met
-P4  Peak active — self-consumption, no grid purchases
+P4  Peak active — switch to Self-Consumption, battery powers home
 P5  Curtailment protection — battery full + solar producing = don't waste it
 P6  Forecast-aware gap analysis — calculate if solar can fill the gap before peak
-P7  Pre-peak charging — grid charge only what solar can't cover
-P8  Default — self-consumption, wait for solar
+P7  Pre-peak charging — Emergency Backup burst only if solar can't cover the gap
+P8  Default — TOU mode, solar charges battery while grid covers home
 ```
 
 Each decision is logged with its priority level: `[v4 P7] Charging gap: 4.2 kWh, grid charging needed`
+
+### Three-Mode Strategy
+
+The v4 engine uses three battery modes to optimize across all conditions:
+
+| Mode | When | What Happens |
+|------|------|-------------|
+| **TOU** | Default (overnight, daytime, waiting for solar) | Solar → battery, grid → home. Battery holds charge overnight instead of draining. |
+| **Self-Consumption** | Peak hours only | Battery discharges to power home, avoids expensive grid rates. |
+| **Emergency Backup** | Short gap-fill bursts only | Grid charges battery at max rate. Used only when forecast shows solar won't meet peak target. |
+
+A typical day: **TOU overnight** (battery holds steady, grid powers home at off-peak rates) → **TOU daytime** (solar fills battery, grid covers house loads) → **brief Emergency Backup** if needed (grid tops off what solar can't cover) → **Self-Consumption at peak** (battery powers home) → **back to TOU after peak**.
+
+### Required: TOU Tariff Configuration
+
+The three-mode strategy requires a TOU tariff configured in the FranklinWH app with a specific sub-mode. **This is required even if you don't have solar.**
+
+1. Open the FranklinWH app → **Settings → Tariff Settings**
+2. If no tariff exists, create one. Set a single schedule: **12:00 AM to 12:00 AM, every day, every month**
+3. Set the mode for every time period to **"aPower charges from solar"**
+4. If you already have a tariff, edit each existing time period and change them all to **"aPower charges from solar"**
+
+This tells the Franklin hardware to route solar production to the battery while the grid handles your home loads. The automation handles all mode switching from there.
+
+> **Note:** In the app's **Settings → Mode** screen, you can also set the backup reserve SOC percentage for TOU and Self-Consumption. This is the minimum battery level the system will maintain. The v4 engine respects whatever you configure here. A typical setting is 20%.
+
+### Startup Grace Period
+
+On container restart, the first decision cycle observes and logs baseline data without switching modes. This prevents aggressive Emergency Backup charging on startup before the engine has context. Normal decisions begin on the second cycle (30 minutes later).
 
 ### Mode Switch Verification
 
@@ -92,9 +122,9 @@ docker compose up -d
 docker logs -f franklin-automation
 ```
 
-You should see `FranklinWH Automation Scheduler v4.0` in the startup banner and decision lines like:
+You should see `FranklinWH Automation Scheduler v4.0` in the startup banner, the three-mode configuration notice, and decision lines like:
 ```
-Decision: SELF_CONSUMPTION mode ([v4 P8] No peak approaching — self-consumption) via MODBUS+ENPHASE [v4]
+Decision: TIME_OF_USE mode ([v4 P8] No peak approaching — TOU default) via MODBUS+ENPHASE [v4]
 ```
 
 ### Required `.env` Settings
@@ -144,7 +174,7 @@ All settings live in your `.env` file. No code edits needed.
 | `PEAK2_START_HOUR` | — | Optional second peak window |
 | `PEAK2_END_HOUR` | — | Optional second peak window |
 | `PEAK_DAYS` | `weekdays` | `weekdays`, `weekends`, or `all` |
-| `HOME_MODE` | `self_consumption` | Normal mode: `tou` or `self_consumption` |
+| `HOME_MODE` | `tou` | Default resting mode: `tou` (recommended for v4 three-mode strategy) or `self_consumption` |
 
 See [CONFIGURATION_REFERENCE.md](docs/CONFIGURATION_REFERENCE.md) for complete details.
 
