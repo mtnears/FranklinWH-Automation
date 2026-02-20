@@ -29,6 +29,52 @@ LOG_DIR = BASE_DIR / 'logs'
 DATA_DIR = BASE_DIR / 'data'
 WEB_DIR = BASE_DIR / 'web'
 
+
+def get_cloud_mode_debug() -> str:
+    """Query the Franklin cloud API for mode detection debug info.
+    
+    Returns the raw status fields needed to diagnose mode detection issues:
+    run_status, name, mode, and other state fields.
+    Masks gateway ID and credentials. Returns error message on failure.
+    """
+    try:
+        import asyncio
+        from franklinwh import Client, TokenFetcher
+        
+        username = os.environ.get('FRANKLIN_USERNAME', '')
+        password = os.environ.get('FRANKLIN_PASSWORD', '')
+        gateway = os.environ.get('FRANKLIN_GATEWAY_ID', '')
+        
+        if not all([username, password, gateway]):
+            return "[Cloud API credentials not configured]"
+        
+        async def _query():
+            fetcher = TokenFetcher(username, password)
+            client = Client(fetcher, gateway)
+            status = await client._status()
+            
+            # Extract mode-relevant fields
+            lines = ["=== Cloud API Mode Detection Debug ==="]
+            mode_keys = ['mode', 'name', 'run_status', 'workMode',
+                         'bms_work', 'elecnet_state', 'slaver_stat',
+                         'pe_stat', 'genStat', 'v2lModeEnable', 'v2lRunState',
+                         'infi_status', 'bms_heat_state']
+            
+            for k in mode_keys:
+                if k in status:
+                    lines.append(f"  {k}: {status[k]}")
+            
+            # Also capture any other keys with 'mode', 'stat', 'run', 'work' in name
+            for k, v in sorted(status.items()):
+                if k not in mode_keys and any(w in k.lower() for w in ['mode', 'stat', 'run', 'work']):
+                    lines.append(f"  {k}: {v}")
+            
+            return '\n'.join(lines)
+        
+        return asyncio.run(_query())
+    except Exception as e:
+        return f"[Cloud API mode query failed: {e}]"
+
 # Files to include (relative to BASE_DIR)
 LOG_FILES = {
     'solar_intelligence.log': LOG_DIR / 'solar_intelligence.log',
@@ -100,9 +146,25 @@ def read_json_safe(filepath: Path) -> str:
 
 
 def get_env_structure(filepath: Path = None) -> str:
-    """Read .env file and return keys only (no values)."""
+    """Read .env file and return config with safe values exposed.
+    
+    Sensitive keys (passwords, emails, API keys, tokens) are masked.
+    Non-sensitive config keys show actual values for diagnostics.
+    """
     if filepath is None:
         filepath = BASE_DIR / '.env'
+    
+    # Keys whose VALUES should be masked (contain credentials or PII)
+    sensitive_patterns = [
+        'password', 'passwd', 'secret', 'token', 'key', 'api_key',
+        'email', 'username', 'user', 'sender', 'recipient',
+        'gateway_id', 'site_id',
+    ]
+    
+    def is_sensitive(key: str) -> bool:
+        key_lower = key.lower()
+        return any(pat in key_lower for pat in sensitive_patterns)
+    
     try:
         lines = []
         with open(filepath, 'r') as f:
@@ -112,8 +174,13 @@ def get_env_structure(filepath: Path = None) -> str:
                     lines.append(line)
                     continue
                 if '=' in line:
-                    key = line.split('=', 1)[0].strip()
-                    lines.append(f"{key}=***")
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip()
+                    if is_sensitive(key):
+                        lines.append(f"{key}=***")
+                    else:
+                        lines.append(f"{key}={value}")
                 else:
                     lines.append(line)
         return '\n'.join(lines)
@@ -360,6 +427,14 @@ def generate_bundle(hours: int = 24, max_log_lines: int = 500,
                 zf.writestr('state/last_mode_switch.txt', content)
             except Exception:
                 pass
+
+        # 14. Cloud API mode detection debug
+        # Captures raw run_status, name, mode fields for diagnosing mode detection issues
+        try:
+            mode_debug = get_cloud_mode_debug()
+            zf.writestr('state/cloud_mode_debug.txt', sanitize_text(mode_debug))
+        except Exception as e:
+            zf.writestr('state/cloud_mode_debug.txt', f'[Error collecting: {e}]')
 
     # Write to disk
     with open(zip_path, 'wb') as f:
