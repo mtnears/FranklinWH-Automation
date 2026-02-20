@@ -306,6 +306,23 @@ def setup_schedule():
             log(f"  - V4.0 Adaptive Engine: ENABLED")
         log(f"  - Home Mode: {config.HOME_MODE}")
     
+    # Three-mode strategy notice (v4 with TOU as default)
+    if CONFIG_LOADED and getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
+        log("")
+        log("=" * 60)
+        log("  V4.0 THREE-MODE STRATEGY — CONFIGURATION REQUIRED")
+        log("  " + "-" * 56)
+        log("  The v4 engine uses three modes:")
+        log("    TOU            = Default (solar -> battery, grid -> home)")
+        log("    Self-Consumption = Peak hours (battery powers home)")
+        log("    Emergency Backup = Gap-fill only (grid charges battery)")
+        log("")
+        log("  REQUIRED: In the FranklinWH app, configure your TOU")
+        log("  tariff so ALL time periods use 'aPower charges from solar'.")
+        log("  Without this, TOU mode will NOT route solar to the battery.")
+        log("=" * 60)
+        log("")
+    
     log("-" * 60)
     log("Scheduling tasks:")
     
@@ -423,6 +440,16 @@ def setup_schedule():
     
     log("-" * 60)
     log("Scheduler ready. Running initial tasks...")
+    
+    # Clean up startup grace flag so first smart_decision run observes only
+    # This prevents aggressive mode switches on container restart
+    try:
+        grace_flag = Path(str(config.LOG_DIR)) / "startup_grace.flag" if CONFIG_LOADED else SCRIPT_DIR.parent / "logs" / "startup_grace.flag"
+        if grace_flag.exists():
+            grace_flag.unlink()
+            log("Startup grace flag reset — first decision cycle will observe only")
+    except Exception as e:
+        log(f"Warning: Could not reset startup grace flag: {e}")
     
     # Run core tasks immediately on startup
     job_smart_decision()

@@ -408,6 +408,9 @@ def detect_mode(battery_data) -> str:
     """
     Detect current battery operating mode from data.
     Priority: mode_name (if available), then run_status mapping.
+    
+    Returns normalized mode names:
+      "emergency_backup", "self_consumption", "time_of_use", or "unknown"
     """
     # Try mode name first (from detailed status)
     if hasattr(battery_data, 'mode_name') and battery_data.mode_name:
@@ -415,7 +418,7 @@ def detect_mode(battery_data) -> str:
         if 'backup' in mode_name or 'emergency' in mode_name:
             return "emergency_backup"
         elif 'tou' in mode_name or 'time' in mode_name:
-            return "tou" 
+            return "time_of_use" 
         elif 'self' in mode_name or 'consumption' in mode_name:
             return "self_consumption"
     
@@ -423,7 +426,7 @@ def detect_mode(battery_data) -> str:
     if hasattr(battery_data, 'run_status') and battery_data.run_status:
         status_map = {
             1: "emergency_backup",
-            2: "tou", 
+            2: "time_of_use", 
             3: "self_consumption",
         }
         return status_map.get(battery_data.run_status, "unknown")
@@ -527,6 +530,29 @@ async def main() -> int:
             print(f"Manual override active: {mode}")
             return 0
         
+        # Startup grace period — first cycle after container start observes only
+        # Prevents aggressive mode switches before the engine has baseline data
+        startup_flag = config.LOG_DIR / "startup_grace.flag"
+        if not startup_flag.exists():
+            try:
+                with open(startup_flag, 'w') as f:
+                    f.write(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                log_intelligence("Startup observation cycle — collecting baseline data, no mode switches")
+                log_intelligence("Next cycle (30 min) will make normal decisions")
+                
+                # Still collect and log data, but skip mode switching
+                battery_data = await get_battery_data()
+                if battery_data:
+                    soc = battery_data.soc_percent
+                    solar_kw = battery_data.solar_power_kw
+                    current_mode = detect_mode(battery_data)
+                    log_intelligence(f"Baseline: SOC={soc:.1f}%, Solar={solar_kw:.3f}kW, Mode={current_mode}")
+                
+                print(f"Startup observation cycle — no mode switches (baseline logged)")
+                return 0
+            except Exception as e:
+                log_intelligence(f"Startup grace flag error (continuing normally): {e}")
+        
         # Read battery data from unified data source
         battery_data = await get_battery_data()
         if not battery_data:
@@ -569,11 +595,14 @@ async def main() -> int:
                 soc, solar_kw, hours_to_peak, in_peak, solar_to_bat_kw
             )
         
-        # v4 engine: idle mode is always self_consumption (never TOU)
-        # v3.5 legacy: idle mode is config.HOME_MODE (typically "tou")
+        # v4 engine: idle mode is time_of_use (TOU configured as "aPower charges from solar")
+        #   - TOU = default resting state: solar -> battery, grid -> home
+        #   - Self-Consumption = peak hours only: battery -> home, avoids grid
+        #   - Emergency Backup = gap-fill only: grid -> battery at max rate
+        # v3.5 legacy: idle mode is config.HOME_MODE
         if ADAPTIVE_ENGINE_LOADED:
-            desired_mode = "emergency_backup" if should_charge else "self_consumption"
-            desired_mode_label = "BACKUP" if should_charge else "SELF_CONSUMPTION"
+            desired_mode = "emergency_backup" if should_charge else "time_of_use"
+            desired_mode_label = "BACKUP" if should_charge else "TIME_OF_USE"
         else:
             desired_mode = "emergency_backup" if should_charge else "home"
             desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
@@ -637,12 +666,26 @@ async def main() -> int:
             need_backup = should_charge and current_mode != "emergency_backup"
             need_idle = not should_charge and current_mode == "emergency_backup"
             
+            # v4 three-mode: after peak, return from self_consumption to time_of_use
+            # so battery stops discharging and waits for solar
+            need_return_to_tou = (ADAPTIVE_ENGINE_LOADED 
+                                  and not should_charge 
+                                  and current_mode == "self_consumption"
+                                  and not in_peak)
+            if need_return_to_tou:
+                need_idle = True  # Treat as needing mode switch to idle (TOU)
+            
             if need_backup or need_idle:
                 # Grid disconnect guard — don't attempt cloud API mode switches
                 # while the system is islanded (grid outage)
                 grid_ok = await check_grid_connected()
                 if not grid_ok:
-                    switch_target = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else "home")
+                    if need_backup:
+                        switch_target = "emergency_backup"
+                    elif ADAPTIVE_ENGINE_LOADED:
+                        switch_target = "time_of_use"
+                    else:
+                        switch_target = "home"
                     log_intelligence(f"⚡ Grid disconnected — skipping mode switch to {switch_target}")
                     log_intelligence(f"Mode unchanged: {current_mode} (grid offline, island mode)")
                     # Skip the mode switch entirely — jump to CSV logging
@@ -653,7 +696,12 @@ async def main() -> int:
                 # Check cooldown - don't re-issue same switch within 10 minutes
                 # EXCEPTION: Within 30 minutes of peak, bypass cooldown entirely
                 # to ensure we're in the right mode before the critical transition
-                switch_target = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else "home")
+                if need_backup:
+                    switch_target = "emergency_backup"
+                elif ADAPTIVE_ENGINE_LOADED:
+                    switch_target = "time_of_use"
+                else:
+                    switch_target = "home"
                 cooldown_ok = True
                 near_peak = config.TOU_ENABLED and hours_to_peak <= 0.5  # Within 30 min of peak
                 
@@ -679,7 +727,12 @@ async def main() -> int:
                 if cooldown_ok:
                     mode_switched = await switch_mode(switch_target)
                     if mode_switched:
-                        label = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else config.HOME_MODE)
+                        if need_backup:
+                            label = "emergency_backup"
+                        elif ADAPTIVE_ENGINE_LOADED:
+                            label = "time_of_use"
+                        else:
+                            label = config.HOME_MODE
                         from_mode = current_mode
                         log_intelligence(f"Mode changed: {from_mode} -> {label}")
                         # Record switch for cooldown
@@ -693,21 +746,26 @@ async def main() -> int:
             else:
                 log_intelligence(f"Mode unchanged: {current_mode} ({desired_mode_label})")
         else:
-            # === PEAK SAFETY NET ===
-            # During peak hours, if hardware is in Emergency Backup, the battery
-            # is charging from the grid at the highest rate. This is catastrophic.
-            # Force a switch to self-consumption regardless of cooldown or engine state.
-            if current_mode == "emergency_backup":
-                log_intelligence(f"⚠️ PEAK SAFETY NET: Hardware in Emergency Backup during peak!")
+            # === PEAK PERIOD MODE MANAGEMENT ===
+            # During peak hours with three-mode strategy:
+            # - If in Emergency Backup: catastrophic (charging from grid at peak rate)
+            # - If in TOU: battery idle, house on grid — wasteful during peak
+            # - If in Self-Consumption: correct — battery powers home
+            # Force switch to self_consumption from any other mode.
+            if current_mode != "self_consumption":
+                if current_mode == "emergency_backup":
+                    log_intelligence(f"⚠️ PEAK SAFETY NET: Hardware in Emergency Backup during peak!")
+                else:
+                    log_intelligence(f"Peak mode correction: {current_mode} -> self_consumption (battery should power home)")
                 log_intelligence(f"  Forcing switch to self-consumption (bypassing cooldown)")
                 grid_ok = await check_grid_connected()
                 if grid_ok:
-                    switch_target = "self_consumption" if ADAPTIVE_ENGINE_LOADED else "home"
+                    switch_target = "self_consumption"
                     mode_switched = await switch_mode(switch_target)
                     if mode_switched:
-                        log_intelligence(f"  ✅ Peak safety switch VERIFIED: now in {switch_target}")
+                        log_intelligence(f"  Peak switch VERIFIED: now in {switch_target}")
                     else:
-                        log_intelligence(f"  ❌ CRITICAL: Peak safety switch FAILED — hardware still in EB!")
+                        log_intelligence(f"  CRITICAL: Peak switch FAILED — hardware still in {current_mode}!")
                         log_intelligence(f"  Manual intervention may be needed")
                 else:
                     log_intelligence(f"  Grid disconnected — cannot switch during peak")

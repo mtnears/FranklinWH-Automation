@@ -337,7 +337,28 @@ class AdaptiveEngine:
                 f"No charging gap — solar forecast ({forecast_solar_kwh:.1f} kWh) covers "
                 f"the {target_kwh - current_kwh:.1f} kWh needed",
                 confidence=0.8, priority=7,
-                action="switch_to_self_consumption",
+                action="hold",
+                metrics=metrics,
+            )
+
+        # Small gap guard: if gap is tiny and conditions are favorable, let solar handle it
+        # - Gap < 2 kWh AND solar currently producing AND plenty of time to peak
+        # - OR gap < 1 kWh regardless (not worth a mode switch for ~5 min of grid charging)
+        if gap_kwh < 1.0:
+            return self._decide(
+                state, "self_consumption",
+                f"Tiny charging gap ({gap_kwh:.1f} kWh) — not worth grid charging, solar/natural will cover",
+                confidence=0.8, priority=7,
+                action="hold",
+                metrics=metrics,
+            )
+        if gap_kwh < 2.0 and state.solar_kw > 0.3 and state.hours_to_peak > 4:
+            return self._decide(
+                state, "self_consumption",
+                f"Small gap ({gap_kwh:.1f} kWh) with solar producing ({state.solar_kw:.1f} kW) "
+                f"and {state.hours_to_peak:.1f}h to peak — letting solar handle it",
+                confidence=0.75, priority=7,
+                action="hold",
                 metrics=metrics,
             )
 

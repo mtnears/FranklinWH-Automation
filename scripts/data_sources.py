@@ -753,8 +753,12 @@ class CloudDataSource(DataSource):
             if mode in ['emergency_backup', 'backup']:
                 mode_obj = Mode.emergency_backup(soc=config.RESERVE_SOC_BACKUP)
             elif mode == 'self_consumption':
-                # v4 engine explicitly requests self_consumption — honor it directly
+                # v4 engine explicitly requests self_consumption for peak hours
                 mode_obj = Mode.self_consumption(soc=config.RESERVE_SOC_HOME)
+            elif mode == 'time_of_use':
+                # v4 three-mode strategy: TOU is the default resting state
+                # Requires Franklin app TOU tariff configured with "aPower charges from solar"
+                mode_obj = Mode.time_of_use(soc=config.RESERVE_SOC_HOME)
             else:
                 # v3.5 legacy "home" target — use config.HOME_MODE to decide
                 if config.HOME_MODE == 'self_consumption':
@@ -967,7 +971,9 @@ class DataSourceManager:
             return "emergency_backup"
         if "self" in name_lower and "consumption" in name_lower:
             return "self_consumption"
-        # Anything else (TOU-B, TOU-Summer, custom schedule, etc.) is home mode
+        if "tou" in name_lower or "time" in name_lower:
+            return "time_of_use"
+        # Anything else (custom schedule names, etc.) is home mode
         return config.HOME_MODE
 
     async def switch_mode(self, mode: str) -> bool:
@@ -1006,6 +1012,13 @@ class DataSourceManager:
                     mode_matches = (hw_mode == "emergency_backup")
                 elif mode == 'self_consumption':
                     mode_matches = (hw_mode == "self_consumption")
+                elif mode == 'time_of_use':
+                    # TOU shows up as various names: "TOU-B", "TOU-Summer", etc.
+                    # _detect_mode_from_name maps these to config.HOME_MODE
+                    # With v4, HOME_MODE should be "time_of_use" or "tou"
+                    hw_name_lower = hw_mode_name.lower()
+                    mode_matches = ("tou" in hw_name_lower or "time" in hw_name_lower
+                                   or hw_mode not in ["emergency_backup", "self_consumption"])
                 else:
                     # "home" mode — anything that's not emergency_backup
                     mode_matches = (hw_mode != "emergency_backup")
