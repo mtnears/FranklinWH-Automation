@@ -273,7 +273,7 @@ class ModeStateTracker:
     Periodically verify against cloud API to stay honest.
     """
 
-    def __init__(self, state_file: Path = None, verify_interval_minutes: int = 60):
+    def __init__(self, state_file: Path = None, verify_interval_minutes: int = 15):
         self.state_file = state_file or (config.LOG_DIR / "mode_state.json")
         self.verify_interval = timedelta(minutes=verify_interval_minutes)
         self.current_mode = "unknown"
@@ -863,11 +863,54 @@ class DataSourceManager:
                 if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
                     battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
 
-                # Apply mode from local tracker
+                # Apply mode from local tracker (baseline)
                 battery_data.mode_name = self.mode_tracker.get_mode_name()
 
-                # Periodic cloud verification for mode + per-battery SOC
-                if self.mode_tracker.needs_verification():
+                # Smart mode verification schedule:
+                # The ModeStateTracker only knows what we last commanded, not what
+                # the hardware is actually doing. A failed switch, manual app change,
+                # or rate-limited API call can cause desync. We verify against the
+                # cloud API on a tiered schedule based on how costly a desync would be.
+                #
+                # - During peak hours: EVERY cycle (desync = 39¢/kWh wasted)
+                # - Within 1 hour before peak: EVERY cycle (staging is critical)  
+                # - All other times: every 15 minutes (catch drift without hammering API)
+                # - Always after a switch: handled in switch_mode() with retry+verify
+                should_verify = False
+                now = datetime.now()
+                current_hour = now.hour
+
+                # Import peak config to check timing
+                try:
+                    from config import config as cfg, is_peak_period
+                    in_peak_now = False
+                    near_peak = False
+
+                    if getattr(cfg, 'TOU_ENABLED', False):
+                        in_peak_now = is_peak_period(
+                            current_hour, cfg.PEAK_START_HOUR, cfg.PEAK_END_HOUR)
+                        # Check secondary peak too
+                        if (cfg.PEAK2_START_HOUR is not None and 
+                                cfg.PEAK2_END_HOUR is not None):
+                            in_peak_now = in_peak_now or is_peak_period(
+                                current_hour, cfg.PEAK2_START_HOUR, cfg.PEAK2_END_HOUR)
+
+                        # "Near peak" = within 1 hour before peak start
+                        hours_before = (cfg.PEAK_START_HOUR - current_hour) % 24
+                        near_peak = (0 < hours_before <= 1)
+
+                    if in_peak_now or near_peak:
+                        should_verify = True
+                        logger.debug(f"Mode verify: {'peak' if in_peak_now else 'near-peak'} — every cycle")
+                    elif self.mode_tracker.needs_verification():
+                        should_verify = True
+                        logger.debug("Mode verify: scheduled (15-min interval)")
+                except Exception as e:
+                    # If config import fails, fall back to tracker interval
+                    should_verify = self.mode_tracker.needs_verification()
+                    logger.debug(f"Mode verify: fallback schedule (config error: {e})")
+
+                if should_verify:
                     await self._verify_mode_from_cloud(battery_data)
 
                 self.last_data = battery_data
@@ -928,11 +971,60 @@ class DataSourceManager:
         return config.HOME_MODE
 
     async def switch_mode(self, mode: str) -> bool:
-        """Switch mode via cloud API and record locally."""
-        success = await self.cloud_source.switch_mode(mode)
-        if success:
-            self.mode_tracker.record_switch(mode)
-        return success
+        """
+        Switch mode via cloud API, verify against hardware, and record locally.
+        
+        Returns True only if the hardware confirms the mode change.
+        Retries up to 3 times with increasing delays if verification fails.
+        """
+        MAX_RETRIES = 3
+        VERIFY_DELAYS = [5, 8, 12]  # seconds between switch and verification
+
+        for attempt in range(MAX_RETRIES):
+            # Send the switch command
+            success = await self.cloud_source.switch_mode(mode)
+            if not success:
+                logger.warning(f"Mode switch API call failed (attempt {attempt + 1}/{MAX_RETRIES})")
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(2)
+                continue
+
+            # Wait for hardware to apply the change
+            delay = VERIFY_DELAYS[attempt] if attempt < len(VERIFY_DELAYS) else 12
+            logger.info(f"Mode switch sent, verifying in {delay}s (attempt {attempt + 1})...")
+            await asyncio.sleep(delay)
+
+            # Verify against the actual hardware state via cloud API
+            verification = await self.cloud_source.verify_mode()
+            if verification:
+                hw_mode_name = verification.get("mode_name", "Unknown")
+                hw_mode = self._detect_mode_from_name(hw_mode_name)
+
+                # Check if hardware matches what we commanded
+                mode_matches = False
+                if mode in ['emergency_backup', 'backup']:
+                    mode_matches = (hw_mode == "emergency_backup")
+                elif mode == 'self_consumption':
+                    mode_matches = (hw_mode == "self_consumption")
+                else:
+                    # "home" mode — anything that's not emergency_backup
+                    mode_matches = (hw_mode != "emergency_backup")
+
+                if mode_matches:
+                    self.mode_tracker.record_verification(hw_mode, hw_mode_name)
+                    logger.info(f"Mode switch VERIFIED: {mode} -> {hw_mode_name}")
+                    return True
+                else:
+                    logger.warning(f"Mode switch NOT confirmed (attempt {attempt + 1}): "
+                                 f"commanded={mode}, hardware={hw_mode_name} ({hw_mode})")
+            else:
+                logger.warning(f"Mode verification failed (attempt {attempt + 1}): "
+                             f"cloud API returned no data")
+
+        # All retries exhausted — switch did not stick
+        logger.error(f"MODE SWITCH FAILED after {MAX_RETRIES} attempts: "
+                    f"commanded={mode}, hardware did not confirm")
+        return False
 
     def get_current_mode(self) -> str:
         """Get current mode from local tracker."""

@@ -218,6 +218,7 @@ Thumbs.db
 *.bak
 web/solar_*.json
 web/enphase_*.json
+web/solaredge_*.json
 
 # Credentials and cookies (NEVER commit)
 scripts/solaredge_cookies.txt

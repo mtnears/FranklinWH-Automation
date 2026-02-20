@@ -1,8 +1,8 @@
 # FranklinWH Battery Automation
 
-**Intelligent solar-first battery automation for Franklin WH batteries**
+**Intelligent solar-first battery automation for FranklinWH batteries**
 
-Fully automated charging system that optimizes for Time-of-Use (TOU) electricity rates, dynamic hourly pricing, and solar self-consumption. Makes smart decisions every 30 minutes with comprehensive monitoring.
+Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates, dynamic hourly pricing, and solar self-consumption. The v4 engine continuously evaluates the optimal battery mode every cycle using forecast-aware logic, real-time data, and rate schedule awareness.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -12,223 +12,259 @@ Fully automated charging system that optimizes for Time-of-Use (TOU) electricity
 
 ## Key Features
 
-- **API-Native Mode Management** - Reads and sets battery modes directly through the Franklin WH API
-- **Schedule-Aware Timing** - Critical checks pinned to peak boundaries so mode switches are never late
-- **Per-Battery Monitoring** - Individual SOC and power tracking for multi-battery systems
-- **Peak State Tracking** - Prevents mode changes during expensive peak periods
-- **Solar-First Intelligence** - Waits for solar production before grid charging
-- **Dynamic Pricing Support** - Optional ComEd hourly pricing with negative price credit capture
-- **Configurable Everything** - All settings via `.env` file, no code edits needed
-- **Web Dashboard** - Real-time monitoring with energy flow visualization and system info
-- **Weekly Reports** - Performance charts showing 7-day automation effectiveness
-- **Robust API Handling** - 5-attempt retry logic for Franklin Cloud API
-- **Docker Deployment** - Single command startup with built-in scheduler and dashboard
-
----
-
-## What's New in v3.4.0
-
-### Clock-Aligned 30-Minute Scheduling
-- Decision checks now run at fixed :00 and :30 each hour for predictable timing
-- 30-minute minimum interval to reduce Franklin Cloud API load — this is a temporary conservative default until API rate limit guidance is formalized
-- Pre-peak check moved to 10 minutes before peak start (configurable via `PEAK_TRANSITION_BUFFER_MINUTES`)
-- Eliminates timing drift from container start time
-
-### Solar Override Fix
-- Solar charging now properly overrides grid-charge deadlines when solar-to-battery rate can beat the clock
-- Prevents unnecessary grid charging during strong solar production in tight pre-peak windows
-
-### Stale API Value Correction
-- Franklin API reports stale `gridChBat`/`soChBat` values during battery discharge — now zeroed out automatically
-- Ensures accurate logs and correct solar estimation during peak/discharge periods
-
-### PVOutput Config Integration
-- PVOutput collector now reads credentials from `.env` configuration instead of hardcoded values
-- Supports multiple systems via `PVOUTPUT_SYSTEM_IDS` setting
-
-### Manual Override API
-- New REST endpoints for emergency mode control: `/api/override` and `/api/override/cancel`
-- Dashboard buttons for Self Consumption and Emergency Backup modes
-- Overrides auto-expire after configurable duration (default 2 hours)
-
----
-
-## Quick Start (Docker — Recommended)
-
-### 1. Clone and Configure
-```bash
-git clone https://github.com/mtnears/FranklinWH-Automation.git
-cd FranklinWH-Automation
-cp .env.example .env
-nano .env   # Set your credentials and preferences
-```
-
-**Required settings in `.env`:**
-```bash
-FRANKLIN_USERNAME=your_email@example.com
-FRANKLIN_PASSWORD=your_password
-FRANKLIN_GATEWAY_ID=your_gateway_id
-BATTERY_CAPACITY_KWH=30
-CHARGE_RATE_PER_HOUR=32
-```
-
-### 2. Build and Start
-```bash
-mkdir -p logs data web
-docker compose build
-docker compose up -d
-```
-
-### 3. Verify
-```bash
-docker logs franklin-automation 2>&1 | head -25
-```
-
-You should see the v3.4.0 banner with your configured features and scheduled tasks.
-
-### 4. Access Dashboard
-Open `http://YOUR-SERVER-IP:8100` in your browser.
-
-See [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) for complete setup details.
+- **Adaptive Decision Engine** — 8-phase priority system (P1-P8) continuously asks "what is the optimal mode right now?" instead of following rigid time-based rules
+- **Forecast-Aware Charging** — Calculates dynamic charging gap based on SOC, expected solar, and time to peak. Limits morning grid charging on high-solar days to leave headroom for free solar
+- **Curtailment Protection** — Detects when battery is full during solar production and switches modes to prevent wasting free energy
+- **Hybrid Data Collection** — Modbus TCP for fast local monitoring (26ms) with Franklin cloud API for mode switching. Falls back gracefully if Modbus isn't available
+- **Rate Schedule Flexibility** — Supports PG&E E-TOU-D, SMUD TOD, ComEd dynamic pricing, and custom schedules with multiple peak windows
+- **Peak Safety Net** — Hardware mode verification during peak hours ensures the battery is never charging from the grid at peak rates, even if a mode switch fails
+- **Per-Battery Monitoring** — Individual SOC tracking for multi-battery systems
+- **Web Dashboard** — Real-time energy flow visualization, weekly performance charts, system health monitoring, and one-click diagnostic reporting
+- **Manual Override System** — Self-consumption and emergency backup buttons with auto-expiring timers
+- **Anonymous Telemetry** — Opt-in usage stats to help guide development ([public collection repo](https://github.com/mtnears/franklin-telemetry))
+- **Docker Deployment** — Single command startup with built-in scheduler and dashboard
 
 ---
 
 ## How It Works
 
-Every 30 minutes (clock-aligned at :00 and :30), plus pinned checks at peak boundaries:
+The v4 adaptive engine runs every cycle and evaluates an 8-phase priority stack:
 
 ```
-┌─ Get battery stats via Franklin API (with retry logic)
-├─ Detect current mode from API (name field)
-├─ Check enabled features
-├─ Layer 0: Price Override (if DYNAMIC_PRICING + SOLAR_OVERRIDE configured)
-│   └─ Grid credit/negative pricing overrides everything
-├─ Layer 1: Peak Protection (if TOU_ENABLED)
-│   └─ NO ACTION during peak period
-├─ Layer 2: Solar Assessment (if SOLAR_ENABLED)
-│   └─ Use solar when available
-├─ Layer 3: Dynamic Pricing (if DYNAMIC_PRICING_ENABLED)
-│   └─ Charge when price is cheap
-├─ Layer 4: Time-Based Logic
-│   └─ Ensure ready for peak
-└─ Execute mode switch via API if needed (with verification + cooldown)
+P1  Emergency override (manual override active, grid disconnected)
+P2  Grid disconnect protection (skip mode switches during outages)
+P3  Peak imminent — ensure target SOC is met
+P4  Peak active — self-consumption, no grid purchases
+P5  Curtailment protection — battery full + solar producing = don't waste it
+P6  Forecast-aware gap analysis — calculate if solar can fill the gap before peak
+P7  Pre-peak charging — grid charge only what solar can't cover
+P8  Default — self-consumption, wait for solar
 ```
 
-### Peak Protection
+Each decision is logged with its priority level: `[v4 P7] Charging gap: 4.2 kWh, grid charging needed`
 
-The system guarantees battery readiness for peak hours:
-- Calculates time needed to reach target SOC based on your measured charge rate
-- Waits for solar as long as there's enough time buffer
-- Switches to grid charging only when necessary
-- Never changes modes during peak period
-- Pre-peak check ensures mode is set before peak starts
+### Mode Switch Verification
+
+Every mode switch command is verified against the actual hardware state via the Franklin cloud API. If the hardware doesn't confirm the change, the system retries up to 3 times with increasing delays. During peak hours and the hour before peak, hardware mode is checked every cycle to catch any desync immediately.
 
 ---
 
-## Deployment Options
+## Requirements
 
-| Method | Best For | Guide |
-|--------|----------|-------|
-| **Docker** (Recommended) | All users, easiest setup | [DOCKER_INSTALLATION.md](docs/DOCKER_INSTALLATION.md) |
-| **Native** | Advanced users, custom setups | [INSTALLATION.md](docs/INSTALLATION.md) |
+- **Docker** on an always-on device (Synology NAS, Raspberry Pi, mini PC, etc.)
+- **FranklinWH account credentials** (same as your mobile app login)
+- **A configured `.env` file** — see [.env.example](.env.example) for all options
+
+### Modbus TCP (Recommended, Not Required)
+
+Modbus TCP gives you 100x faster local data collection (26ms vs 5,000ms cloud API) and works during Franklin cloud outages. If enabled, v4 uses it automatically for monitoring while the cloud API handles mode switching.
+
+Without Modbus, v4 works fine using the Franklin cloud API for everything. All the same decisions are made; you just don't get the speed benefits.
+
+To enable: contact your installer or Franklin support and request Modbus be enabled for SPAN panel integration. Then add to your `.env`:
+```env
+MODBUS_ENABLED=true
+MODBUS_HOST=192.168.x.x   # Your aGate's IP address
+MODBUS_PORT=502
+```
+
+See [MODBUS_REGISTER_MAP.md](docs/MODBUS_REGISTER_MAP.md) for the full register reference.
+
+---
+
+## Quick Start (Docker)
+
+```bash
+# 1. Clone and configure
+git clone https://github.com/mtnears/FranklinWH-Automation.git
+cd FranklinWH-Automation
+cp .env.example .env
+nano .env   # Set your credentials, battery config, TOU schedule
+
+# 2. Build and start
+docker compose build
+docker compose up -d
+
+# 3. Open the dashboard
+# http://your-server-ip:8100
+
+# 4. Watch the logs
+docker logs -f franklin-automation
+```
+
+You should see `FranklinWH Automation Scheduler v4.0` in the startup banner and decision lines like:
+```
+Decision: SELF_CONSUMPTION mode ([v4 P8] No peak approaching — self-consumption) via MODBUS+ENPHASE [v4]
+```
+
+### Required `.env` Settings
+
+```env
+FRANKLIN_USERNAME=your_email
+FRANKLIN_PASSWORD=your_password
+FRANKLIN_GATEWAY_ID=your_gateway_id
+BATTERY_CAPACITY_KWH=13.6        # Your total battery capacity
+
+# TOU schedule (adjust to your utility)
+PEAK_START_HOUR=17
+PEAK_END_HOUR=20
+PEAK_DAYS=weekdays
+
+# v4 engine
+ADAPTIVE_ENGINE_ENABLED=true
+```
+
+See [.env.example](.env.example) for all options including weather, solar arrays, SolarEdge panel monitoring, dynamic pricing, Modbus, and telemetry.
 
 ---
 
 ## Configuration
 
-All settings live in your `.env` file. See [.env.example](.env.example) for all options.
+All settings live in your `.env` file. No code edits needed.
 
 ### Feature Toggles
 
 | Feature | Default | Description |
 |---------|---------|-------------|
+| `ADAPTIVE_ENGINE_ENABLED` | `true` | v4 adaptive engine (falls back to v3.5 logic if disabled) |
 | `SOLAR_ENABLED` | `true` | Solar-first charging logic |
 | `TOU_ENABLED` | `true` | Time-of-Use peak protection |
-| `DYNAMIC_PRICING_ENABLED` | `false` | Hourly pricing (ComEd) |
+| `MODBUS_ENABLED` | `false` | Fast local data via Modbus TCP |
+| `DYNAMIC_PRICING_ENABLED` | `false` | Hourly pricing (ComEd, etc.) |
 | `WEATHER_ENABLED` | `false` | Weather data collection |
-| `PVOUTPUT_ENABLED` | `false` | PVOutput solar tracking |
-
-### Scheduling
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `CHECK_INTERVAL_MINUTES` | `30` | Decision frequency (minimum 30) |
-| `PEAK_TRANSITION_BUFFER_MINUTES` | `10` | Minutes before peak to check |
-| `HOME_MODE` | `tou` | Normal mode: `tou` or `self_consumption` |
+| `CARE_RATE` | `false` | CARE/FERA discount program |
+| `NEM_VERSION` | `nem2` | Net metering version (nem2 or nem3) |
 
 ### TOU Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `PEAK_START_HOUR` | `17` | Peak period start (5 PM) |
-| `PEAK_END_HOUR` | `20` | Peak period end (8 PM) |
-| `PEAK_DAYS` | `weekdays` | Which days have peak pricing |
+| `PEAK_START_HOUR` | `17` | Peak period start (24hr) |
+| `PEAK_END_HOUR` | `20` | Peak period end (24hr) |
+| `PEAK2_START_HOUR` | — | Optional second peak window |
+| `PEAK2_END_HOUR` | — | Optional second peak window |
+| `PEAK_DAYS` | `weekdays` | `weekdays`, `weekends`, or `all` |
+| `HOME_MODE` | `self_consumption` | Normal mode: `tou` or `self_consumption` |
 
 See [CONFIGURATION_REFERENCE.md](docs/CONFIGURATION_REFERENCE.md) for complete details.
 
 ---
 
-## Core Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `smart_decision.py` | Main decision engine with API-native mode management |
-| `config.py` | Configuration management from `.env` |
-| `scheduler.py` | Schedule-aware task runner with peak-pinned checks |
-| `generate_dashboard_data.py` | Real-time dashboard data |
-| `generate_weekly_charts.py` | Performance visualization |
-| `calculate_daily_savings.py` | Daily savings tracking |
-
----
-
-## Web Dashboard
+## Dashboard
 
 Real-time monitoring at `http://YOUR-SERVER-IP:8100`:
 
-**Live Dashboard** — Battery SOC, energy flow, charging status, savings tracker, peak countdown
+- **Live Dashboard** — Battery SOC, energy flow, charging status, peak countdown, system health indicators
+- **Weekly Reports** — 7-day SOC timeline, daily summaries, power flow charts
+- **Script Status** — All scheduled scripts with run status, success/fail counts, error history
+- **System Logs** — Intelligence log, scheduler log, monitoring data with auto-refresh
+- **Override Controls** — Self-consumption and emergency backup buttons with auto-expiring timers
+- **Diagnostic Reporting** — One-click sanitized diagnostic bundle for issue reporting
 
-**Weekly Reports** — 7-day SOC timeline, daily summaries, power flow charts
+### Override System
 
-**System Logs** — Intelligence log, scheduler log, monitoring data with auto-refresh
+Quick-access mode overrides from the dashboard or API:
 
-See [WEB_DASHBOARD.md](docs/WEB_DASHBOARD.md) for details.
+```bash
+# Emergency backup for 4 hours
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "emergency_backup", "duration": "4h"}'
+
+# Cancel override (engine resumes)
+curl -X DELETE http://your-server:8100/api/override
+```
+
+---
+
+## Anonymous Telemetry (Opt-In)
+
+On first dashboard load, a one-time popup asks if you'd like to opt in. No `.env` changes required.
+
+**Collected:** system size (battery kWh, panel count), engine version, config flags, aggregate performance metrics, country (you select).
+
+**NOT collected:** IP addresses, credentials, gateway IDs, serial numbers, exact location, raw energy data, or anything personally identifiable.
+
+- Decline the popup and no data is ever sent
+- Disable anytime: `TELEMETRY_ENABLED=false` in `.env`
+- Public collection repo: [mtnears/franklin-telemetry](https://github.com/mtnears/franklin-telemetry)
 
 ---
 
 ## Results
 
 ### Tested Configuration
-- **Battery:** Franklin WH aPower2 (2× FHP, 30 kWh total)
-- **Solar:** 28.26 kW total capacity (dual-meter, house + barn)
-- **Utility:** PG&E E-TOU-D with CARE discount
+- **Battery:** FranklinWH aPower2 (2× FHP, 30 kWh total)
+- **Solar:** 28.26 kW capacity (dual-meter, 16-panel Enphase house + 60-panel SolarEdge barn)
+- **Utility:** PG&E E-TOU-D with CARE discount, NEM2
 - **Location:** Georgetown, CA
 
-### Performance (v3.4.0)
-- **Peak Protection:** 100% success rate
+### Performance
+- **Peak Protection:** 95%+ success rate
 - **API Reliability:** 99.5% uptime
-- **Target SOC Achievement:** 91-94% before peak
-- **Average Daily Savings:** ~$3.40/day
+- **Projected Annual Savings:** 58-65% reduction in True-Up costs
+- **Data Collection:** 26ms local (Modbus) vs 5,000ms cloud API
+
+---
+
+## Architecture
+
+```
+Modbus TCP (local, 26-50ms)           Cloud API (remote, 2-7s)
+├── SOC monitoring                     ├── Mode switching (with verification)
+├── Grid power tracking                ├── Per-battery SOC
+├── Grid disconnect detection          ├── Mode verification (tiered schedule)
+├── Temperature monitoring             └── Reserve SOC changes
+├── Voltage / frequency
+└── Real-time dashboard updates
+
+Enphase Local API
+└── Solar production (house array)
+```
+
+### Core Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `smart_decision.py` | Main decision engine — v4 adaptive with v3.5 fallback |
+| `adaptive_engine.py` | v4 priority-based decision logic |
+| `data_sources.py` | Unified Modbus/Cloud/Enphase data with fallback |
+| `config.py` | Configuration management from `.env` |
+| `scheduler.py` | Task runner, web server, API endpoints |
+| `telemetry_reporter.py` | Anonymous opt-in telemetry |
 
 ---
 
 ## Documentation
 
+- [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) — All settings explained
 - [Docker Installation](docs/DOCKER_INSTALLATION.md) — Recommended setup path
 - [Native Installation](docs/INSTALLATION.md) — For advanced users
-- [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) — All settings explained
+- [Modbus Register Map](docs/MODBUS_REGISTER_MAP.md) — Full register reference
 - [Web Dashboard](docs/WEB_DASHBOARD.md) — Dashboard setup and features
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and solutions
 - [Changelog](docs/CHANGELOG.md) — Version history
+- [Roadmap](ROADMAP.md) — Planned features
+
+---
+
+## Reporting Issues
+
+On the **System Logs** tab of the dashboard, click the **🐛 Report Issue** button. This generates a sanitized diagnostic bundle with credentials automatically stripped.
+
+You can also open a [GitHub Issue](https://github.com/mtnears/FranklinWH-Automation/issues/new) or post in [GitHub Discussions](https://github.com/mtnears/FranklinWH-Automation/discussions).
+
+Please include: log output, rate plan, setup details (battery count, solar size, Modbus enabled), and what happened vs. what you expected.
 
 ---
 
 ## Contributing
 
-Contributions welcome!
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 - Report bugs with log excerpts
 - Share configurations for different utilities
-- Submit PRs for new pricing providers
+- Submit PRs for new pricing providers or rate schedules
 - Open discussions for feature ideas
 
 ---
@@ -243,4 +279,4 @@ MIT License — See [LICENSE](LICENSE)
 
 Built using the [franklinwh](https://pypi.org/project/franklinwh/) Python library by richö butts.
 
-**Built with ☀️ for the Franklin WH community**
+**Built with ☀️ for the FranklinWH community**

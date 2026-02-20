@@ -651,23 +651,30 @@ async def main() -> int:
             
             if need_backup or need_idle:
                 # Check cooldown - don't re-issue same switch within 10 minutes
+                # EXCEPTION: Within 30 minutes of peak, bypass cooldown entirely
+                # to ensure we're in the right mode before the critical transition
                 switch_target = "emergency_backup" if need_backup else ("self_consumption" if ADAPTIVE_ENGINE_LOADED else "home")
                 cooldown_ok = True
-                try:
-                    cooldown_file = config.LOG_DIR / "last_mode_switch.txt"
-                    if cooldown_file.exists():
-                        with open(cooldown_file, 'r') as f:
-                            parts = f.read().strip().split('|')
-                            if len(parts) == 2:
-                                last_target = parts[0]
-                                last_time = datetime.strptime(parts[1], '%Y-%m-%d %H:%M:%S')
-                                elapsed = (datetime.now() - last_time).total_seconds()
-                                if last_target == switch_target and elapsed < 600:
-                                    cooldown_ok = False
-                                    log_intelligence(f"Mode switch cooldown: {switch_target} already sent "
-                                                   f"{elapsed:.0f}s ago, skipping re-issue")
-                except Exception:
-                    pass  # Cooldown is best-effort, don't fail on it
+                near_peak = config.TOU_ENABLED and hours_to_peak <= 0.5  # Within 30 min of peak
+                
+                if near_peak:
+                    log_intelligence(f"Near peak ({hours_to_peak:.2f}h) — cooldown bypassed for {switch_target}")
+                else:
+                    try:
+                        cooldown_file = config.LOG_DIR / "last_mode_switch.txt"
+                        if cooldown_file.exists():
+                            with open(cooldown_file, 'r') as f:
+                                parts = f.read().strip().split('|')
+                                if len(parts) == 2:
+                                    last_target = parts[0]
+                                    last_time = datetime.strptime(parts[1], '%Y-%m-%d %H:%M:%S')
+                                    elapsed = (datetime.now() - last_time).total_seconds()
+                                    if last_target == switch_target and elapsed < 600:
+                                        cooldown_ok = False
+                                        log_intelligence(f"Mode switch cooldown: {switch_target} already sent "
+                                                       f"{elapsed:.0f}s ago, skipping re-issue")
+                    except Exception:
+                        pass  # Cooldown is best-effort, don't fail on it
                 
                 if cooldown_ok:
                     mode_switched = await switch_mode(switch_target)
@@ -686,7 +693,26 @@ async def main() -> int:
             else:
                 log_intelligence(f"Mode unchanged: {current_mode} ({desired_mode_label})")
         else:
-            log_intelligence(f"In peak - no mode changes (current: {current_mode})")
+            # === PEAK SAFETY NET ===
+            # During peak hours, if hardware is in Emergency Backup, the battery
+            # is charging from the grid at the highest rate. This is catastrophic.
+            # Force a switch to self-consumption regardless of cooldown or engine state.
+            if current_mode == "emergency_backup":
+                log_intelligence(f"⚠️ PEAK SAFETY NET: Hardware in Emergency Backup during peak!")
+                log_intelligence(f"  Forcing switch to self-consumption (bypassing cooldown)")
+                grid_ok = await check_grid_connected()
+                if grid_ok:
+                    switch_target = "self_consumption" if ADAPTIVE_ENGINE_LOADED else "home"
+                    mode_switched = await switch_mode(switch_target)
+                    if mode_switched:
+                        log_intelligence(f"  ✅ Peak safety switch VERIFIED: now in {switch_target}")
+                    else:
+                        log_intelligence(f"  ❌ CRITICAL: Peak safety switch FAILED — hardware still in EB!")
+                        log_intelligence(f"  Manual intervention may be needed")
+                else:
+                    log_intelligence(f"  Grid disconnected — cannot switch during peak")
+            else:
+                log_intelligence(f"In peak - mode OK: {current_mode} ({desired_mode_label})")
         
         # Write mode to state file (logging only, not used for decisions)
         save_mode_log(desired_mode_label)
