@@ -273,6 +273,20 @@
 
         /* Report Issue Modal */
         .report-modal { max-width: 560px; }
+        /* Telemetry Consent Modal */
+        .consent-modal { max-width: 460px; }
+        .consent-what { margin: 12px 0 16px 0; padding: 12px 14px; background: var(--bg-elevated); border-radius: 8px; font-size: 12.5px; line-height: 1.7; color: var(--text-secondary); }
+        .consent-what-item { display: flex; align-items: baseline; gap: 6px; }
+        .consent-what-item::before { content: '•'; color: var(--accent-blue); font-weight: 700; flex-shrink: 0; }
+        .consent-env-note { font-size: 11.5px; color: var(--text-muted); margin-bottom: 18px; line-height: 1.5; }
+        .consent-actions { display: flex; gap: 10px; justify-content: flex-end; }
+        .consent-region { margin-bottom: 16px; }
+        .consent-region label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-primary); }
+        .consent-region select { width: 100%; padding: 8px 12px; background: var(--bg-input, var(--bg-elevated)); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; cursor: pointer; }
+        .consent-region select:focus { outline: none; border-color: var(--accent-blue); }
+        .consent-region-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .telemetry-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); padding: 2px 8px; border-radius: 10px; background: var(--bg-elevated); margin-left: 8px; opacity: 0; transition: opacity .3s; }
+        .telemetry-badge.visible { opacity: 1; }
         .report-textarea { width: 100%; min-height: 80px; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; resize: vertical; line-height: 1.5; }
         .report-textarea:focus { outline: none; border-color: var(--accent-blue); }
         .report-textarea::placeholder { color: var(--text-muted); }
@@ -723,8 +737,9 @@
             </div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">About</div>
-            <div class="info-row"><span class="info-key">Dashboard Version</span><span class="info-val">3.5.0</span></div>
+            <div class="info-row"><span class="info-key">Dashboard Version</span><span class="info-val">4.0</span></div>
             <div class="info-row"><span class="info-key">Last Data Update</span><span class="info-val" id="about-update">--</span></div>
+            <div class="info-row"><span class="info-key">Anonymous Analytics</span><span class="info-val"><span id="telemetry-badge" class="telemetry-badge">loading...</span></span></div>
             <div class="info-row"><span class="info-key">Project</span><span class="info-val"><a href="https://github.com/mtnears/FranklinWH-Automation" target="_blank" style="color:var(--accent-blue);text-decoration:none">GitHub ↗</a></span></div>
         </div>
     </div>
@@ -857,12 +872,64 @@
     </div>
 </div>
 
+<!-- Telemetry Consent Modal -->
+<div class="modal-overlay" id="consent-modal">
+    <div class="modal consent-modal">
+        <!-- Step 1: Consent -->
+        <div id="consent-step-1">
+            <div class="modal-title">📊 Help Improve FranklinWH Automation</div>
+            <div class="modal-body" style="margin-bottom:4px">This project can send anonymous usage stats to help guide development. No personal info, API keys, IPs, or identifiable data is ever collected.</div>
+            <div class="consent-what">
+                <div class="consent-what-item">System size (battery kWh, panel count)</div>
+                <div class="consent-what-item">Engine version &amp; config flags</div>
+                <div class="consent-what-item">Aggregate performance (peak protection %)</div>
+                <div class="consent-what-item">Country / region (you choose below)</div>
+            </div>
+            <div class="consent-env-note">You can change this anytime in your .env file with <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:11px">TELEMETRY_ENABLED=true</code> or <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:11px">false</code>.</div>
+            <div class="consent-actions">
+                <button class="modal-btn mbtn-cancel" onclick="setTelemetryConsent(false)">No Thanks</button>
+                <button class="modal-btn mbtn-confirm" onclick="showConsentStep2()">Enable Analytics</button>
+            </div>
+        </div>
+        <!-- Step 2: Region picker (shown after opt-in) -->
+        <div id="consent-step-2" style="display:none">
+            <div class="modal-title">📍 Select Your Region</div>
+            <div class="modal-body">Optional — helps us understand where the community is. Only country-level, never city or address.</div>
+            <div class="consent-region">
+                <label for="consent-region-select">Country</label>
+                <select id="consent-region-select">
+                    <option value="">— Prefer not to say —</option>
+                    <option value="US">United States</option>
+                    <option value="CA">Canada</option>
+                    <option value="AU">Australia</option>
+                    <option value="DE">Germany</option>
+                    <option value="UK">United Kingdom</option>
+                    <option value="FR">France</option>
+                    <option value="IT">Italy</option>
+                    <option value="ES">Spain</option>
+                    <option value="NL">Netherlands</option>
+                    <option value="JP">Japan</option>
+                    <option value="KR">South Korea</option>
+                    <option value="NZ">New Zealand</option>
+                    <option value="OTHER">Other</option>
+                </select>
+                <div class="consent-region-hint" id="consent-region-hint"></div>
+            </div>
+            <div class="consent-actions">
+                <button class="modal-btn mbtn-cancel" onclick="setTelemetryConsent(false)">Cancel</button>
+                <button class="modal-btn mbtn-confirm" onclick="submitTelemetryConsent()">Confirm</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 let D=null,S={},OV={active:false},ovMode=null,ovDur='1h',logTimer=null,dashTimer=null;
 
 document.addEventListener('DOMContentLoaded',()=>{
     loadSettings(); tick(); setInterval(tick,1000);
     update(); startDash(); startLogAR(); scanForReports(); loadOV();
+    checkTelemetryConsent();
     // Show Solar Array tab if any solar data is available
     (async()=>{
         let found=false;
@@ -2282,6 +2349,83 @@ async function generateReport(){
 function openGitHubIssue(){
     // Fallback if button onclick wasn't set
     window.open('https://github.com/mtnears/FranklinWH-Automation/issues/new?labels=bug,v4-beta','_blank');
+}
+
+// ===== TELEMETRY CONSENT =====
+let _consentGridRegion=null; // Stashed from GET response for pre-selection
+
+async function checkTelemetryConsent(){
+    try{
+        const r=await fetch('/api/telemetry-consent');
+        if(!r.ok)return;
+        const data=await r.json();
+        if(data.status==='unknown'){
+            // Stash grid_region from Modbus (if available) for pre-selecting dropdown
+            _consentGridRegion=data.grid_region||null;
+            document.getElementById('consent-modal').classList.add('active');
+        }
+        updateTelemetryBadge(data);
+    }catch(e){}
+}
+
+function showConsentStep2(){
+    // User clicked "Enable Analytics" — show region picker
+    document.getElementById('consent-step-1').style.display='none';
+    document.getElementById('consent-step-2').style.display='block';
+
+    // Pre-select country based on Modbus grid detection
+    const sel=document.getElementById('consent-region-select');
+    const hint=document.getElementById('consent-region-hint');
+    if(_consentGridRegion==='north_america'){
+        sel.value='US'; // Best guess for North America — user can change to CA
+        hint.textContent='Auto-detected from grid frequency (60 Hz). Change if needed.';
+    }else if(_consentGridRegion==='europe_asia_50hz'){
+        sel.value=''; // Too broad to guess — let them pick
+        hint.textContent='50 Hz grid detected — please select your country.';
+    }else{
+        hint.textContent='';
+    }
+}
+
+async function setTelemetryConsent(consent){
+    // "No Thanks" or "Cancel" — opt out immediately
+    document.getElementById('consent-modal').classList.remove('active');
+    try{
+        await fetch('/api/telemetry-consent',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({consent:false})
+        });
+        updateTelemetryBadge({status:'opted_out',consented:false});
+    }catch(e){}
+}
+
+async function submitTelemetryConsent(){
+    // "Confirm" on step 2 — opt in with region
+    const region=document.getElementById('consent-region-select').value||null;
+    document.getElementById('consent-modal').classList.remove('active');
+    try{
+        const r=await fetch('/api/telemetry-consent',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({consent:true,region:region})
+        });
+        if(r.ok){
+            updateTelemetryBadge({status:'opted_in',consented:true});
+        }
+    }catch(e){}
+}
+
+function updateTelemetryBadge(data){
+    const badge=document.getElementById('telemetry-badge');
+    if(!badge)return;
+    if(data.status==='opted_in'||(data.status==='env_override'&&data.consented)){
+        badge.textContent='📊 Analytics: on';
+        badge.classList.add('visible');
+    }else if(data.status==='opted_out'||(data.status==='env_override'&&!data.consented)){
+        badge.textContent='📊 Analytics: off';
+        badge.classList.add('visible');
+    }
 }
 
 // ===== SETTINGS =====

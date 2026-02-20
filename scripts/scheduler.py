@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-FranklinWH Automation Scheduler - v3.5.1
+FranklinWH Automation Scheduler - v4.0
 
 Master scheduler that runs all automation tasks on their configured intervals.
 This allows the Docker container to be fully self-contained - no external
 cron or Task Scheduler needed.
+
+v4.0 changes:
+- Anonymous opt-in telemetry: daily submission to private GitHub repo
+- GET/POST /api/telemetry-consent endpoints for dashboard modal
 
 v3.5.0 changes:
 - Manual override API: POST /api/override, DELETE /api/override, GET /api/override
@@ -26,6 +30,7 @@ Tasks:
 - daily_status_report.py: Daily at 4:30 PM (if EMAIL_ENABLED)
 - generate_weekly_charts.py: Weekly on Sunday at 2:00 AM
 - calculate_daily_savings.py: Daily at 00:05 AM (previous day)
+- telemetry_reporter.py: Daily at 6:00 AM (if opted in, retry at 7:00 AM)
 
 API:
 - Internal HTTP server on port 8101 for dashboard operations
@@ -34,6 +39,8 @@ API:
 - DELETE /api/override: Cancel active override
 - GET /api/override: Get current override status
 - POST /api/diagnostic-bundle: Generate sanitized diagnostic bundle for issue reporting
+- GET /api/telemetry-consent: Get current telemetry consent status
+- POST /api/telemetry-consent: Set telemetry consent (from dashboard modal)
 """
 import schedule
 import time
@@ -234,6 +241,35 @@ def job_solar_health():
     run_script("solar_health_monitor.py", "Solar Health Monitor")
 
 
+def job_telemetry():
+    """Anonymous telemetry — runs daily at 6:00 AM if opted in.
+
+    Submits aggregate usage data to the private GitHub collection repo.
+    Failure is silent — never impacts automation.
+    """
+    try:
+        from telemetry_reporter import run_telemetry
+        run_telemetry()
+    except ImportError:
+        pass  # telemetry_reporter.py not present — silently skip
+    except Exception as e:
+        log(f"  Telemetry error (non-fatal): {e}")
+
+
+def job_telemetry_retry():
+    """Telemetry retry — runs 1 hour after the daily job.
+
+    Only actually retries if the daily run failed.
+    """
+    try:
+        from telemetry_reporter import run_telemetry_retry
+        run_telemetry_retry()
+    except ImportError:
+        pass
+    except Exception as e:
+        log(f"  Telemetry retry error (non-fatal): {e}")
+
+
 def format_time(hour: int, minute: int) -> str:
     """Format hour:minute as HH:MM string for schedule library."""
     return f"{hour:02d}:{minute:02d}"
@@ -242,7 +278,7 @@ def format_time(hour: int, minute: int) -> str:
 def setup_schedule():
     """Configure all scheduled tasks."""
     log("=" * 60)
-    log("FranklinWH Automation Scheduler v3.5.1")
+    log("FranklinWH Automation Scheduler v4.0")
     log("=" * 60)
     
     # Get scheduling config
@@ -373,6 +409,18 @@ def setup_schedule():
     schedule.every().sunday.at("02:00").do(job_weekly_charts)
     log("  - Weekly Charts: Sunday at 2:00 AM")
     
+    # Anonymous telemetry — daily at 6:00 AM + retry at 7:00 AM
+    # Only runs if user has opted in (consent file or .env)
+    schedule.every().day.at("06:00").do(job_telemetry)
+    schedule.every().day.at("07:00").do(job_telemetry_retry)
+    telemetry_status = 'unknown'
+    try:
+        from telemetry_reporter import get_consent_status
+        telemetry_status = get_consent_status().get('status', 'unknown')
+    except ImportError:
+        telemetry_status = 'not installed'
+    log(f"  - Telemetry: Daily at 6:00 AM (status: {telemetry_status})")
+    
     log("-" * 60)
     log("Scheduler ready. Running initial tasks...")
     
@@ -484,6 +532,8 @@ class APIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/override':
             self._get_override()
+        elif self.path == '/api/telemetry-consent':
+            self._get_telemetry_consent()
         else:
             self._json_response(404, {'error': 'Not found'})
 
@@ -496,6 +546,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self._cancel_override()
         elif self.path == '/api/diagnostic-bundle':
             self._generate_diagnostic_bundle()
+        elif self.path == '/api/telemetry-consent':
+            self._set_telemetry_consent()
         else:
             self._json_response(404, {'error': 'Not found'})
 
@@ -652,6 +704,79 @@ class APIHandler(BaseHTTPRequestHandler):
             log(f"  Diagnostic bundle error: {e}")
             import traceback
             traceback.print_exc()
+            self._json_response(500, {'error': str(e)})
+
+    def _get_telemetry_consent(self):
+        """Return current telemetry consent status.
+
+        Includes grid_region from Modbus (if available) so the dashboard
+        can pre-select the country dropdown on the consent modal.
+        """
+        try:
+            from telemetry_reporter import get_consent_status, _read_modbus_telemetry, _infer_grid_region
+            status = get_consent_status()
+
+            # If status is unknown (first load), try to detect grid region
+            # from Modbus so the dashboard can pre-select the country picker
+            if status.get('status') == 'unknown':
+                try:
+                    modbus_data = _read_modbus_telemetry()
+                    if modbus_data:
+                        freq = modbus_data.get('grid_frequency_hz')
+                        volt = modbus_data.get('grid_voltage')
+                        if freq:
+                            status['grid_region'] = _infer_grid_region(freq, volt)
+                except Exception:
+                    pass
+
+            self._json_response(200, status)
+        except ImportError:
+            self._json_response(200, {
+                'status': 'unavailable',
+                'consented': None,
+                'source': None,
+                'install_uuid': None,
+            })
+        except Exception as e:
+            log(f"  Telemetry consent GET error: {e}")
+            self._json_response(500, {'error': str(e)})
+
+    def _set_telemetry_consent(self):
+        """Set telemetry consent from dashboard modal.
+
+        Accepts: {consent: bool, region: str|null}
+        Region is the country code from the dropdown (e.g., "US", "CA", "AU").
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length) if length > 0 else b'{}'
+            payload = json.loads(body) if body else {}
+
+            consent = payload.get('consent')
+            if consent is None:
+                self._json_response(400, {'error': 'Missing "consent" field (true/false)'})
+                return
+
+            region = payload.get('region')  # Country code or None
+
+            from telemetry_reporter import set_consent
+            record = set_consent(consented=bool(consent), source='dashboard', region=region)
+
+            log(f"  Telemetry consent set: {'opted in' if consent else 'opted out'}"
+                f"{' (region=' + region + ')' if region else ''}")
+            self._json_response(200, {
+                'status': 'ok',
+                'consented': record['consented'],
+                'install_uuid': record['install_uuid'],
+            })
+
+        except json.JSONDecodeError:
+            self._json_response(400, {'error': 'Invalid JSON'})
+        except ImportError as e:
+            log(f"  Telemetry consent import error: {e}")
+            self._json_response(500, {'error': 'telemetry_reporter.py not found'})
+        except Exception as e:
+            log(f"  Telemetry consent error: {e}")
             self._json_response(500, {'error': str(e)})
 
     def _save_layout(self):
