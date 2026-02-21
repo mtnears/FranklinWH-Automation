@@ -229,9 +229,28 @@
         .report-controls { display: flex; align-items: center; gap: 12px; margin-bottom: var(--gap); }
         .sel-input { padding: 8px 14px; background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; cursor: pointer; }
         .sel-input option { background: var(--bg-card); }
-        .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
-        .chart-grid .card img { width: 100%; border-radius: 8px; }
-        .chart-full { grid-column: 1 / -1; }
+        .chart-grid { position: relative; overflow: hidden; border-radius: var(--card-radius); }
+        .chart-carousel { display: flex; transition: transform 0.35s ease; touch-action: pan-y; }
+        .chart-slide { min-width: 100%; box-sizing: border-box; padding: 0 2px; }
+        .chart-slide .card { margin: 0; }
+        .chart-grid .card img { width: 100%; border-radius: 8px; cursor: pointer; }
+        .chart-nav { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 14px 0 4px; }
+        .chart-nav-btn { background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-secondary); width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all .2s; }
+        .chart-nav-btn:hover { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
+        .chart-dots { display: flex; gap: 8px; }
+        .chart-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-subtle); cursor: pointer; transition: all .2s; }
+        .chart-dot.active { background: var(--accent-blue); transform: scale(1.3); }
+        .chart-counter { font-size: 12px; color: var(--text-muted); min-width: 50px; text-align: center; }
+        .chart-lightbox { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.92); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; flex-direction: column; }
+        .chart-lightbox.active { display: flex; }
+        .chart-lightbox img { max-width: 95vw; max-height: 88vh; object-fit: contain; border-radius: 8px; }
+        .chart-lightbox-label { color: #fff; font-size: 16px; padding: 12px; opacity: 0.8; }
+        .chart-lightbox-close { position: absolute; top: 16px; right: 24px; color: #fff; font-size: 32px; cursor: pointer; opacity: 0.7; transition: opacity .2s; z-index: 10000; }
+        .chart-lightbox-close:hover { opacity: 1; }
+        .chart-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); color: #fff; font-size: 36px; cursor: pointer; opacity: 0.5; transition: opacity .2s; padding: 20px; z-index: 10000; }
+        .chart-lightbox-nav:hover { opacity: 1; }
+        .chart-lightbox-nav.prev { left: 8px; }
+        .chart-lightbox-nav.next { right: 8px; }
         .log-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: var(--gap); flex-wrap: wrap; }
         .log-viewer { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; overflow-y: auto; max-height: calc(100vh - 240px); }
         .log-line { padding: 2px 0; border-left: 3px solid transparent; padding-left: 10px; }
@@ -701,7 +720,15 @@
             <button class="btn-sm" onclick="scanForReports()">🔄 Refresh</button>
             <span id="report-status" style="font-size:12px;color:var(--text-muted)"></span>
         </div>
-        <div class="chart-grid" id="chart-container"><div class="card chart-full" style="text-align:center;padding:60px"><p style="color:var(--text-muted)">Select a report from the dropdown above</p></div></div>
+        <div class="chart-grid" id="chart-container"><div class="card" style="text-align:center;padding:60px;min-width:100%"><p style="color:var(--text-muted)">Select a report from the dropdown above</p></div></div>
+    </div>
+    <!-- Chart lightbox (fullscreen viewer) -->
+    <div class="chart-lightbox" id="chart-lightbox" onclick="closeLightbox(event)">
+        <span class="chart-lightbox-close" onclick="closeLightbox()">&times;</span>
+        <span class="chart-lightbox-nav prev" onclick="lightboxNav(event,-1)">&#8249;</span>
+        <span class="chart-lightbox-nav next" onclick="lightboxNav(event,1)">&#8250;</span>
+        <img id="lightbox-img" src="" alt="">
+        <div class="chart-lightbox-label" id="lightbox-label"></div>
     </div>
 
     <!-- ========== SYSTEM LOGS ========== -->
@@ -2197,29 +2224,35 @@ async function loadLogs(){
 async function scanForReports(){
     const sel=document.getElementById('report-select'),st=document.getElementById('report-status');
     sel.innerHTML='<option value="">Scanning for reports...</option>';
-    const found=new Set();
-    // Parse actual directory listing from nginx autoindex
-    try{
-        const r=await fetch('logs/?t='+Date.now());
-        if(r.ok){
-            const html=await r.text();
-            // Match filenames like MM-DD-YYYY_chart_soc_timeline.png
-            const re=/(\d{2}-\d{2}-\d{4})_chart_soc_timeline\.png/g;
-            let m;while((m=re.exec(html))!==null)found.add(m[1]);
-        }
-    }catch(e){console.log('Directory scan failed:',e)}
-    // Also try index file as fallback
+    const found=new Map(); // date -> {date, charts:[]}
+    // Try index file first (has chart type info)
     try{
         const r=await fetch('weekly_reports_index.json?t='+Date.now());
         if(r.ok){
             const d=await r.json();
+            window._reportsIndex=d.reports||[];
             if(d.reports&&d.reports.length>0){
-                d.reports.forEach(rp=>{if(rp.date)found.add(rp.date)});
+                d.reports.forEach(rp=>{if(rp.date)found.set(rp.date,{date:rp.date,charts:rp.charts||[]})});
             }
         }
     }catch(e){}
+    // Also parse nginx directory listing for any reports not in index
+    try{
+        const r=await fetch('logs/?t='+Date.now());
+        if(r.ok){
+            const html=await r.text();
+            // Match any chart filename: MM-DD-YYYY_chart_TYPENAME.png
+            const re=/(\d{2}-\d{2}-\d{4})_chart_(\w+)\.png/g;
+            let m;while((m=re.exec(html))!==null){
+                const dt=m[1],typ=m[2];
+                if(!found.has(dt))found.set(dt,{date:dt,charts:[]});
+                const entry=found.get(dt);
+                if(!entry.charts.includes(typ))entry.charts.push(typ);
+            }
+        }
+    }catch(e){console.log('Directory scan failed:',e)}
     // Sort by date descending and populate
-    const sorted=[...found].sort((a,b)=>{
+    const sorted=[...found.keys()].sort((a,b)=>{
         const pa=a.split('-'),pb=b.split('-');
         const da=new Date(pa[2],pa[0]-1,pa[1]),db=new Date(pb[2],pb[0]-1,pb[1]);
         return db-da;
@@ -2229,20 +2262,88 @@ async function scanForReports(){
         const p=d.split('-');
         const dt=new Date(p[2],p[0]-1,p[1]);
         const label=dt.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-        sel.innerHTML+='<option value="'+d+'">'+label+'</option>';
+        const info=found.get(d);
+        const count=info&&info.charts?info.charts.length:'?';
+        sel.innerHTML+='<option value="'+d+'">'+label+' ('+count+' charts)</option>';
     });
     st.textContent=sorted.length+' report'+(sorted.length!==1?'s':'')+' found';
     if(sorted.length>0){sel.value=sorted[0];loadReport()}
 }
 
+// Chart metadata: add new chart types here as they're created
+// Chart metadata: add new chart types here as they're created
+const CHART_META={
+    soc_timeline:{icon:'📈',label:'SOC Timeline — 7 Day History'},
+    daily_summary:{icon:'📊',label:'Daily Summary'},
+    power_flow:{icon:'⚡',label:'Power Flow — 48 Hours'},
+    decision_engine:{icon:'🧠',label:'v4 Decision Engine Activity'},
+    curtailment:{icon:'☀️',label:'Solar Curtailment Tracker'}
+};
+const CHART_ORDER=['soc_timeline','daily_summary','power_flow','decision_engine','curtailment'];
+let _chartSlides=[],_chartIdx=0;
+
 function loadReport(){
     const d=document.getElementById('report-select').value,c=document.getElementById('chart-container');
-    if(!d){c.innerHTML='<div class="card chart-full" style="text-align:center;padding:60px"><p style="color:var(--text-muted)">Select a report</p></div>';return}
-    c.innerHTML=[
-        {f:'logs/'+d+'_chart_soc_timeline.png',l:'📈 SOC Timeline - 7 Day History'},
-        {f:'logs/'+d+'_chart_daily_summary.png',l:'📊 Daily Summary'},
-        {f:'logs/'+d+'_chart_power_flow.png',l:'⚡ Power Flow - 48 Hours',full:1}
-    ].map(ch=>'<div class="card'+(ch.full?' chart-full':'')+'"><div class="card-label">'+ch.l+'</div><img src="'+ch.f+'?t='+Date.now()+'" alt="'+ch.l+'" onerror="this.parentElement.innerHTML=\'<p style=\\\'color:var(--text-muted);padding:40px;text-align:center\\\'>Chart not available</p>\'"></div>').join('');
+    if(!d){c.innerHTML='<div class="card" style="text-align:center;padding:60px;min-width:100%"><p style="color:var(--text-muted)">Select a report</p></div>';return}
+    let types=null;
+    if(window._reportsIndex){const rpt=window._reportsIndex.find(r=>r.date===d);if(rpt&&rpt.charts)types=rpt.charts.slice()}
+    if(!types)types=CHART_ORDER.slice();
+    types.sort((a,b)=>{const ai=CHART_ORDER.indexOf(a),bi=CHART_ORDER.indexOf(b);return(ai<0?999:ai)-(bi<0?999:bi)});
+    _chartSlides=types.map(t=>{const m=CHART_META[t]||{icon:'📄',label:t.replace(/_/g,' ')};return{type:t,src:'logs/'+d+'_chart_'+t+'.png?t='+Date.now(),icon:m.icon,label:m.label}});
+    _chartIdx=0;
+    let html='<div class="chart-carousel" id="chart-carousel">';
+    _chartSlides.forEach((s,i)=>{
+        html+='<div class="chart-slide" id="chart-slide-'+i+'"><div class="card"><div class="card-label">'+s.icon+' '+s.label+'</div><img src="'+s.src+'" alt="'+s.label+'" onclick="openLightbox('+i+')" onerror="document.getElementById(\'chart-slide-'+i+'\').dataset.missing=\'1\'"></div></div>';
+    });
+    html+='</div>';
+    html+='<div class="chart-nav"><button class="chart-nav-btn" onclick="chartNav(-1)">&#8249;</button><div class="chart-dots" id="chart-dots">';
+    _chartSlides.forEach((_,i)=>{html+='<div class="chart-dot'+(i===0?' active':'')+'" onclick="chartGo('+i+')"></div>'});
+    html+='</div><div class="chart-counter" id="chart-counter">1 / '+_chartSlides.length+'</div><button class="chart-nav-btn" onclick="chartNav(1)">&#8250;</button></div>';
+    c.innerHTML=html;
+    // Touch swipe support
+    const carousel=document.getElementById('chart-carousel');
+    let startX=0,startY=0,dragging=false;
+    carousel.addEventListener('touchstart',e=>{startX=e.touches[0].clientX;startY=e.touches[0].clientY;dragging=true},{passive:true});
+    carousel.addEventListener('touchend',e=>{
+        if(!dragging)return;dragging=false;
+        const dx=e.changedTouches[0].clientX-startX,dy=e.changedTouches[0].clientY-startY;
+        if(Math.abs(dx)>Math.abs(dy)&&Math.abs(dx)>40){chartNav(dx<0?1:-1)}
+    },{passive:true});
+}
+function chartGo(i){
+    _chartIdx=Math.max(0,Math.min(i,_chartSlides.length-1));
+    const carousel=document.getElementById('chart-carousel');
+    if(carousel)carousel.style.transform='translateX(-'+(_chartIdx*100)+'%)';
+    document.querySelectorAll('.chart-dot').forEach((d,j)=>d.classList.toggle('active',j===_chartIdx));
+    const ctr=document.getElementById('chart-counter');if(ctr)ctr.textContent=(_chartIdx+1)+' / '+_chartSlides.length;
+}
+function chartNav(dir){chartGo(_chartIdx+dir)}
+
+// Lightbox (fullscreen chart viewer)
+function openLightbox(i){
+    _chartIdx=i;const lb=document.getElementById('chart-lightbox'),img=document.getElementById('lightbox-img'),lbl=document.getElementById('lightbox-label');
+    const s=_chartSlides[i];if(!s)return;
+    img.src=s.src;lbl.textContent=s.icon+' '+s.label;
+    lb.classList.add('active');document.body.style.overflow='hidden';
+    document.addEventListener('keydown',_lbKey);
+}
+function closeLightbox(e){
+    if(e&&e.target&&(e.target.tagName==='IMG'||e.target.classList.contains('chart-lightbox-nav')))return;
+    document.getElementById('chart-lightbox').classList.remove('active');
+    document.body.style.overflow='';document.removeEventListener('keydown',_lbKey);
+}
+function lightboxNav(e,dir){
+    if(e)e.stopPropagation();
+    const ni=_chartIdx+dir;if(ni<0||ni>=_chartSlides.length)return;
+    _chartIdx=ni;const s=_chartSlides[_chartIdx];
+    document.getElementById('lightbox-img').src=s.src;
+    document.getElementById('lightbox-label').textContent=s.icon+' '+s.label;
+    chartGo(_chartIdx);
+}
+function _lbKey(e){
+    if(e.key==='Escape')closeLightbox();
+    else if(e.key==='ArrowLeft')lightboxNav(null,-1);
+    else if(e.key==='ArrowRight')lightboxNav(null,1);
 }
 
 // ===== OVERRIDE =====
