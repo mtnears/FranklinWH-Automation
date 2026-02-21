@@ -1,91 +1,130 @@
 # FranklinWH Battery Automation — Roadmap
 
-This document outlines planned features and improvements for the FranklinWH Battery Automation project. Items are listed in rough priority order. Contributions, feedback, and discussion on any of these are welcome — open an issue or comment on an existing one.
+Planned features and improvements. Items are listed in rough priority order. Contributions, feedback, and discussion are welcome — open an issue or start a discussion.
 
 ---
 
-## 🔜 Up Next
+## 🔧 In Progress
 
-### Forecast-Aware Charging & Adaptive Solar Optimization
-**Priority: High** · [Related: Issue #_]
+### Energy Source Tracking & Post-Peak Optimization
+**Priority: High**
 
-The current system uses a fixed schedule for peak protection (5–8 PM on weekdays) and a fixed off-grid window (5–10 PM). This works well but leaves optimization on the table, especially for non-export systems where a full battery means solar gets curtailed (wasted).
+Track how much stored battery energy came from solar vs grid on a daily basis to enable smarter post-peak decisions. If the battery holds surplus *solar* energy after peak, stay in Self-Consumption overnight to burn free energy instead of importing from the grid. If stored energy came from grid charging, return to TOU — discharging paid energy just to re-buy it tomorrow gains nothing.
 
-The goal is to make the system smarter about *how much* to charge and *when* to go off-grid based on how much solar is actually expected that day.
+This same data answers a bigger question: **is the solar installation sized correctly for the battery automation strategy?** Seasonal trends will show whether solar consistently fills the battery (high-value, free peak avoidance) or whether the system is primarily doing rate arbitrage (still valuable, but lower savings).
 
-**Morning Planning Phase**
-- Integrate a solar forecast provider (Solcast, Forecast.Solar, or similar)
-- At a configurable time (e.g. 6 AM), calculate the day's expected solar production minus estimated household consumption
-- Determine the "gap" between current SOC and the peak-readiness target that solar alone can't fill
-- If there's a gap: grid-charge only enough to close it, during the cheapest available rate window
-- If solar is sufficient: suppress grid charging entirely to leave maximum headroom for free solar absorption
+The metric must account for multiple user profiles:
+- **Solar + battery:** Track solar vs grid contribution. Best case: solar fills battery, surplus burns overnight free.
+- **Battery only, no solar:** Pure rate arbitrage — buy off-peak, discharge during peak. Baseline/floor value, still worth optimizing.
+- **Dynamic/demand pricing:** Price signals create opportunities including negative pricing events. Track cost-of-charge vs value-of-discharge per cycle.
+- **Solar + battery + NEM export:** Surplus solar earns export credits — overnight self-consumption may not be optimal vs exporting.
 
-**Intraday Adaptation**
-- Monitor actual solar production vs. forecast throughout the day
-- Recalculate the gap mid-day if tracking behind forecast
-- Hard protection: always ensure target SOC is met before peak, grid-charge if necessary regardless of rate
+Reporting tiers: daily/weekly metrics (solar contribution %, grid charge cost, peak avoidance value), seasonal/true-up trends (system sizing adequacy, cumulative savings breakdown), and opt-in anonymous telemetry aggregates for community benchmarking.
 
-**Post-Peak Optimization**
-- High-solar days: stay off-grid past peak to consume stored solar energy (it's free)
-- Low-solar days: return to grid at peak end to preserve SOC for overnight
-- Dynamic duration based on SOC at peak end and daily solar generation
+`solar_to_bat_kw` is already logged each cycle. Implementation adds `grid_to_bat_kw` tracking, daily source accumulation, post-peak surplus decision logic, and `GRID_EXPORT_ENABLED` config flag.
 
-**Weekend Strategy**
-- E-TOU-D (PG&E) has no peak period on weekends; other rate plans may differ
-- Weekends shift focus from peak avoidance to pure solar self-consumption — stay off-grid long enough to use what solar generated, then return to grid
-- Core principle: *use what you generated that day for free while maintaining a safety reserve, but don't stay off-grid longer than the solar energy justifies*
+### Telemetry Expansion
+**Priority: Medium**
 
-**Rate Schedule Flexibility**
-- Move from simple peak start/end configuration to a full rate schedule supporting multiple tiers (off-peak, mid-peak, peak) with configurable time windows
-- Support structures like SMUD TOD (three tiers with a morning off-peak charging window) alongside PG&E E-TOU-D (two tiers)
-- Weekend/weekday/holiday differentiation
+Initial telemetry deployment is complete — opt-in anonymous collection with GitHub-based storage and dashboard consent flow. Next steps: expand the telemetry payload to include energy source breakdown (solar vs grid contribution), build `scripts/aggregate.py` for the [franklin-telemetry](https://github.com/mtnears/franklin-telemetry) collection repo to generate `summary.json` and a community dashboard with anonymous fleet statistics (system sizes, utility distribution, engine versions, aggregate performance). Expand the collection repo README with full privacy policy, data schema documentation, and opt-out instructions.
 
-**Zero-Export Curtailment Protection**
-- Ensure that morning SOC + forecasted solar production won't cap the battery before peak production hours end
-- Prevents the catch-22 where charging too aggressively wastes solar, but charging too conservatively misses the peak target
+### Solar Health Monitor
+**Priority: Medium**
+
+Comprehensive panel performance tracking for users whose solar installer is defunct or unavailable. Portal scraping for historical per-panel production data, cross-array anomaly detection (Enphase house array vs SolarEdge barn array), and weather-aware failure alerts leveraging 13+ years of local weather history. Most of the core logic is built — needs wiring into the scheduler and dashboard.
+
+### Interactive Dynamic Charts
+**Priority: Medium**
+
+Replace static weekly PNG chart generation with client-side interactive charts using Plotly.js. Users select date range, charts render dynamically with zoom, pan, hover tooltips, and touch support for tablet. Static PNGs remain for archive and email use cases.
+
+Phased approach:
+1. Add SQLite logging alongside CSV (write to both, no disruption)
+2. Lightweight API endpoint serving date-range queries as JSON
+3. New "Interactive Charts" dashboard tab consuming the API
+4. Optionally deprecate static PNG generation or keep as weekly export
+
+### Open Issue Resolution
+**Priority: Medium**
+
+Beta tester on ComEd (Illinois) dynamic pricing encountering mode detection issues (`detected=unknown`) and P7 gap charging behavior that may not suit dynamic hourly pricing without fixed peak periods. Enhanced diagnostic bundle deployed for data collection — pending further verification and log analysis to determine whether ComEd requires a dynamic pricing path distinct from fixed TOU schedules.
 
 ---
 
 ## 📋 Planned
 
-### Repository Audit & Cleanup
-**Priority: Medium**
-
-Full review of the codebase to clean up stale files, verify imports, and ensure the repository is well-organized for community contributors.
-
-- Identify unused scripts in `scripts/` directory (e.g. `aggregate_data.py`, `milestone_emailer.py`, `pricing.py`, `run_smart_decision.sh`)
-- Verify no scripts reference hardcoded or legacy data paths
-- Review import chains for dead code
-- Add `.gitignore` entries for dev/diagnostic tools (`modbus_*.py`, `local_telemetry_viewer.py`, etc.)
-- Ensure all scripts have consistent docstrings and version references
-
-### Multi-Gateway Management
-**Priority: Medium**
-
-Support for users with multiple FranklinWH aGate systems. Currently the automation manages a single gateway. This would allow coordinated management of multiple battery systems, potentially with different configurations or roles (e.g., one prioritizing solar, another prioritizing backup).
-
-### Telemetry Service
+### Script Status Dashboard — Description Updates
 **Priority: Low**
 
-Anonymous, opt-in usage telemetry to help understand how the automation is being used across different configurations and rate plans. The telemetry module (`telemetry.py`) is built but not yet wired to a real collection endpoint. When activated, it will send anonymized performance metrics (no credentials or personal data) to help improve default settings and decision logic.
+The Script Status dashboard tab is live and functional (shipped in v3.5.1). Needs updated or added descriptions for newer v4 scripts and scheduled tasks to keep the status page informative as the system grows.
+
+### Home Load & Battery Power via Modbus
+**Priority: Medium**
+
+`home_load_kw` and `battery_kw` are currently hardcoded to `0.0` in the Modbus data path. Quick win: energy balance derivation after Modbus+Enphase merge. Proper fix: validate Modbus registers 82 (battery power) and 83 (home load) during active charging and peak discharge. Resolves flat zero lines in Power Flow charts.
+
+### Multi-Gateway Management
+**Priority: Low**
+
+Support for users with multiple FranklinWH aGate systems. Coordinated management of multiple battery systems with independent configurations.
+
+---
+
+## 💡 Future Ideas
+
+- **Weekend strategy optimization** — Pure solar self-consumption on non-peak days with dynamic off-grid duration
+- **Holiday schedule support** — Rate schedule awareness for utility holidays
+- **Modbus write exploration** — Investigate direct Modbus register control for mode switching (currently requires cloud API; DIY orchestration is possible but fragile and unsupported)
+- **SolarEdge local API** — Direct panel monitoring if/when local API access becomes available
+- **Home Assistant integration** — MQTT discovery for HA dashboards alongside the built-in web dashboard
 
 ---
 
 ## ✅ Recently Completed
 
+### v4.0.2 — Three-Mode Strategy & Weekly Charts (Feb 2026)
+- **Three-mode strategy**: TOU (default resting state) / Self-Consumption (peak hours only) / Emergency Backup (gap-fill bursts only). Replaces two-mode system with clearer separation of concerns.
+- **Peak transition**: Proactive switch to Self-Consumption from any non-SC mode at peak start, verified via cloud API
+- **Post-peak return**: Automatic return to TOU when peak ends, with `need_return_to_tou` detection
+- **Startup grace period**: First decision cycle collects baseline data without mode switching, preventing aggressive Emergency Backup on container restart
+- **P7 small gap guard**: Gaps < 1 kWh always skip grid charging; gaps < 2 kWh with active solar and 4+ hours to peak defer to solar
+- **Enhanced diagnostic bundle**: `.env` now shows actual values for non-sensitive config keys; new `cloud_mode_debug.txt` captures raw Franklin cloud API mode fields
+- **Weekly charts rewrite**: 5 charts (up from 3) — SOC Timeline with mode markers, 3-panel Daily Summary, Power Flow with filled areas, Decision Engine Activity (v4), Solar Curtailment Tracker (v4). Backward compatible with v3.5 log formats.
+- **Dashboard carousel & lightbox**: Full-width chart carousel with dot navigation, swipe support, and fullscreen lightbox. Dynamic chart discovery adapts to v3.5 (3 charts) and v4 (5 charts) reports automatically.
+
+### v4.0.1 — Mode Switch Verification & Peak Safety Net (Feb 2026)
+- **Root cause fix**: Mode detection was reading cached local state instead of actual hardware mode, allowing failed switches to go undetected for hours
+- **Switch verification**: Every mode switch now retries up to 3x with hardware confirmation via cloud API (5s/8s/12s delays)
+- **Peak safety net**: If hardware is in Emergency Backup during peak hours, forces an immediate switch to self-consumption regardless of engine state
+- **Tiered cloud verification**: Every-cycle hardware checks during peak and pre-peak hours, 15-minute intervals otherwise (~130 API calls/day vs ~30 before)
+- **Cooldown bypass**: Within 30 minutes of peak, mode switch cooldown is bypassed to ensure critical transitions succeed
+
+### v4.0 — Adaptive Forecast Engine (Feb 2026)
+- **Adaptive decision engine**: 8-phase priority system (P1-P8) replaces fixed time-based rules with continuous "what is optimal right now?" evaluation
+- **Forecast-aware charging**: Calculates morning SOC ceiling based on expected solar to prevent curtailment
+- **Curtailment protection**: Detects battery full + solar producing and switches modes to avoid wasting free energy
+- **Rate schedule flexibility**: Supports PG&E E-TOU-D, SMUD TOD, ComEd dynamic pricing, and custom schedules
+- **Anonymous telemetry**: Opt-in system with dashboard consent flow, public collection repo for transparency
+- **Diagnostic reporting**: One-click sanitized diagnostic bundle from dashboard
+- **`.env.example` overhaul**: New v4 sections for adaptive engine, telemetry, NEM version, CARE rate, solar array capacities
+
 ### v3.5.1 — Script Status Dashboard & Daily Savings Fix (Feb 2026)
-- **Script Status tab**: New dashboard tab showing real-time health of all 10 scheduled scripts — status, run counts, last/next run times, clickable error history, sortable columns, auto-refresh
-- **System Health indicator**: "Scripts" dot on Live Dashboard links to Script Status tab, turns red on active failures
-- **Daily Savings fix**: Scheduler was invoking `calculate_daily_savings.py` without required `--yesterday --quiet` arguments; moved schedule from 23:55 PM to 00:05 AM for complete previous-day data
-- **Improved error logging**: Scheduler now captures stdout (not just stderr) on script failures
-- **CSV format evolution handling**: `calculate_daily_savings.py` now handles variable-width rows from the Modbus+Enphase data source transition (16–18 fields vs original 13-column header)
-- **Savings backfill**: `calculate_daily_savings.py --all` can recalculate historical savings data after upgrading from older CSV formats
+- Script Status dashboard tab with real-time health monitoring of all scheduled scripts
+- System Health indicator on Live Dashboard
+- Daily Savings calculation fix (argument handling, schedule timing, CSV format evolution)
+- Improved error logging with stdout capture on script failures
 
 ### v3.5.0 — Modbus TCP + Enphase Local Integration (Feb 2026)
-- **Local-first data collection**: SOC and grid power via Modbus TCP (26ms response, was 5000ms via cloud API)
-- **Enphase local solar**: Reads production data from local Enphase gateway instead of cloud
-- **SOC Trend Tracker**: Derives solar-to-battery charging rate from SOC changes over time, persists across cycles
-- **Mode State Tracker**: Tracks battery mode locally with periodic cloud verification, reducing API calls
-- **Hybrid architecture**: Modbus for fast monitoring, cloud API only for mode switching and verification
-- **Dashboard fixes**: Weekly reports tab now scans actual report files instead of guessing dates; CSV parser handles mixed-format historical data
-- **Weather collection fix**: Added missing config path for weather data logging
+- Local-first data collection: SOC and grid power via Modbus TCP (26ms, was 5000ms via cloud API)
+- Enphase local solar production reads
+- SOC Trend Tracker for deriving solar-to-battery charging rate
+- Mode State Tracker with periodic cloud verification
+- Hybrid architecture: Modbus for monitoring, cloud API for mode switching
+- Grid disconnect detection via Modbus registers with mode switch guard
+
+### v3.4.0 — Clock-Aligned Scheduling & Solar Override (Jan 2026)
+- Clock-aligned 30-minute scheduling at :00 and :30
+- Solar charging override for grid-charge deadlines
+- Stale API value correction during discharge
+- Manual override API with auto-expiring timers
+- PVOutput configuration integration
