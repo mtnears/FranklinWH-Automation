@@ -49,16 +49,14 @@ import csv
 import json
 import time
 import logging
+from config import configure_logging
 import argparse
 import requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # Paths

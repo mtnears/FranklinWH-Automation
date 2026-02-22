@@ -28,6 +28,7 @@ Output format matches collect_enphase.py for dashboard compatibility.
 import argparse
 import json
 import logging
+from config import configure_logging
 import os
 import sys
 import time
@@ -52,14 +53,7 @@ except ImportError:
     pass
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_DIR / "solaredge_collector.log"),
-        logging.StreamHandler(),
-    ],
-)
+configure_logging(log_file=LOG_DIR / "solaredge_collector.log")
 logger = logging.getLogger(__name__)
 
 # SolarEdge API base

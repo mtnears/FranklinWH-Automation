@@ -43,7 +43,7 @@ except ImportError:
 from franklinwh import Client, TokenFetcher
 
 # Local config
-from config import config
+from config import config, configure_logging
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -1008,6 +1008,7 @@ async def switch_battery_mode(mode: str) -> bool:
 
 if __name__ == "__main__":
     """Test the data source manager."""
+    configure_logging()
     import sys
 
     async def test():
