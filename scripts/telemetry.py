@@ -43,7 +43,7 @@ from pathlib import Path
 import aiohttp
 import asyncio
 
-from config import config
+from config import config, configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -313,7 +313,7 @@ def log_telemetry_transparency():
 
 if __name__ == "__main__":
     """Test telemetry collection."""
-    
+    configure_logging()
     async def test():
         print("FranklinWH Battery Automation - Telemetry Test")
         print(f"Telemetry enabled: {config.TELEMETRY_ENABLED}")

@@ -578,6 +578,21 @@ class Config:
 config = Config()
 
 
+def configure_logging(log_file=None):
+    """Configure root logger based on DEBUG_MODE env var."""
+    import logging
+    level = logging.DEBUG if config.DEBUG_MODE else logging.INFO
+    handlers = [logging.StreamHandler()]
+    if log_file is not None:
+        handlers.append(logging.FileHandler(log_file))
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
+
+
 if __name__ == "__main__":
     # When run directly, print configuration summary
     print(config.get_config_summary())

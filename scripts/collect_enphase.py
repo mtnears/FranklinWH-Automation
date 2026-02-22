@@ -30,6 +30,7 @@ import sys
 import time
 import argparse
 import logging
+from config import configure_logging
 from datetime import datetime
 from pathlib import Path
 
@@ -252,14 +253,7 @@ except ImportError:
 
 # ── Logging ─────────────────────────────────────────────────────
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_DIR / "enphase_collector.log"),
-        logging.StreamHandler(),
-    ],
-)
+configure_logging(log_file=LOG_DIR / "enphase_collector.log")
 logger = logging.getLogger(__name__)
 
 

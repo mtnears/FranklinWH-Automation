@@ -52,7 +52,7 @@ import csv
 from datetime import datetime, timedelta
 
 # Import configuration and data sources
-from config import config, is_peak_period
+from config import config, configure_logging, is_peak_period
 from data_sources import get_battery_data, switch_battery_mode, data_manager
 
 # Optional imports for enabled features
@@ -428,7 +428,7 @@ def check_manual_override() -> dict:
 
 async def main() -> int:
     """Main automation logic."""
-    
+    configure_logging()
     try:
         log_intelligence("=" * 70)
         log_intelligence("FranklinWH Smart Decision Engine v3.5.1")
