@@ -62,6 +62,16 @@ MIN_SOLAR_PRODUCING_KW = 0.1
 # Mode switch cooldown (seconds) - prevents flapping
 MODE_SWITCH_COOLDOWN_S = 300
 
+# EB deferral — minimum buffer hours beyond charge time before triggering EB.
+# EB is aggressive (~8kW grid charging). It charges fast — a 7.8 kWh gap
+# takes ~1 hour. There's no reason to start at 5am for a 5pm peak.
+# The engine recalculates every cycle (30 min), so deferring is safe:
+# TOU drift and solar may shrink the gap naturally, and EB can always
+# catch up later. This constant sets the minimum comfortable buffer.
+# Example: charge_time=1h, min_buffer=max(2.0, 1.0)=2.0h → don't start
+# EB until hours_to_peak <= 3.0h (i.e., ~2pm for 5pm peak).
+EB_DEFERRAL_MIN_BUFFER_HOURS = 2.0
+
 # Solar headroom management — drain battery to absorb forecast solar
 HEADROOM_MIN_HOURS_TO_PEAK = 6.0       # Don't drain if peak is closer than this
 HEADROOM_MIN_SOC_FLOOR = 20.0          # Never drain below this (backup reserve)
@@ -668,7 +678,15 @@ class AdaptiveEngine:
         return self._evaluate_gap_legacy(state)
 
     def _evaluate_gap_with_plan(self, state: SystemState, plan: 'MorningPlan') -> Optional[Decision]:
-        """P7 with forecast engine — uses morning_plan ceiling for smarter charging."""
+        """P7 with forecast engine — uses morning_plan ceiling for smarter charging.
+        
+        EB deferral philosophy: Emergency Backup is aggressive (~8kW grid charging).
+        It charges fast — a typical gap takes under an hour. There is never a reason
+        to trigger EB hours before peak. The engine recalculates every 30-minute cycle,
+        so deferring is always safe: TOU drift and solar production may naturally shrink
+        the gap, and EB can catch up later. EB should only fire when the time buffer
+        is genuinely tight — i.e., we're close enough to peak that we need to act NOW.
+        """
         gap_kwh = plan.gap_kwh
         ceiling_pct = plan.morning_ceiling_pct
 
@@ -729,22 +747,36 @@ class AdaptiveEngine:
                 state.soc_percent, ceiling_pct
             ) if hasattr(self.profile, 'time_to_charge_kwh') else gap_kwh / 5.0
 
-            # --- Defer if solar is still producing and we have time ---
-            # If solar is actively charging the battery or powering the home
-            # (freeing battery capacity), and we have plenty of buffer beyond
-            # the charge time needed, let solar work first. Only pull the
-            # trigger when the remaining buffer shrinks to ~1 hour or the
-            # charge time itself (whichever is larger).
-            #
-            # Example: 3.6 kWh gap, ~0.4h to charge, 3h to peak, solar at 3.4kW
-            # → buffer = 3.0 - 0.4 = 2.6h → plenty of time, defer
-            # Example: 3.6 kWh gap, ~0.4h to charge, 1.2h to peak, solar at 0.5kW
-            # → buffer = 1.2 - 0.4 = 0.8h → tight, charge now
+            # --- EB time deferral (v4.0.4) ---
+            # Calculate how much buffer we have beyond what's needed to charge.
+            # EB is aggressive and charges fast. Don't start hours early —
+            # stay in TOU and let TOU drift + solar shrink the gap naturally.
+            # The engine recalculates every cycle, so this is always safe.
             buffer_hours = state.hours_to_peak - charge_time_hours
-            min_buffer = max(1.0, charge_time_hours)  # At least 1h or charge time
+            min_buffer = max(EB_DEFERRAL_MIN_BUFFER_HOURS, charge_time_hours)
 
+            # Add timing metrics for log visibility
+            metrics['charge_time_hours'] = round(charge_time_hours, 2)
+            metrics['buffer_hours'] = round(buffer_hours, 1)
+            metrics['min_buffer_hours'] = round(min_buffer, 1)
+
+            # Plenty of time — no rush, defer EB entirely.
+            # Stay in TOU where grid powers home and any TOU drift
+            # may slowly charge the battery, shrinking the gap for free.
+            if buffer_hours > min_buffer:
+                return self._decide(
+                    state, "time_of_use",
+                    f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
+                    f"but {buffer_hours:.1f}h buffer vs {min_buffer:.1f}h needed — "
+                    f"no rush, deferring EB. Reassess next cycle.",
+                    confidence=0.8, priority=7, action="switch_to_tou",
+                    metrics=metrics,
+                )
+
+            # Buffer is getting tight but solar is actively producing —
+            # give solar a chance to close the gap before resorting to EB.
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
-                    and buffer_hours > min_buffer):
+                    and buffer_hours > max(1.0, charge_time_hours)):
                 return self._decide(
                     state, "self_consumption",
                     f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
@@ -754,12 +786,13 @@ class AdaptiveEngine:
                     metrics=metrics,
                 )
 
+            # Time to charge — buffer is tight, need to act now
             if charge_time_hours <= state.hours_to_peak:
                 return self._decide(
                     state, "emergency_backup",
                     f"Forecast gap: {gap_kwh:.1f} kWh → charge to {ceiling_pct:.0f}% "
                     f"(not {self.target_soc:.0f}%), solar fills the rest. "
-                    f"{plan.recommendation}",
+                    f"Buffer tight ({buffer_hours:.1f}h). {plan.recommendation}",
                     confidence=0.85, priority=7, action="switch_to_backup",
                     metrics=metrics,
                 )
@@ -781,7 +814,11 @@ class AdaptiveEngine:
             )
 
     def _evaluate_gap_legacy(self, state: SystemState) -> Optional[Decision]:
-        """P7 fallback — original learned-profile-based gap logic (no forecast engine)."""
+        """P7 fallback — original learned-profile-based gap logic (no forecast engine).
+        
+        Same EB deferral philosophy as _evaluate_gap_with_plan — never rush to EB
+        when there's plenty of time. The engine recalculates every cycle.
+        """
 
         cap = self.profile.capacity
         current_kwh = cap.kwh_at_soc(state.soc_percent)
@@ -858,12 +895,28 @@ class AdaptiveEngine:
         # Is now the cheapest time to charge before peak?
         cheapest_tier, cheapest_rate = self.rates.cheapest_rate_before_peak(state.timestamp)
         if state.current_rate_cents <= cheapest_rate:
-            # --- Defer if solar is still producing and we have time ---
+            # --- EB time deferral (v4.0.4) ---
+            # Same logic as _evaluate_gap_with_plan — don't rush to EB.
             buffer_hours = state.hours_to_peak - charge_time_hours
-            min_buffer = max(1.0, charge_time_hours)
+            min_buffer = max(EB_DEFERRAL_MIN_BUFFER_HOURS, charge_time_hours)
 
+            metrics['buffer_hours'] = round(buffer_hours, 1)
+            metrics['min_buffer_hours'] = round(min_buffer, 1)
+
+            # Plenty of time — defer EB, stay in TOU
+            if buffer_hours > min_buffer:
+                return self._decide(
+                    state, "time_of_use",
+                    f"Charging gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
+                    f"but {buffer_hours:.1f}h buffer vs {min_buffer:.1f}h needed — "
+                    f"no rush, deferring EB. Reassess next cycle.",
+                    confidence=0.8, priority=7, action="switch_to_tou",
+                    metrics=metrics,
+                )
+
+            # Solar-aware deferral — tighter buffer but solar still helping
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
-                    and buffer_hours > min_buffer):
+                    and buffer_hours > max(1.0, charge_time_hours)):
                 return self._decide(
                     state, "self_consumption",
                     f"Charging gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
@@ -879,7 +932,8 @@ class AdaptiveEngine:
                     state, "emergency_backup",
                     f"Charging gap: {gap_kwh:.1f} kWh needed, "
                     f"{charge_time_hours:.1f}h to charge, "
-                    f"{state.hours_to_peak:.1f}h until peak — charging at {state.current_rate_cents}¢/kWh",
+                    f"{state.hours_to_peak:.1f}h until peak — "
+                    f"buffer tight ({buffer_hours:.1f}h), charging at {state.current_rate_cents}¢/kWh",
                     confidence=0.85, priority=7,
                     action="switch_to_backup",
                     metrics=metrics,
