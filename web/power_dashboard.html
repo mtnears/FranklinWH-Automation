@@ -64,7 +64,7 @@
         .tab-content.active { display: block; }
         .card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--card-radius); padding: var(--card-padding); transition: border-color .2s; }
         .card:hover { border-color: var(--border-active); }
-        .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 10px; }
+        .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: #ffffff; margin-bottom: 10px; }
 
         /* ===== SCRIPT STATUS ===== */
         .scripts-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--gap); flex-wrap: wrap; gap: 10px; }
@@ -106,10 +106,11 @@
         .script-detail-box .err-ts { color: var(--text-muted); margin-right: 8px; }
 
         /* ===== LIVE DASHBOARD ===== */
-        .live-grid { display: grid; grid-template-columns: 300px 1fr 300px; grid-template-rows: auto auto; gap: var(--gap); }
+        .live-grid { display: grid; grid-template-columns: 300px 1fr 300px; grid-template-rows: 1fr; gap: var(--gap); height: calc(100vh - var(--header-h) - var(--tab-bar-h) - var(--gap) * 2); }
 
         /* Battery card */
-        .battery-card { grid-row: 1 / 3; }
+        .battery-card { grid-row: 1; overflow-y: auto; }
+        .left-stack { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow-y: auto; }
         .battery-soc-display { text-align: center; padding: 8px 0; }
         .soc-ring-container { position: relative; width: 150px; height: 150px; margin: 0 auto 8px; }
         .soc-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
@@ -119,7 +120,7 @@
         .soc-value { font-family: var(--font-mono); font-size: 36px; font-weight: 600; line-height: 1; letter-spacing: -2px; }
         .soc-unit { font-size: 15px; font-weight: 300; color: var(--text-secondary); }
         .soc-kwh { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-        .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: 20px; font-size: 14px; font-weight: 600; }
         .badge-tou { background: rgba(79,143,255,.12); color: var(--accent-blue); border: 1px solid rgba(79,143,255,.2); }
         .badge-backup { background: rgba(248,113,113,.12); color: var(--accent-red); border: 1px solid rgba(248,113,113,.2); }
         .badge-selfcon { background: rgba(34,211,238,.12); color: var(--accent-cyan); border: 1px solid rgba(34,211,238,.2); }
@@ -132,56 +133,55 @@
         .bstat-v { font-family: var(--font-mono); font-weight: 500; }
         .per-battery { margin-top: 10px; }
         .per-batt-item { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 12px; }
-        .per-batt-label { width: 64px; color: var(--text-muted); font-weight: 500; }
+        .per-batt-label { width: 64px; color: var(--text-secondary); font-weight: 500; }
         .per-batt-bar { flex: 1; height: 7px; background: rgba(255,255,255,.05); border-radius: 4px; overflow: hidden; }
         .per-batt-fill { height: 100%; background: var(--battery-color); border-radius: 4px; transition: width 1s; }
         .per-batt-pct { width: 42px; text-align: right; font-family: var(--font-mono); font-weight: 500; }
 
         /* ===== FLOW VISUALIZATION - Icons over house image ===== */
-        .flow-card { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; }
+        .flow-card { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-height: 0; }
 
-        /* Fixed aspect ratio container matching image 1376:768 */
+        /* Flexible container that fills available space */
         .flow-scene-wrap { position: relative; flex: 1; min-height: 0; }
-        .flow-scene { position: relative; width: 100%; height: 0; padding-bottom: 55.8%; /* 768/1376 = 55.8% */ border-radius: 12px; overflow: hidden; background: #dce8f5; }
-        .flow-scene img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+        .flow-scene { position: relative; width: 100%; height: 100%; border-radius: 12px; overflow: hidden; background: linear-gradient(180deg, #c8ddf0 0%, #dce8f5 40%, #e8eff8 100%); }
+        .flow-scene img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center center; display: block; }
 
-        /* Floating icon nodes - absolutely positioned over image */
-        .flow-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
-        .fn { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); }
+        /* Floating icon nodes - now inside SVG foreignObject, positions set in viewBox coords */
+        .fn { pointer-events: auto; }
         /* Unified background rectangle behind entire node */
-        .fn-bg { background: rgba(15,20,41,.45); padding: 8px 14px 7px; border-radius: 14px; backdrop-filter: blur(5px); display: flex; flex-direction: column; align-items: center; border: 1px solid rgba(255,255,255,.08); }
-        .fn-icon { width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 22px; border: 2.5px solid; box-shadow: 0 2px 12px rgba(0,0,0,.25); transition: box-shadow .4s, transform .4s; }
+        .fn-bg { background: rgba(15,20,41,.45); padding: 10px 16px 9px; border-radius: 16px; backdrop-filter: blur(5px); display: flex; flex-direction: column; align-items: center; border: 1px solid rgba(255,255,255,.08); }
+        .fn-icon { width: 66px; height: 66px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 29px; border: 3px solid; box-shadow: 0 2px 12px rgba(0,0,0,.25); transition: box-shadow .4s, transform .4s; }
         .fn-icon.glow { transform: scale(1.1); }
-        .fn-val { font-family: var(--font-mono); font-size: 15px; font-weight: 700; line-height: 1; margin-top: 4px; white-space: nowrap; }
-        .fn-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; margin-top: 1px; }
+        .fn-val { font-family: var(--font-mono); font-size: 32px; font-weight: 700; line-height: 1; margin-top: 6px; white-space: nowrap; }
+        .fn-lbl { font-size: 22px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; margin-top: 2px; }
 
-        /* Solar: above the roof ridge over panels */
-        .fn-solar { left: 61%; top: 9%; color: var(--solar-color); }
+        /* Solar */
+        .fn-solar { color: var(--solar-color); }
         .fn-solar .fn-icon { background: rgba(251,191,36,.25); border-color: var(--solar-color); }
         .fn-solar .fn-icon.glow { box-shadow: 0 0 20px rgba(251,191,36,.6); }
 
-        /* Grid: clear sky upper-right past the power pole */
-        .fn-grid { left: 95%; top: 8%; color: #6aafff; }
+        /* Grid */
+        .fn-grid { color: #6aafff; }
         .fn-grid .fn-icon { background: rgba(79,143,255,.25); border-color: var(--grid-color); }
         .fn-grid .fn-icon.glow { box-shadow: 0 0 20px rgba(79,143,255,.6); }
 
-        /* Battery: just above the white FranklinWH units */
-        .fn-batt { left: 70%; top: 44%; color: var(--battery-color); }
+        /* Battery */
+        .fn-batt { color: var(--battery-color); }
         .fn-batt .fn-icon { background: rgba(52,211,153,.25); border-color: var(--battery-color); }
         .fn-batt .fn-icon.glow { box-shadow: 0 0 20px rgba(52,211,153,.6); }
 
-        /* Generator: in front of the Honeywell, ground area */
-        .fn-gen { left: 60%; top: 92%; color: #c4a8ff; }
+        /* Generator */
+        .fn-gen { color: #c4a8ff; }
         .fn-gen .fn-icon { background: rgba(167,139,250,.25); border-color: var(--generator-color); }
         .fn-gen .fn-icon.glow { box-shadow: 0 0 20px rgba(167,139,250,.6); }
 
-        /* Home: garage door / deck area */
-        .fn-home { left: 45%; top: 70%; color: var(--home-color); }
-        .fn-home .fn-icon { background: rgba(249,115,22,.25); border-color: var(--home-color); width: 56px; height: 56px; font-size: 24px; }
+        /* Home */
+        .fn-home { color: var(--home-color); }
+        .fn-home .fn-icon { background: rgba(249,115,22,.25); border-color: var(--home-color); width: 72px; height: 72px; font-size: 32px; }
         .fn-home .fn-icon.glow { box-shadow: 0 0 20px rgba(249,115,22,.6); }
-        .fn-home .fn-val { font-size: 16px; }
+        .fn-home .fn-val { font-size: 34px; }
 
-        /* Animated flow lines - all connect through battery as hub */
+        /* SVG overlay - matches image position via same object-fit behavior */
         .flow-lines-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
         .flow-line { fill: none; stroke-width: 4; stroke-dasharray: 12 8; opacity: .25; transition: opacity .4s; }
         .flow-line.active { opacity: .7; animation: flowDash 2.5s linear infinite; }
@@ -192,15 +192,15 @@
         /* Flow totals below scene */
         .flow-totals { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-top: 8px; }
         .flow-total-item { padding: 8px; background: var(--bg-elevated); border-radius: 8px; text-align: center; border: 1px solid var(--border-subtle); }
-        .flow-total-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+        .flow-total-label { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
         .flow-total-value { font-family: var(--font-mono); font-size: 15px; font-weight: 600; margin-top: 2px; }
         .flow-summary-text { font-size: 11px; color: var(--text-secondary); margin-top: 6px; padding: 6px 10px; background: var(--bg-elevated); border-radius: 8px; text-align: center; }
 
         /* ===== RIGHT COLUMN ===== */
-        .right-stack { grid-column: 3; grid-row: 1 / 3; display: flex; flex-direction: column; gap: var(--gap); }
+        .right-stack { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow-y: auto; }
         .savings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .sav-item { padding: 10px; background: var(--bg-elevated); border-radius: 10px; border: 1px solid var(--border-subtle); }
-        .sav-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
+        .sav-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
         .sav-value { font-family: var(--font-mono); font-size: 19px; font-weight: 600; color: var(--accent-green); }
         .sav-detail { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
         .peak-bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-elevated); border-radius: 10px; margin-top: 8px; border: 1px solid var(--border-subtle); }
@@ -329,7 +329,7 @@
         .csv-table td { padding: 6px; border-bottom: 1px solid var(--border-subtle); }
 
         @media(max-width:1600px) { html { font-size: 14px; } .live-grid { grid-template-columns: 270px 1fr 270px; } }
-        @media(max-width:1200px) { .live-grid { grid-template-columns: 1fr 1fr; } .battery-card { grid-row: auto; } .sysinfo-grid { grid-template-columns: 1fr 1fr; } }
+        @media(max-width:1200px) { .live-grid { grid-template-columns: 1fr 1fr; height: auto; } .battery-card { grid-row: auto; } .sysinfo-grid { grid-template-columns: 1fr 1fr; } }
         @media(max-width:800px) { .live-grid, .sysinfo-grid, .settings-columns, .chart-grid { grid-template-columns: 1fr; } .tab-bar-right { display: none; } }
 
         /* ===== SOLAR ARRAY TAB ===== */
@@ -500,8 +500,9 @@
 
     <!-- ========== LIVE DASHBOARD ========== -->
     <div class="tab-content active" id="tab-live"><div class="live-grid">
-        <!-- LEFT: Battery -->
-        <div class="card battery-card">
+        <!-- LEFT: Battery + Solar -->
+        <div class="left-stack">
+        <div class="card">
             <div class="card-label">Battery Status</div>
             <div class="battery-soc-display">
                 <div class="soc-ring-container">
@@ -523,6 +524,16 @@
             </div>
         </div>
 
+        <!-- LEFT: Solar Status -->
+        <div class="card">
+            <div class="card-label">Solar Status</div>
+            <div class="bstat-row"><span class="bstat-k">Now Producing</span><span class="bstat-v" style="color:var(--solar-color)" id="solar-live-power">-- kW</span></div>
+            <div class="bstat-row"><span class="bstat-k">Today Generated</span><span class="bstat-v" style="color:var(--solar-color)" id="solar-live-today">-- kWh</span></div>
+            <div class="bstat-row"><span class="bstat-k">Self-Powered</span><span class="bstat-v" id="solar-self-pct">--%</span></div>
+            <div class="bstat-row"><span class="bstat-k">Net Status</span><span class="bstat-v" id="solar-net-status">--</span></div>
+        </div>
+        </div><!-- /left-stack -->
+
         <!-- CENTER: Flow visualization with icons over house image -->
         <div class="card flow-card" style="padding:14px 14px 10px">
             <div class="card-label">Real-Time Energy Flow</div>
@@ -531,72 +542,80 @@
                 <div class="flow-scene" id="flow-scene">
                     <img src="House_Power_Graphic.png" alt="Home Energy System">
 
-                    <!-- SVG flow lines - battery is the hub, all lines connect to/from it -->
+                    <!-- Unified SVG: flow lines + icon overlays, all in viewBox coordinates -->
                     <svg class="flow-lines-svg" viewBox="0 0 1376 768" preserveAspectRatio="xMidYMid meet">
-                        <!-- Solar → Battery: amber from solar(61%,9%) to battery(70%,44%) -->
-                        <line id="ln-solar" class="flow-line" stroke="#fbbf24" x1="839" y1="100" x2="963" y2="290"/>
-                        <!-- Grid → Battery: blue from grid(95%,8%) to battery(70%,44%) -->
-                        <line id="ln-grid-in" class="flow-line" stroke="#6aafff" x1="1307" y1="90" x2="990" y2="290"/>
-                        <!-- Battery → Grid (export): cyan reverse -->
-                        <line id="ln-grid-out" class="flow-line flow-line-hidden" stroke="#22d3ee" x1="990" y1="290" x2="1307" y2="90"/>
-                        <!-- Battery → Home: orange from battery(70%,44%) to home(45%,70%) -->
-                        <line id="ln-batt-home" class="flow-line" stroke="#f97316" x1="935" y1="370" x2="660" y2="500"/>
-                        <!-- Generator → Battery: purple from generator(60%,92%) to battery(70%,44%) -->
-                        <line id="ln-gen" class="flow-line" stroke="#c4a8ff" x1="825" y1="660" x2="949" y2="395"/>
-                    </svg>
+                        <!-- Flow lines - battery is the hub, endpoints match node centers -->
+                        <line id="ln-solar" class="flow-line" stroke="#fbbf24" x1="839" y1="-9" x2="1034" y2="303"/>
+                        <line id="ln-grid-in" class="flow-line" stroke="#6aafff" x1="1288" y1="-60" x2="1034" y2="303"/>
+                        <line id="ln-grid-out" class="flow-line flow-line-hidden" stroke="#22d3ee" x1="1034" y1="303" x2="1288" y2="-60"/>
+                        <line id="ln-batt-home" class="flow-line" stroke="#f97316" x1="1034" y1="303" x2="622" y2="585"/>
+                        <line id="ln-gen" class="flow-line" stroke="#c4a8ff" x1="910" y1="825" x2="1034" y2="303"/>
 
-                    <div class="flow-overlay">
-                        <!-- Solar: above the roof panels -->
-                        <div class="fn fn-solar">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-solar">☀️</div>
-                                <div class="fn-val" id="fv-solar">-- kW</div>
-                                <div class="fn-lbl">Producing</div>
+                        <!-- Solar node: above roof panels -->
+                        <foreignObject x="759" y="-104" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-solar" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-solar">☀️</div>
+                                    <div class="fn-val" id="fv-solar">-- kW</div>
+                                    <div class="fn-lbl">Producing</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Grid: near the power pole -->
-                        <div class="fn fn-grid">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-grid">⚡</div>
-                                <div class="fn-val" id="fv-grid">-- kW</div>
-                                <div class="fn-lbl" id="fl-grid">Grid</div>
+                        </foreignObject>
+
+                        <!-- Grid node: near power pole upper-right -->
+                        <foreignObject x="1208" y="-155" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-grid" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-grid">⚡</div>
+                                    <div class="fn-val" id="fv-grid">-- kW</div>
+                                    <div class="fn-lbl" id="fl-grid">Grid</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Battery: above the FranklinWH wall units -->
-                        <div class="fn fn-batt">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-batt">🔋</div>
-                                <div class="fn-val" id="fv-batt">-- kW</div>
-                                <div class="fn-lbl" id="fl-batt">Battery</div>
+                        </foreignObject>
+
+                        <!-- Battery node: above FranklinWH units (moved right) -->
+                        <foreignObject x="954" y="208" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-batt" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-batt">🔋</div>
+                                    <div class="fn-val" id="fv-batt">-- kW</div>
+                                    <div class="fn-lbl" id="fl-batt">Battery</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Generator: in front of the Honeywell unit -->
-                        <div class="fn fn-gen">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-gen">⚙️</div>
-                                <div class="fn-val" id="fv-gen">-- kW</div>
-                                <div class="fn-lbl">Generator</div>
+                        </foreignObject>
+
+                        <!-- Generator node: in front of Honeywell (moved right) -->
+                        <foreignObject x="830" y="730" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-gen" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-gen">⚙️</div>
+                                    <div class="fn-val" id="fv-gen">-- kW</div>
+                                    <div class="fn-lbl">Generator</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Home: on the garage door / deck area -->
-                        <div class="fn fn-home">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-home">🏠</div>
-                                <div class="fn-val" id="fv-home">-- kW</div>
-                                <div class="fn-lbl">Consuming</div>
+                        </foreignObject>
+
+                        <!-- Home node: garage/deck area (original position) -->
+                        <foreignObject x="537" y="488" width="170" height="195">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-home" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-home">🏠</div>
+                                    <div class="fn-val" id="fv-home">-- kW</div>
+                                    <div class="fn-lbl">Consuming</div>
+                                </div>
                             </div>
-                        </div>
-                    </div>
+                        </foreignObject>
+                    </svg>
                 </div>
             </div>
 
+            <div class="card-label" style="margin-top:8px; margin-bottom:4px;">Today's Totals</div>
             <div class="flow-totals">
-                <div class="flow-total-item"><div class="flow-total-label">Solar Today</div><div class="flow-total-value" style="color:var(--solar-color)" id="solar-today">-- kWh</div></div>
-                <div class="flow-total-item"><div class="flow-total-label">Grid Import</div><div class="flow-total-value" style="color:var(--grid-color)" id="grid-import-today">-- kWh</div></div>
-                <div class="flow-total-item"><div class="flow-total-label">Grid Export</div><div class="flow-total-value" style="color:var(--accent-cyan)" id="grid-export-today">-- kWh</div></div>
-                <div class="flow-total-item"><div class="flow-total-label">Home Used</div><div class="flow-total-value" style="color:var(--home-color)" id="home-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--solar-color)">Solar</div><div class="flow-total-value" style="color:var(--solar-color)" id="solar-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--grid-color)">Grid Import</div><div class="flow-total-value" style="color:var(--grid-color)" id="grid-import-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--accent-cyan)">Grid Export</div><div class="flow-total-value" style="color:var(--accent-cyan)" id="grid-export-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--home-color)">Home</div><div class="flow-total-value" style="color:var(--home-color)" id="home-today">-- kWh</div></div>
             </div>
-            <div class="flow-summary-text" id="flow-summary">Loading energy flow data...</div>
         </div>
 
         <!-- RIGHT: Savings + Health -->
@@ -752,7 +771,7 @@
                 <div class="setting-group"><label>Log Auto-Refresh</label><select class="setting-input" id="s-logref" onchange="saveSettings()"><option value="15">15s</option><option value="30" selected>30s</option><option value="60">60s</option><option value="0">Disabled</option></select></div>
                 <div class="setting-group"><label>Temperature Unit</label><select class="setting-input" id="s-temp" onchange="saveSettings()"><option value="f">Fahrenheit</option><option value="c">Celsius</option></select></div>
                 <div class="setting-group"><label>Battery Capacity (kWh)</label><input type="number" class="setting-input" id="s-cap" value="30" step="0.1" onchange="saveSettings()"><div class="setting-note">Total across all batteries</div></div>
-                <div class="setting-group"><label>Target Display</label><select class="setting-input" id="s-disp" onchange="saveSettings()"><option value="1920x1200">Fire HD 10 (1920×1200)</option><option value="1280x800">Fire HD 8</option><option value="1920x1080">1080p</option><option value="auto">Auto</option></select></div>
+                <div class="setting-group"><label>Target Display</label><select class="setting-input" id="s-disp" onchange="saveSettings()"><option value="1507x943">Fire HD 10 (1507×943)</option><option value="1280x800">Fire HD 8</option><option value="1920x1080">1080p</option><option value="auto">Auto</option></select></div>
                 <div class="setting-group"><label>Theme</label><select class="setting-input" id="s-theme" onchange="saveSettings()"><option value="dark">Dark</option><option value="oled">OLED Black</option></select></div>
             </div>
             <div class="card"><div class="card-label">Automation Thresholds</div>
@@ -1696,13 +1715,28 @@ function renderLive(d){
     else if(gr<-0.05)fl.push('🔌 Exporting '+Math.abs(gr).toFixed(1)+' kW');
     if(ba<-0.1)fl.push('🔋 Charging at '+Math.abs(ba).toFixed(1)+' kW');
     else if(ba>0.1)fl.push('🔋 Discharging '+ba.toFixed(1)+' kW');
-    document.getElementById('flow-summary').textContent=fl.length?fl.join('  ·  '):'System idle';
+    const flowSumEl=document.getElementById('flow-summary');if(flowSumEl)flowSumEl.textContent=fl.length?fl.join('  ·  '):'System idle';
 
     // Totals
     document.getElementById('solar-today').textContent=(t.solar_generated||x.kwh_sun||0).toFixed(1)+' kWh';
     document.getElementById('grid-import-today').textContent=(x.kwh_uti_in||0).toFixed(1)+' kWh';
     document.getElementById('grid-export-today').textContent=(x.kwh_uti_out||0).toFixed(1)+' kWh';
     document.getElementById('home-today').textContent=(x.kwh_load||0).toFixed(1)+' kWh';
+
+    // Solar Status panel in battery card
+    const solarNow=f.solar||0, homeNow=f.home||0, gridNow=f.grid||0;
+    const solarToday=t.solar_generated||x.kwh_sun||0, homeToday=x.kwh_load||0;
+    document.getElementById('solar-live-power').textContent=Math.max(0,solarNow).toFixed(1)+' kW';
+    document.getElementById('solar-live-today').textContent=solarToday.toFixed(1)+' kWh';
+    const selfPct=homeToday>0?Math.min(100,Math.round((solarToday/homeToday)*100)):0;
+    const spEl=document.getElementById('solar-self-pct');
+    spEl.textContent=selfPct+'%';
+    spEl.style.color=selfPct>=100?'var(--accent-green)':selfPct>=50?'var(--solar-color)':'var(--accent-red)';
+    const netEl=document.getElementById('solar-net-status');
+    if(solarNow>homeNow+0.1){netEl.textContent='Surplus +'+((solarNow-homeNow).toFixed(1))+' kW';netEl.style.color='var(--accent-green)'}
+    else if(solarNow>0.1&&solarNow>=homeNow-0.1){netEl.textContent='Balanced';netEl.style.color='var(--solar-color)'}
+    else if(solarNow>0.1){netEl.textContent='Deficit -'+((homeNow-solarNow).toFixed(1))+' kW';netEl.style.color='var(--accent-amber)'}
+    else{netEl.textContent='No Solar';netEl.style.color='var(--text-muted)'}
 
     // Savings
     document.getElementById('savings-today').textContent='$'+(s.today||0).toFixed(2);
@@ -1714,7 +1748,8 @@ function renderLive(d){
 
     // Peak
     const mins=b.peak_countdown_minutes,pc=document.getElementById('peak-bar');
-    if(mins!=null){if(mins<=0){pc.classList.add('peak-active');document.getElementById('peak-text').textContent='🔴 PEAK ACTIVE';document.getElementById('peak-time').textContent=b.peak_time||''}
+    if(mins!=null){if(mins<0){pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='No peak today';document.getElementById('peak-time').textContent=b.peak_time||'Weekend/Holiday'}
+    else if(mins==0){pc.classList.add('peak-active');document.getElementById('peak-text').textContent='🔴 PEAK ACTIVE';document.getElementById('peak-time').textContent=b.peak_time||''}
     else{pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='Peak starts at '+(b.peak_time||'--:--');document.getElementById('peak-time').textContent=(Math.floor(mins/60)>0?Math.floor(mins/60)+'h ':'')+mins%60+'m'}}
 
     // Health
@@ -2531,7 +2566,8 @@ function updateTelemetryBadge(data){
 
 // ===== SETTINGS =====
 function loadSettings(){try{const s=localStorage.getItem('fwh_s');if(s)S=JSON.parse(s)}catch(e){}
-S.ri=S.ri||'15';S.lr=S.lr||'30';S.tu=S.tu||'f';S.cap=S.cap||'30';S.disp=S.disp||'1920x1200';S.theme=S.theme||'dark';
+S.ri=S.ri||'15';S.lr=S.lr||'30';S.tu=S.tu||'f';S.cap=S.cap||'30';S.disp=S.disp||'1507x943';S.theme=S.theme||'dark';
+if(S.disp==='1920x1200')S.disp='1507x943';
 document.getElementById('s-refresh').value=S.ri;document.getElementById('s-logref').value=S.lr;document.getElementById('s-temp').value=S.tu;
 document.getElementById('s-cap').value=S.cap;document.getElementById('s-disp').value=S.disp;document.getElementById('s-theme').value=S.theme;applyDisp()}
 function saveSettings(){S.ri=document.getElementById('s-refresh').value;S.lr=document.getElementById('s-logref').value;S.tu=document.getElementById('s-temp').value;

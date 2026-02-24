@@ -10,11 +10,15 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
+> **🔬 v4 Status (Feb 2026):** The v4 adaptive engine is feature-complete on the `v4-forecast-engine` branch and running in production validation. Recent fixes to overnight battery preservation, solar-first charging deferral, and the forecast gap model have significantly reduced unnecessary grid purchases. The plan is to monitor for approximately one week with minimal changes before merging to `main`. **Testers welcome** — if you have a FranklinWH system and want to try the v4 engine, open a [Discussion](https://github.com/mtnears/FranklinWH-Automation/discussions) or reach out. Feedback on different utility configurations (especially dynamic pricing) is particularly valuable.
+
+---
+
 ## Key Features
 
 - **Three-Mode Strategy** — TOU (solar → battery), Self-Consumption (battery → home during peak), Emergency Backup (grid gap-fill only). Maximizes solar utilization while minimizing grid charging costs
 - **Adaptive Decision Engine** — 8-phase priority system (P1-P8) continuously asks "what is the optimal mode right now?" instead of following rigid time-based rules
-- **Forecast-Aware Charging** — Calculates dynamic charging gap based on SOC, expected solar, and time to peak. Limits morning grid charging on high-solar days to leave headroom for free solar
+- **Forecast-Aware Charging** — Calculates dynamic charging gap based on SOC, expected solar, and time to peak. Limits morning grid charging on high-solar days to leave headroom for free solar. Defers grid charging when solar is actively producing and can fill the gap before peak
 - **Curtailment Protection** — Detects when battery is full during solar production and switches modes to prevent wasting free energy
 - **Hybrid Data Collection** — Modbus TCP for fast local monitoring (26ms) with Franklin cloud API for mode switching. Falls back gracefully if Modbus isn't available
 - **Rate Schedule Flexibility** — Supports PG&E E-TOU-D, SMUD TOD, ComEd dynamic pricing, and custom schedules with multiple peak windows
@@ -22,7 +26,7 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 - **Per-Battery Monitoring** — Individual SOC tracking for multi-battery systems
 - **Web Dashboard** — Real-time energy flow visualization, weekly performance charts, system health monitoring, and one-click diagnostic reporting
 - **Manual Override System** — Self-consumption and emergency backup buttons with auto-expiring timers
-- **Anonymous Telemetry** — Opt-in usage stats to help guide development ([public collection repo](https://github.com/mtnears/franklin-telemetry))
+- **Anonymous Telemetry** — Opt-in usage stats to help guide development 
 - **Docker Deployment** — Single command startup with built-in scheduler and dashboard
 
 ---
@@ -38,7 +42,7 @@ P3  Peak imminent — ensure target SOC is met
 P4  Peak active — switch to Self-Consumption, battery powers home
 P5  Curtailment protection — battery full + solar producing = don't waste it
 P6  Forecast-aware gap analysis — calculate if solar can fill the gap before peak
-P7  Pre-peak charging — Emergency Backup burst only if solar can't cover the gap
+P7  Pre-peak charging — Emergency Backup burst only if solar can't cover the gap (defers if solar active)
 P8  Default — TOU mode, solar charges battery while grid covers home
 ```
 
@@ -258,6 +262,7 @@ Enphase Local API
 |--------|---------|
 | `smart_decision.py` | Main decision engine — v4 adaptive with v3.5 fallback |
 | `adaptive_engine.py` | v4 priority-based decision logic |
+| `solar_forecast.py` | Solar production forecasting and morning gap calculation |
 | `data_sources.py` | Unified Modbus/Cloud/Enphase data with fallback |
 | `config.py` | Configuration management from `.env` |
 | `scheduler.py` | Task runner, web server, API endpoints |

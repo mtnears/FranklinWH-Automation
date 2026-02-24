@@ -2,11 +2,14 @@
 """
 Telemetry Reporter — FranklinWH Automation v4.0
 
-Anonymous, opt-in telemetry that sends aggregate usage data to a private
-GitHub repository. No personally identifiable information is ever collected.
+Anonymous, opt-in telemetry that sends aggregate usage data to a
+hosted collection endpoint. No personally identifiable information
+is ever collected.
 
-Collection repo: github.com/kenscode/franklin-telemetry (private)
-Submission: GitHub Contents API — one JSON file per install, updated daily.
+Collection endpoint: https://mtnears.com/telemetry/submit
+Submission: HTTP POST with JSON payload, API key in header.
+API key and endpoint URL are shipped with the Docker image —
+users just click "Enable" on the dashboard. No configuration needed.
 
 What IS collected:
   - System size (battery kWh, panel count, engine version)
@@ -35,16 +38,17 @@ import platform
 import sys
 import uuid
 import csv
-import base64
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 
 # Add script directory to path
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
+
+from config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +59,12 @@ DATA_DIR = Path(os.getenv('DATA_DIR', '/app/data'))
 LOG_DIR = Path(os.getenv('LOG_DIR', '/app/logs'))
 CONSENT_FILE = DATA_DIR / 'telemetry_consent.json'
 
-# ── GitHub Collection Repo ─────────────────────────────────────────
-GITHUB_REPO = os.getenv('TELEMETRY_REPO', 'mtnears/franklin-telemetry')
-# Fine-grained PAT scoped to mtnears/franklin-telemetry only (contents:write).
-# .env TELEMETRY_TOKEN overrides this if set.
-_DEFAULT_TOKEN = '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'
-GITHUB_TOKEN = os.getenv('TELEMETRY_TOKEN', _DEFAULT_TOKEN)
-GITHUB_API = 'https://api.github.com'
+# ── Telemetry Endpoint ─────────────────────────────────────────────
+# HTTP endpoint hosted at mtnears.com — receives telemetry POSTs.
+# API key is shipped with the image — users don't need to configure anything.
+# Advanced users can override both via .env for forked setups.
+TELEMETRY_ENDPOINT = os.getenv('TELEMETRY_ENDPOINT', 'https://mtnears.com/telemetry/submit.php')
+TELEMETRY_API_KEY = os.getenv('TELEMETRY_API_KEY', 'fwh_telem_87bba18ff738325790b60cffd9487013f2c30065')
 
 # ── Schema ─────────────────────────────────────────────────────────
 SCHEMA_VERSION = 1
@@ -424,6 +427,7 @@ def _build_config_flags() -> Dict[str, Any]:
         'forecast_solar_enabled': False,
         'multi_meter': False,
         'care_rate': False,
+        'solar_export': False,
     }
 
     try:
@@ -434,6 +438,7 @@ def _build_config_flags() -> Dict[str, Any]:
         flags['forecast_solar_enabled'] = getattr(config, 'FORECAST_SOLAR_ENABLED', False)
         flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(os.getenv('METER2_ACCOUNT', ''))
         flags['care_rate'] = getattr(config, 'CARE_RATE', False) or os.getenv('CARE_RATE', '').lower() in ('true', '1', 'yes')
+        flags['solar_export'] = getattr(config, 'SOLAR_EXPORT', False)
     except ImportError:
         pass
 
@@ -516,6 +521,8 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         'api_error_rate_pct': None,
         'grid_import_peak_kwh_avg': None,
         'curtailment_kwh_avg': None,
+        'tou_drift_rate_kw': None,
+        'tou_drift_rate_pct_per_hour': None,
     }
 
     cutoff = datetime.now() - timedelta(days=days)
@@ -634,6 +641,19 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Daily savings stats error: {e}")
 
+    # TOU drift rate — from engine status if available
+    try:
+        engine_status_path = DATA_DIR / 'engine_status.json'
+        if engine_status_path.exists():
+            with open(engine_status_path, 'r') as f:
+                es = json.load(f)
+            tou_drift = es.get('tou_drift', {})
+            if tou_drift.get('sample_count', 0) > 0:
+                stats['tou_drift_rate_kw'] = tou_drift.get('drift_rate_kw')
+                stats['tou_drift_rate_pct_per_hour'] = tou_drift.get('drift_rate_pct_per_hour')
+    except Exception:
+        pass
+
     return stats
 
 
@@ -663,84 +683,67 @@ def _build_meta(install_uuid: str) -> Dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  GITHUB SUBMISSION
+#  TELEMETRY SUBMISSION
 # ═══════════════════════════════════════════════════════════════════
 
-def _github_request(method: str, path: str, body: dict = None) -> Tuple[int, dict]:
-    """Make an authenticated request to the GitHub API.
+def submit_telemetry(payload: dict) -> bool:
+    """Submit telemetry payload to the collection endpoint.
 
-    Uses only stdlib urllib — no aiohttp or requests dependency.
+    POSTs JSON to the telemetry endpoint with API key auth.
+    Returns True on success.
     """
-    url = f"{GITHUB_API}{path}"
+    if not TELEMETRY_API_KEY:
+        logger.warning("Telemetry: no TELEMETRY_API_KEY configured — skipping submission")
+        return False
+
+    if not TELEMETRY_ENDPOINT:
+        logger.warning("Telemetry: no TELEMETRY_ENDPOINT configured — skipping submission")
+        return False
+
     headers = {
-        'Authorization': f'Bearer {GITHUB_TOKEN}',
-        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-API-Key': TELEMETRY_API_KEY,
         'User-Agent': 'FranklinWH-Telemetry/1.0',
-        'X-GitHub-Api-Version': '2022-11-28',
     }
 
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode('utf-8')
-        headers['Content-Type'] = 'application/json'
-
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    data = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(
+        TELEMETRY_ENDPOINT,
+        data=data,
+        headers=headers,
+        method='POST'
+    )
 
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             resp_body = resp.read().decode('utf-8')
-            return resp.status, json.loads(resp_body) if resp_body else {}
+            status = resp.status
+            result = json.loads(resp_body) if resp_body else {}
+
+        if status in (200, 201):
+            uuid_short = payload.get('install_uuid', 'unknown').split('-')[0]
+            logger.info(f"Telemetry submitted successfully ({uuid_short})")
+            return True
+        else:
+            logger.warning(f"Telemetry submission unexpected status: HTTP {status}")
+            return False
+
     except urllib.error.HTTPError as e:
         resp_body = e.read().decode('utf-8') if e.fp else ''
         try:
-            return e.code, json.loads(resp_body)
+            err_detail = json.loads(resp_body).get('error', resp_body)
         except json.JSONDecodeError:
-            return e.code, {'error': resp_body}
+            err_detail = resp_body
+
+        if e.code == 429:
+            logger.info(f"Telemetry: rate limited (already submitted recently)")
+            return True  # Not a failure — data was already accepted
+        else:
+            logger.warning(f"Telemetry submission failed: HTTP {e.code} — {err_detail}")
+            return False
+
     except Exception as e:
-        return 0, {'error': str(e)}
-
-
-def submit_to_github(payload: dict) -> bool:
-    """Submit telemetry payload to the GitHub collection repo.
-
-    Creates or updates data/{uuid_short}.json using the Contents API.
-    Returns True on success.
-    """
-    if not GITHUB_TOKEN:
-        logger.warning("Telemetry: no TELEMETRY_TOKEN configured — skipping submission")
-        return False
-
-    install_uuid = payload.get('install_uuid', 'unknown')
-    uuid_short = install_uuid.split('-')[0]  # First segment for filename
-    file_path = f"data/{uuid_short}.json"
-    repo_path = f"/repos/{GITHUB_REPO}/contents/{file_path}"
-
-    # Encode payload as base64
-    content_bytes = json.dumps(payload, indent=2).encode('utf-8')
-    content_b64 = base64.b64encode(content_bytes).decode('ascii')
-
-    # Check if file already exists (need SHA for update)
-    status, resp = _github_request('GET', repo_path)
-    existing_sha = None
-    if status == 200 and 'sha' in resp:
-        existing_sha = resp['sha']
-
-    # Build PUT body
-    put_body = {
-        'message': f"telemetry update: {uuid_short}",
-        'content': content_b64,
-    }
-    if existing_sha:
-        put_body['sha'] = existing_sha
-
-    # Submit
-    status, resp = _github_request('PUT', repo_path, put_body)
-
-    if status in (200, 201):
-        logger.info(f"Telemetry submitted successfully ({uuid_short}.json)")
-        return True
-    else:
-        logger.warning(f"Telemetry submission failed: HTTP {status} — {resp.get('message', resp.get('error', 'unknown'))}")
+        logger.warning(f"Telemetry submission error: {e}")
         return False
 
 
@@ -840,15 +843,11 @@ def run_telemetry():
             logger.debug("Telemetry: not enabled, skipping")
             return
 
-        if not GITHUB_TOKEN:
-            logger.debug("Telemetry: no token configured, skipping")
-            return
-
         logger.info("Telemetry: building payload...")
         payload = build_payload()
 
-        logger.info("Telemetry: submitting to GitHub...")
-        success = submit_to_github(payload)
+        logger.info("Telemetry: submitting...")
+        success = submit_telemetry(payload)
 
         _update_telemetry_log(success)
 
@@ -878,7 +877,7 @@ def run_telemetry_retry():
 
         logger.info("Telemetry: retrying failed submission...")
         payload = build_payload()
-        success = submit_to_github(payload)
+        success = submit_telemetry(payload)
         _update_telemetry_log(success)
 
         if success:
@@ -895,7 +894,7 @@ def run_telemetry_retry():
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
+    configure_logging()
 
     print("=" * 60)
     print("FranklinWH Telemetry Reporter — Test Mode")
@@ -928,17 +927,23 @@ if __name__ == '__main__':
     else:
         print("✓  Privacy check passed — no sensitive terms detected")
 
-    # Token check
-    if GITHUB_TOKEN:
-        print(f"\nGitHub token: configured ({len(GITHUB_TOKEN)} chars)")
-        print("Run with --submit to actually send to GitHub")
+    # Endpoint check
+    if TELEMETRY_API_KEY and TELEMETRY_ENDPOINT:
+        print(f"\nEndpoint: {TELEMETRY_ENDPOINT}")
+        print(f"API key: configured ({len(TELEMETRY_API_KEY)} chars)")
+        print("Run with --submit to actually send")
     else:
-        print("\nGitHub token: NOT configured (set TELEMETRY_TOKEN in .env)")
+        missing = []
+        if not TELEMETRY_ENDPOINT:
+            missing.append('TELEMETRY_ENDPOINT')
+        if not TELEMETRY_API_KEY:
+            missing.append('TELEMETRY_API_KEY')
+        print(f"\n⚠  Telemetry not fully configured — missing: {', '.join(missing)}")
 
     if len(sys.argv) > 1 and sys.argv[1] == '--submit':
-        if not GITHUB_TOKEN:
-            print("ERROR: Cannot submit without TELEMETRY_TOKEN")
+        if not TELEMETRY_API_KEY or not TELEMETRY_ENDPOINT:
+            print("\nERROR: Cannot submit — endpoint or API key not configured")
         else:
-            print(f"\nSubmitting to {GITHUB_REPO}...")
-            success = submit_to_github(payload)
+            print(f"\nSubmitting to {TELEMETRY_ENDPOINT}...")
+            success = submit_telemetry(payload)
             print(f"Result: {'SUCCESS' if success else 'FAILED'}")

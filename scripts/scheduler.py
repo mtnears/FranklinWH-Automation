@@ -60,7 +60,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 # Import config to check enabled features
 try:
-    from config import config
+    from config import config, configure_logging
     CONFIG_LOADED = True
 except ImportError:
     print("Warning: Could not load config, using defaults")
@@ -871,6 +871,8 @@ def start_api_server():
 
 def main():
     """Main entry point."""
+    if CONFIG_LOADED:
+        configure_logging()
     start_api_server()
     setup_schedule()
     

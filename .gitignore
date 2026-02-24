@@ -230,6 +230,9 @@ scripts/probe_*.py
 scripts/local_telemetry_viewer.py
 solaredge_panel_test_results.json
 test_enphase_endpoints.sh
+test_endpoint.sh
+observe_power_routing.py
+web/screen-diagnostic.html
 
 # One-time patches and templates (redundant with .env.example)
 patch_modbus_syntax.sh

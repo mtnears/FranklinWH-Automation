@@ -634,6 +634,117 @@ def build_output(cfg: dict, inverters: list, layout: dict,
 
 
 # ── File Output ─────────────────────────────────────────────────
+# ── Array-Level Health / Staleness Detection ─────────────────────
+def check_array_health(cfg: dict, output: dict) -> dict:
+    """Detect array-level issues: offline, stale Envoy, zero production.
+
+    Compares current collection against a small state file to detect:
+      - ENVOY_STALE: wattHoursToday unchanged across daytime collections
+      - ARRAY_OFFLINE: zero production during expected solar hours (10am-3pm)
+                       for 2+ consecutive collections
+      - ARRAY_DEGRADED: production well below expected for conditions
+
+    Adds 'array_health' dict to output and logs warnings.
+    Returns the health dict.
+    """
+    aid = cfg["array_id"]
+    state_file = DATA_DIR / f"array_health_state_{aid}.json"
+    now = datetime.now()
+    hour = now.hour
+    is_solar_hours = 10 <= hour <= 15  # Conservative: 10am-3pm
+
+    # Current readings
+    total_watts = output.get("summary", {}).get("total_watts", 0)
+    prod = output.get("production", {})
+    wh_today = prod.get("wh_today", prod.get("meter_wh_today", 0))
+
+    # Load previous state
+    prev_state = {}
+    if state_file.exists():
+        try:
+            with open(state_file, "r") as f:
+                prev_state = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            prev_state = {}
+
+    prev_wh_today = prev_state.get("wh_today", -1)
+    prev_zero_streak = prev_state.get("zero_streak", 0)
+    prev_stale_streak = prev_state.get("stale_streak", 0)
+
+    # --- Check: zero production during solar hours ---
+    zero_streak = prev_zero_streak
+    if is_solar_hours:
+        if total_watts == 0:
+            zero_streak += 1
+        else:
+            zero_streak = 0
+    else:
+        # Don't count nighttime zeros against the streak,
+        # but don't reset it either (carry overnight)
+        pass
+
+    # --- Check: stale Envoy (wh_today unchanged during solar hours) ---
+    stale_streak = prev_stale_streak
+    if is_solar_hours and prev_wh_today >= 0:
+        if wh_today == prev_wh_today and wh_today > 0:
+            # Same value as last check — Envoy might be frozen
+            stale_streak += 1
+        elif wh_today == 0 and prev_wh_today == 0:
+            # Both zero — could be stale or just no production
+            # Don't count as stale (zero_streak handles this)
+            pass
+        else:
+            stale_streak = 0
+    elif not is_solar_hours:
+        pass  # Don't evaluate staleness at night
+
+    # --- Determine status ---
+    status = "ok"
+    issues = []
+
+    if zero_streak >= 2:
+        status = "offline"
+        issues.append(f"Zero production for {zero_streak} consecutive daytime checks")
+        logger.warning("⚠️ ARRAY HEALTH [%s]: OFFLINE — zero production for %d "
+                      "consecutive daytime collections", aid, zero_streak)
+
+    if stale_streak >= 2:
+        status = "stale" if status == "ok" else status
+        issues.append(f"Envoy wh_today unchanged ({wh_today} Wh) for "
+                     f"{stale_streak} consecutive checks — Envoy may be frozen")
+        logger.warning("⚠️ ARRAY HEALTH [%s]: STALE ENVOY — wh_today stuck at %d Wh "
+                      "for %d checks", aid, wh_today, stale_streak)
+
+    if status == "ok" and is_solar_hours and total_watts > 0:
+        logger.debug("Array health [%s]: OK — %d W producing", aid, total_watts)
+
+    health = {
+        "status": status,
+        "issues": issues,
+        "zero_streak": zero_streak,
+        "stale_streak": stale_streak,
+        "checked_at": now.isoformat(),
+        "is_solar_hours": is_solar_hours,
+    }
+
+    # Save state for next check
+    new_state = {
+        "wh_today": wh_today,
+        "zero_streak": zero_streak,
+        "stale_streak": stale_streak,
+        "total_watts": total_watts,
+        "checked_at": now.isoformat(),
+    }
+    try:
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(state_file, "w") as f:
+            json.dump(new_state, f, indent=2)
+    except IOError:
+        pass
+
+    return health
+
+
 def write_output(cfg: dict, output: dict):
     """Write output JSON to data/ and web/ directories."""
     aid = cfg["array_id"]
@@ -729,6 +840,11 @@ def collect_array(array_id: str = None):
 
     # Build & write
     output = build_output(cfg, inverters, layout, daily_data, production)
+
+    # Array-level health check (stale Envoy, offline detection)
+    array_health = check_array_health(cfg, output)
+    output["array_health"] = array_health
+
     write_output(cfg, output)
 
 

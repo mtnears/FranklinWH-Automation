@@ -59,7 +59,7 @@ import csv
 from datetime import datetime, timedelta
 
 # Import configuration and data sources
-from config import config, is_peak_period
+from config import config, configure_logging, is_peak_period
 from data_sources import get_battery_data, switch_battery_mode, data_manager
 
 # Optional imports for enabled features
@@ -75,6 +75,16 @@ adaptive_engine_instance = None
 
 if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
     try:
+        # Connect v4 module loggers to solar_intelligence.log
+        import logging
+        _v4_handler = logging.FileHandler(str(config.INTELLIGENCE_LOG))
+        _v4_handler.setFormatter(logging.Formatter('%(asctime)s - [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+        _v4_level = logging.DEBUG if config.DEBUG_MODE else logging.INFO
+        for _logger_name in ('adaptive_engine', 'solar_forecast', 'rate_schedule', 'system_profile'):
+            _l = logging.getLogger(_logger_name)
+            _l.setLevel(_v4_level)
+            _l.addHandler(_v4_handler)
+
         from adaptive_engine import create_engine, SystemState, Decision
         adaptive_engine_instance = create_engine(
             csv_path=str(config.LOG_FILE),
@@ -87,6 +97,9 @@ if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
                 'target_soc': config.TARGET_SOC,
                 'decision_interval_minutes': getattr(config, 'DECISION_INTERVAL_MINUTES', 15),
                 'override_path': str(config.LOG_DIR / 'override.json'),
+                'battery_capacity_kwh': getattr(config, 'BATTERY_CAPACITY_KWH', 30.0),
+                'peak_start_hour': getattr(config, 'PEAK_START_HOUR', 17),
+                'solar_export': getattr(config, 'SOLAR_EXPORT', False),
             },
         )
         ADAPTIVE_ENGINE_LOADED = True
@@ -213,6 +226,9 @@ def calculate_time_to_peak() -> float:
     """
     if not config.TOU_ENABLED:
         return float('inf')  # No peak to worry about
+    
+    if not is_peak_day():
+        return float('inf')  # No peak on weekends/non-peak days
     
     now = datetime.now()
     current_hour = now.hour
@@ -380,6 +396,8 @@ def adaptive_engine_decision(battery_data, current_mode: str, in_peak: bool, hou
         home_load_kw=battery_data.home_load_kw,
         grid_online=grid_online,
         current_mode=current_mode,
+        grid_to_battery_kw=getattr(battery_data, 'grid_to_battery_kw', 0.0),
+        solar_to_battery_kw=getattr(battery_data, 'solar_to_battery_kw', 0.0),
     )
     
     # Add dynamic pricing if available
@@ -393,14 +411,28 @@ def adaptive_engine_decision(battery_data, current_mode: str, in_peak: bool, hou
     decision = adaptive_engine_instance.evaluate(state)
     
     # Translate to v3.5 format: (should_charge, reason)
+    # v4.0.3+: engine can also request switch_to_tou (park battery)
+    # or switch_to_self_consumption (drain battery / power from battery)
     should_charge = (decision.action == "switch_to_backup")
     reason = f"[v4 P{decision.priority_level}] {decision.reason}"
+    
+    # Stash the full decision for mode routing in the caller
+    # This lets the caller distinguish TOU vs self-consumption
+    adaptive_engine_decision._last_decision = decision
     
     # Log engine metrics if present
     if decision.metrics:
         metrics_str = ", ".join(f"{k}={v}" for k, v in decision.metrics.items())
         log_intelligence(f"Engine metrics: {metrics_str}")
-    
+
+    # Log TOU drift periodically (every 10 decisions)
+    if adaptive_engine_instance.decisions_made % 10 == 0:
+        drift = adaptive_engine_instance.tou_drift
+        if drift.sample_count > 0:
+            log_intelligence(f"TOU drift tracker: {drift.drift_rate_kw} kW avg, "
+                           f"{drift.drift_rate_pct_per_hour}%/h, "
+                           f"{drift.sample_count} samples")
+
     return should_charge, reason
 
 
@@ -515,6 +547,7 @@ def check_manual_override() -> dict:
 
 async def main() -> int:
     """Main automation logic."""
+    configure_logging()
     
     try:
         log_intelligence("=" * 70)
@@ -532,24 +565,29 @@ async def main() -> int:
         
         # Startup grace period — first cycle after container start observes only
         # Prevents aggressive mode switches before the engine has baseline data
+        # v4 adaptive engine skips this — it has forecast, rates, and profile on init
         startup_flag = config.LOG_DIR / "startup_grace.flag"
         if not startup_flag.exists():
             try:
                 with open(startup_flag, 'w') as f:
                     f.write(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                log_intelligence("Startup observation cycle — collecting baseline data, no mode switches")
-                log_intelligence("Next cycle (30 min) will make normal decisions")
                 
-                # Still collect and log data, but skip mode switching
-                battery_data = await get_battery_data()
-                if battery_data:
-                    soc = battery_data.soc_percent
-                    solar_kw = battery_data.solar_power_kw
-                    current_mode = detect_mode(battery_data)
-                    log_intelligence(f"Baseline: SOC={soc:.1f}%, Solar={solar_kw:.3f}kW, Mode={current_mode}")
-                
-                print(f"Startup observation cycle — no mode switches (baseline logged)")
-                return 0
+                if not ADAPTIVE_ENGINE_LOADED:
+                    log_intelligence("Startup observation cycle — collecting baseline data, no mode switches")
+                    log_intelligence("Next cycle (30 min) will make normal decisions")
+                    
+                    # Still collect and log data, but skip mode switching
+                    battery_data = await get_battery_data()
+                    if battery_data:
+                        soc = battery_data.soc_percent
+                        solar_kw = battery_data.solar_power_kw
+                        current_mode = detect_mode(battery_data)
+                        log_intelligence(f"Baseline: SOC={soc:.1f}%, Solar={solar_kw:.3f}kW, Mode={current_mode}")
+                    
+                    print(f"Startup observation cycle — no mode switches (baseline logged)")
+                    return 0
+                else:
+                    log_intelligence("Startup: v4 engine ready — making decisions immediately")
             except Exception as e:
                 log_intelligence(f"Startup grace flag error (continuing normally): {e}")
         
@@ -595,14 +633,38 @@ async def main() -> int:
                 soc, solar_kw, hours_to_peak, in_peak, solar_to_bat_kw
             )
         
-        # v4 engine: idle mode is time_of_use (TOU configured as "aPower charges from solar")
-        #   - TOU = default resting state: solar -> battery, grid -> home
-        #   - Self-Consumption = peak hours only: battery -> home, avoids grid
-        #   - Emergency Backup = gap-fill only: grid -> battery at max rate
+        # v4 engine: three-mode strategy with engine-directed mode selection
+        #   - TOU = resting/parking state: solar -> battery, grid -> home, battery idle
+        #   - Self-Consumption = drain mode: battery -> home (for headroom or peak)
+        #   - Emergency Backup = gap-fill: grid -> battery at max rate
         # v3.5 legacy: idle mode is config.HOME_MODE
         if ADAPTIVE_ENGINE_LOADED:
-            desired_mode = "emergency_backup" if should_charge else "time_of_use"
-            desired_mode_label = "BACKUP" if should_charge else "TIME_OF_USE"
+            last_decision = getattr(adaptive_engine_decision, '_last_decision', None)
+            if should_charge:
+                desired_mode = "emergency_backup"
+                desired_mode_label = "BACKUP"
+            elif last_decision and last_decision.action == "switch_to_tou":
+                desired_mode = "time_of_use"
+                desired_mode_label = "TIME_OF_USE"
+            elif last_decision and last_decision.action == "switch_to_self_consumption":
+                desired_mode = "self_consumption"
+                desired_mode_label = "SELF_CONSUMPTION"
+            elif last_decision and last_decision.action == "hold":
+                # Hold means "stay in whatever mode the engine decided"
+                # Use the engine's mode field to know what it intends
+                if last_decision.mode == "self_consumption":
+                    desired_mode = "self_consumption"
+                    desired_mode_label = "SELF_CONSUMPTION"
+                elif last_decision.mode == "time_of_use":
+                    desired_mode = "time_of_use"
+                    desired_mode_label = "TIME_OF_USE"
+                else:
+                    desired_mode = "time_of_use"
+                    desired_mode_label = "TIME_OF_USE"
+            else:
+                # Default idle: TOU for backward compatibility
+                desired_mode = "time_of_use"
+                desired_mode_label = "TIME_OF_USE"
         else:
             desired_mode = "emergency_backup" if should_charge else "home"
             desired_mode_label = "BACKUP" if should_charge else config.HOME_MODE.upper()
@@ -650,7 +712,14 @@ async def main() -> int:
             except Exception:
                 pass
         
-        peak_status = "IN PEAK" if in_peak else f"{hours_to_peak:.1f}h to peak" if config.TOU_ENABLED else "No TOU"
+        if in_peak:
+            peak_status = "IN PEAK"
+        elif not config.TOU_ENABLED:
+            peak_status = "No TOU"
+        elif hours_to_peak == float('inf'):
+            peak_status = "No peak today"
+        else:
+            peak_status = f"{hours_to_peak:.1f}h to peak"
         if config.TOU_ENABLED and config.PEAK_START_HOUR > config.PEAK_END_HOUR:
             peak_status += " (midnight-crossing)"
         
@@ -658,7 +727,7 @@ async def main() -> int:
         log_intelligence(f"Charging: Grid→Bat: {grid_to_bat_kw:.2f}kW, Solar→Bat: {solar_to_bat_kw:.2f}kW")
         log_intelligence(f"Status: {peak_status}")
         log_intelligence(f"Decision: {reason}")
-        log_intelligence(f"Action: {'Grid charge (backup mode)' if should_charge else f'Solar-first ({desired_mode_label.lower()} mode)'}")
+        log_intelligence(f"Action: {'Grid charge (backup mode)' if should_charge else f'{desired_mode_label} mode ({desired_mode})'}")
         
         # Determine if mode switch is needed
         mode_switched = False
@@ -666,14 +735,25 @@ async def main() -> int:
             need_backup = should_charge and current_mode != "emergency_backup"
             need_idle = not should_charge and current_mode == "emergency_backup"
             
-            # v4 three-mode: after peak, return from self_consumption to time_of_use
-            # so battery stops discharging and waits for solar
+            # v4 three-mode: return from self_consumption to time_of_use ONLY when
+            # the engine wants TOU (not when engine intentionally requests self-consumption,
+            # e.g., for solar headroom draining or default self-consumption)
             need_return_to_tou = (ADAPTIVE_ENGINE_LOADED 
                                   and not should_charge 
                                   and current_mode == "self_consumption"
-                                  and not in_peak)
+                                  and not in_peak
+                                  and desired_mode == "time_of_use")
             if need_return_to_tou:
                 need_idle = True  # Treat as needing mode switch to idle (TOU)
+            
+            # v4: also handle engine requesting self-consumption when in TOU
+            # (e.g., solar headroom drain, peak protection)
+            need_switch_to_sc = (ADAPTIVE_ENGINE_LOADED
+                                 and not should_charge
+                                 and current_mode == "time_of_use"
+                                 and desired_mode == "self_consumption")
+            if need_switch_to_sc:
+                need_idle = True  # Reuse the switch path below
             
             if need_backup or need_idle:
                 # Grid disconnect guard — don't attempt cloud API mode switches
@@ -683,7 +763,7 @@ async def main() -> int:
                     if need_backup:
                         switch_target = "emergency_backup"
                     elif ADAPTIVE_ENGINE_LOADED:
-                        switch_target = "time_of_use"
+                        switch_target = desired_mode
                     else:
                         switch_target = "home"
                     log_intelligence(f"⚡ Grid disconnected — skipping mode switch to {switch_target}")
@@ -699,7 +779,7 @@ async def main() -> int:
                 if need_backup:
                     switch_target = "emergency_backup"
                 elif ADAPTIVE_ENGINE_LOADED:
-                    switch_target = "time_of_use"
+                    switch_target = desired_mode
                 else:
                     switch_target = "home"
                 cooldown_ok = True
@@ -730,7 +810,7 @@ async def main() -> int:
                         if need_backup:
                             label = "emergency_backup"
                         elif ADAPTIVE_ENGINE_LOADED:
-                            label = "time_of_use"
+                            label = desired_mode
                         else:
                             label = config.HOME_MODE
                         from_mode = current_mode
@@ -832,6 +912,13 @@ async def main() -> int:
                 data['engine_priority'] = str(status['last_decision']['priority_level'])
             if status.get('curtailed_kwh', 0) > 0:
                 data['curtailed_kwh'] = f"{status['curtailed_kwh']:.3f}"
+            # Save engine status (including TOU drift) for telemetry/dashboard
+            try:
+                import json as _json
+                with open(config.DATA_DIR / 'engine_status.json', 'w') as f:
+                    _json.dump(status, f, indent=2, default=str)
+            except Exception:
+                pass
         
         # Write to CSV
         file_exists = config.LOG_FILE.exists()

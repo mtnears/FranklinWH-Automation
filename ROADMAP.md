@@ -53,6 +53,26 @@ Beta tester on ComEd (Illinois) dynamic pricing encountering mode detection issu
 
 ## 📋 Planned
 
+### Dashboard Conditional UI
+**Priority: Medium**
+
+The dashboard currently assumes a solar+battery system on a single-peak TOU rate. Multiple user profiles need tailored views:
+- **Solar-less systems:** Hide Solar Status card and suppress zero-value solar fields when no solar arrays are configured.
+- **Battery-only arbitrage users:** Show rate arbitrage stats (buy low/sell high metrics) instead of solar production stats. Relevant for users like ComEd beta tester.
+- **Dynamic pricing users:** Rate Plan card should show current price, next price change, and price trend instead of static E-TOU-D info. Pull from `PRICE_THRESHOLD_CENTS` / `PRICE_CEILING_CENTS` env vars.
+- **Multiple peak periods:** Some rate plans have mid-peak, super off-peak, etc. Peak bar and countdown currently assume single 5-8 PM peak — needs multi-period support.
+
+### Automation Savings Calculation Update
+**Priority: Medium**
+
+Savings calculations need updating for v4 changes:
+- Three-mode strategy (TOU → Self-Consumption → TOU) changes what counts as "savings"
+- Energy source tracking (when implemented) will affect how grid vs solar vs battery discharge is valued
+- CARE discount interaction: consumption charges reduced ~38.8% but export credits unaffected — verify math accounts for this asymmetry
+- Curtailment prevention: if adaptive engine reduces grid charging on high-solar days, "avoided grid cost" calculation needs adjustment
+- Dynamic pricing: savings should use actual price at time of charge/discharge, not flat rate assumptions
+- Consider adding savings breakdown: "Saved by peak avoidance: $X" vs "Saved by solar self-consumption: $Y"
+
 ### Script Status Dashboard — Description Updates
 **Priority: Low**
 
@@ -72,17 +92,33 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 
 ## 💡 Future Ideas
 
-- **Weekend strategy optimization** — Pure solar self-consumption on non-peak days with dynamic off-grid duration
+- **Weekend strategy optimization** — Pure solar self-consumption on non-peak days with dynamic off-grid duration. The forecast engine now provides the solar production estimates needed to plan optimal weekend discharge.
 - **Holiday schedule support** — Rate schedule awareness for utility holidays
 - **Modbus write exploration** — Investigate direct Modbus register control for mode switching (currently requires cloud API; DIY orchestration is possible but fragile and unsupported)
 - **SolarEdge local API** — Direct panel monitoring if/when local API access becomes available
 - **Home Assistant integration** — MQTT discovery for HA dashboards alongside the built-in web dashboard
+- **Dashboard device auto-detection** — Automatically detect viewport dimensions and adapt layout, replacing manual device presets.
+- **Dashboard cache-busting** — Version query strings on asset URLs (`?v=X`) to avoid manual cache clearing in Fully Kiosk Browser on updates
 
 ---
 
 ## ✅ Recently Completed
 
-### v4.0.2 — Three-Mode Strategy & Weekly Charts (Feb 2026)
+### v4.0.3 — Overnight Preservation, Solar Deferral, Hourly Gap Model (Feb 2026)
+- **Overnight battery preservation (P8 fix)**: P8 default mode changed from Self-Consumption to TOU. Battery now holds charge overnight with the grid powering the home at off-peak rates, instead of draining 80%+ overnight and panic-charging from grid the next morning. Validated: SOC holds steady overnight in TOU, matching intended three-mode strategy.
+- **Solar-first charging deferral (P7 fix)**: P7 gap charging now checks whether solar is actively producing and whether there's enough buffer time before peak. If solar can plausibly fill the gap, the engine defers grid charging. When solar fades or the buffer gets tight, it charges immediately. Prevents buying grid energy that solar would have provided for free minutes later.
+- **Hourly net-to-battery model (forecast fix)**: Morning plan `forecast_to_battery_kwh` replaced daily-total subtraction with per-hour surplus calculation. The old model computed `max(0, total_solar - total_consumption)` — when daily consumption exceeded daily solar, it returned zero even though midday hours had significant surplus reaching the battery. The new model loops through each remaining hour and sums only the per-hour surpluses, accurately capturing midday battery charging. Reduces morning gap overestimation by 5-15 kWh on typical days.
+- **Centralized debug logging**: `configure_logging()` function in `config.py` applied across 9 files for consistent log formatting and level control. Based on PR [#5](https://github.com/mtnears/FranklinWH-Automation/pull/5) by [@cecilkootz](https://github.com/cecilkootz).
+
+### v4.0.2 — Forecast Engine, Kiosk Dashboard, Weekend Fix (Feb 2026)
+- **Solar forecast integration**: `solar_forecast.py` wired into adaptive engine with graceful fallback — engine works identically if forecast module is missing. Smart caching refreshes plan every 30 min or on >5% SOC change.
+- **Forecast-aware P7 charging**: Grid charges to `morning_ceiling_pct` (e.g., 66%) instead of `target_soc` (95%) when forecast engine is active, leaving headroom for free solar. Includes ceiling check that stops charging once forecast gap is covered.
+- **6 FORECAST_* config variables**: Latitude, longitude, tilt, azimuth, kWp, optional API key for Forecast.Solar integration.
+- **Weekend peak detection fix**: Three v3.5-era components (`smart_decision.py`, `generate_dashboard_data.py`, `power_dashboard.html`) used clock math without checking day-of-week. Fixed to check `is_peak_day()` / `PEAK_DAYS` — dashboard now shows "No peak today" on weekends.
+- **Logger wiring**: `adaptive_engine`, `solar_forecast`, `rate_schedule`, and `system_profile` Python loggers routed to `solar_intelligence.log` via FileHandler.
+- **Fire HD 10 kiosk optimization**: Viewport fix (1507×943 CSS pixels, not 1920×1200), full-height layout eliminating 217px dead space, SVG foreignObject icon refactor for cross-device alignment, transparent background image with CSS sky gradient.
+- **New Solar Status card**: Separated from Battery Status — shows live production, daily generation, self-powered percentage, and real-time net status (surplus/deficit).
+- **Dashboard visual improvements**: Brightened card titles and labels, restructured flow totals with color-matched labels, removed redundant flow summary banner, enlarged mode/state badges.
 - **Three-mode strategy**: TOU (default resting state) / Self-Consumption (peak hours only) / Emergency Backup (gap-fill bursts only). Replaces two-mode system with clearer separation of concerns.
 - **Peak transition**: Proactive switch to Self-Consumption from any non-SC mode at peak start, verified via cloud API
 - **Post-peak return**: Automatic return to TOU when peak ends, with `need_return_to_tou` detection

@@ -246,6 +246,13 @@ def get_peak_countdown():
     """Calculate time until peak period starts."""
     now = datetime.now()
     
+    # No peak on non-peak days (weekends for E-TOU-D)
+    peak_days = getattr(config, 'PEAK_DAYS', 'all')
+    if peak_days == 'weekdays' and now.weekday() >= 5:
+        return {'minutes': -1, 'time': 'No peak today'}
+    elif peak_days == 'weekends' and now.weekday() < 5:
+        return {'minutes': -1, 'time': 'No peak today'}
+    
     peak_hour = getattr(config, 'PEAK_START_HOUR', 17)
     peak_end_hour = getattr(config, 'PEAK_END_HOUR', 20)
     peak_start = now.replace(hour=peak_hour, minute=0, second=0, microsecond=0)

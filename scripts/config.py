@@ -162,6 +162,11 @@ class Config:
     BATTERY_COUNT: int = field(default_factory=lambda: get_int('BATTERY_COUNT', 2))
     BACKUP_RESERVE_PCT: float = field(default_factory=lambda: get_float('BACKUP_RESERVE_PCT', 20.0))
 
+    # Solar export: does the system export surplus solar to the grid?
+    # false = non-export (surplus is curtailed when battery full — engine drains to create headroom)
+    # true  = net-metered export (surplus earns credits — headroom management skipped)
+    SOLAR_EXPORT: bool = field(default_factory=lambda: get_bool('SOLAR_EXPORT', False))
+
     # ===== NEW: SolarEdge Panel-Level Monitoring =====
     # Optional: Scrapes SolarEdge portal for real per-optimizer energy data
     # Requires portal login credentials (username/password, not API key)
@@ -208,6 +213,16 @@ class Config:
     WEATHER_STATION_ID: str = field(default_factory=lambda: os.getenv('WEATHER_STATION_ID', ''))
     WEATHER_API_KEY: str = field(default_factory=lambda: os.getenv('WEATHER_API_KEY', ''))
     CLOUDY_THRESHOLD_PERCENT: int = field(default_factory=lambda: get_int('CLOUDY_THRESHOLD_PERCENT', 50))
+    
+    # ===== Solar Forecast Settings (v4.0 forecast-aware charging) =====
+    # Array parameters for Forecast.Solar API — house array only (battery-connected)
+    # Defaults are Ken's Georgetown setup; override in .env for other installations
+    FORECAST_LATITUDE: float = field(default_factory=lambda: get_float('FORECAST_LATITUDE', 38.91))
+    FORECAST_LONGITUDE: float = field(default_factory=lambda: get_float('FORECAST_LONGITUDE', -120.84))
+    FORECAST_HOUSE_TILT: int = field(default_factory=lambda: get_int('FORECAST_HOUSE_TILT', 22))
+    FORECAST_HOUSE_AZIMUTH: int = field(default_factory=lambda: get_int('FORECAST_HOUSE_AZIMUTH', -65))
+    FORECAST_HOUSE_KWP: float = field(default_factory=lambda: get_float('FORECAST_HOUSE_KWP', 6.96))
+    FORECAST_SOLAR_API_KEY: str = field(default_factory=lambda: os.getenv('FORECAST_SOLAR_API_KEY', ''))
     
     # ===== PVOutput Settings =====
     PVOUTPUT_API_KEY: str = field(default_factory=lambda: os.getenv('PVOUTPUT_API_KEY', ''))
@@ -427,6 +442,8 @@ class Config:
             features.append(f"Modbus TCP ({self.MODBUS_HOST}:{self.MODBUS_PORT})")
         if self.WEATHER_ENABLED:
             features.append(f"Weather ({self.WEATHER_STATION_ID})")
+        if self.FORECAST_HOUSE_KWP > 0:
+            features.append(f"Solar Forecast ({self.FORECAST_HOUSE_KWP} kWp, tilt={self.FORECAST_HOUSE_TILT}°)")
         if self.PVOUTPUT_ENABLED:
             features.append("PVOutput")
         if self.TELEMETRY_ENABLED:
@@ -590,6 +607,43 @@ class Config:
 
 # Global configuration instance
 config = Config()
+
+
+def configure_logging(log_file=None):
+    """Configure root logger based on DEBUG_MODE setting.
+
+    Centralises logging setup so every script gets the same format,
+    level, and (optionally) file handler.  Reads ``config.DEBUG_MODE``
+    to choose between DEBUG and INFO.
+
+    Args:
+        log_file: Optional path to a log file.  When provided a
+                  ``FileHandler`` is added alongside the default
+                  ``StreamHandler`` (console).
+
+    Note:
+        ``logging.basicConfig`` is a no-op once the root logger already
+        has handlers.  We clear any existing handlers first so that the
+        function is safe to call from ``__main__`` blocks even when an
+        importing module already configured logging.
+    """
+    import logging
+
+    root = logging.getLogger()
+    # Remove pre-existing handlers so this call always takes effect
+    root.handlers.clear()
+
+    level = logging.DEBUG if config.DEBUG_MODE else logging.INFO
+    handlers = [logging.StreamHandler()]
+    if log_file is not None:
+        handlers.append(logging.FileHandler(log_file))
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
 
 
 if __name__ == "__main__":
