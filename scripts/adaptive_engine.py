@@ -775,14 +775,35 @@ class AdaptiveEngine:
 
             # Buffer is getting tight but solar is actively producing —
             # give solar a chance to close the gap before resorting to EB.
+            # Only defer if remaining solar is meaningful vs the gap (≥15%).
+            # On low-solar days, switching to self_consumption just drains
+            # the battery to power house load — staying in TOU is better
+            # since the grid covers the house while we wait.
+            solar_contribution_pct = (plan.forecast_remaining_kwh / gap_kwh * 100) if gap_kwh > 0 else 0
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
-                    and buffer_hours > max(1.0, charge_time_hours)):
+                    and buffer_hours > max(1.0, charge_time_hours)
+                    and solar_contribution_pct >= 15):
                 return self._decide(
                     state, "self_consumption",
                     f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
-                    f"but solar producing ({state.solar_kw:.1f} kW) with "
+                    f"but solar producing ({state.solar_kw:.1f} kW, "
+                    f"{solar_contribution_pct:.0f}% of gap) with "
                     f"{buffer_hours:.1f}h buffer — deferring to let solar fill",
                     confidence=0.75, priority=7, action="hold",
+                    metrics=metrics,
+                )
+
+            # Solar producing but contribution too small to justify
+            # self_consumption — stay in TOU so grid covers house load.
+            if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
+                    and buffer_hours > max(1.0, charge_time_hours)
+                    and solar_contribution_pct < 15):
+                return self._decide(
+                    state, "time_of_use",
+                    f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
+                    f"but solar contribution minimal ({solar_contribution_pct:.0f}% of gap) "
+                    f"with {buffer_hours:.1f}h buffer — staying in TOU, deferring EB.",
+                    confidence=0.8, priority=7, action="switch_to_tou",
                     metrics=metrics,
                 )
 
