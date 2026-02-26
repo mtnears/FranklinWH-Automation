@@ -88,6 +88,12 @@ class BatteryData:
     grid_voltage_v: Optional[float] = None
     grid_frequency_hz: Optional[float] = None
 
+    # Cumulative energy totals (from cloud API stats.totals)
+    battery_charge_total_kwh: float = 0.0
+    battery_discharge_total_kwh: float = 0.0
+    grid_import_total_kwh: float = 0.0
+    solar_total_kwh: float = 0.0
+
 
 @dataclass
 class ConnectionStats:
@@ -704,6 +710,12 @@ class CloudDataSource(DataSource):
                 source="cloud_api",
                 timestamp=datetime.now()
             )
+
+            # Populate cumulative totals from cloud API
+            battery_data.battery_charge_total_kwh = getattr(stats.totals, 'battery_charge', 0.0)
+            battery_data.battery_discharge_total_kwh = getattr(stats.totals, 'battery_discharge', 0.0)
+            battery_data.grid_import_total_kwh = getattr(stats.totals, 'grid_import', 0.0)
+            battery_data.solar_total_kwh = getattr(stats.totals, 'solar', 0.0)
 
             if status and isinstance(status, dict):
                 battery_data.run_status = status.get("run_status")

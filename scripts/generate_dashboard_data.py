@@ -141,6 +141,22 @@ async def get_franklin_data():
         if status:
             result['extended'] = build_extended_status(status, mode_name)
         
+        # Cache cumulative totals for smart_decision.py CSV logging
+        # (smart_decision uses Modbus ~99% of the time and can't get these)
+        try:
+            cache_file = config.DATA_DIR / 'energy_totals_cache.json'
+            cache_data = {
+                'timestamp': datetime.now().isoformat(),
+                'battery_charge': getattr(stats.totals, 'battery_charge', 0),
+                'battery_discharge': getattr(stats.totals, 'battery_discharge', 0),
+                'grid_import': getattr(stats.totals, 'grid_import', 0),
+                'solar': getattr(stats.totals, 'solar', 0),
+            }
+            with open(cache_file, 'w') as f:
+                json.dump(cache_data, f)
+        except Exception as e:
+            print(f"Warning: Could not cache energy totals: {e}")
+        
         return result
     except Exception as e:
         print(f"Error getting Franklin data: {e}")
@@ -472,6 +488,41 @@ def get_config_info():
     }
 
 
+def get_today_from_api_or_csv(current_data, today_stats):
+    """
+    Get today's energy totals, preferring gateway daily kWh from _status()
+    over CSV-derived values. The gateway tracks daily totals natively
+    (kwh_fhp_chg, kwh_fhp_di, kwh_sun) which reset at midnight.
+    """
+    ext = current_data.get('extended', {}) if current_data else {}
+
+    # Gateway daily totals (from _status() response)
+    api_charged = ext.get('kwh_fhp_chg', 0)
+    api_discharged = ext.get('kwh_fhp_di', 0)
+    api_solar = ext.get('kwh_sun', 0)
+
+    # Use gateway values if available (non-zero or early morning is fine)
+    if api_charged or api_discharged or api_solar:
+        solar_ratio = (api_solar / api_charged * 100) if api_charged > 0 else 0
+        return {
+            'charged': round(api_charged, 2),
+            'discharged': round(api_discharged, 2),
+            'solar_generated': round(api_solar, 2),
+            'solar_ratio': round(solar_ratio, 1)
+        }
+
+    # Fallback to CSV-derived values
+    if today_stats:
+        return {
+            'charged': today_stats['total_charged'],
+            'discharged': today_stats['total_discharged'],
+            'solar_generated': today_stats['solar_generated'],
+            'solar_ratio': today_stats['solar_ratio']
+        }
+
+    return {'charged': 0, 'discharged': 0, 'solar_generated': 0, 'solar_ratio': 0}
+
+
 # =============================================================================
 # Main data assembly
 # =============================================================================
@@ -521,12 +572,7 @@ def generate_dashboard_data():
             'home': current_data.get('home_load', 0),
             'generator': 0
         },
-        'today': {
-            'charged': today_stats['total_charged'] if today_stats else 0,
-            'discharged': today_stats['total_discharged'] if today_stats else 0,
-            'solar_generated': today_stats['solar_generated'] if today_stats else 0,
-            'solar_ratio': today_stats['solar_ratio'] if today_stats else 0
-        },
+        'today': get_today_from_api_or_csv(current_data, today_stats),
         'savings': {
             'today': savings_data['today'] if savings_data else 0,
             'month_total': savings_data['month_total'] if savings_data else 0,

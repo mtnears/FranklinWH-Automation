@@ -877,6 +877,22 @@ async def main() -> int:
             'data_source': battery_data.source,
         }
         
+        # Add cumulative energy totals from cache (written by generate_dashboard_data.py every 1 min)
+        # These come from the cloud API which the dashboard generator calls regularly,
+        # so they're available even when smart_decision uses Modbus (~99% of the time)
+        try:
+            import json as _json_totals
+            cache_file = config.DATA_DIR / 'energy_totals_cache.json'
+            if cache_file.exists():
+                with open(cache_file, 'r') as f:
+                    totals_cache = _json_totals.load(f)
+                data['battery_charge_total'] = f"{totals_cache.get('battery_charge', 0):.3f}"
+                data['battery_discharge_total'] = f"{totals_cache.get('battery_discharge', 0):.3f}"
+                data['grid_import_total'] = f"{totals_cache.get('grid_import', 0):.3f}"
+                data['solar_total'] = f"{totals_cache.get('solar', 0):.3f}"
+        except Exception:
+            pass  # Totals columns will be absent if cache unavailable
+        
         # Add per-battery SOC columns
         for i, bat_soc in enumerate(battery_data.per_battery_soc):
             data[f'battery_{i+1}_soc'] = f'{bat_soc:.1f}'
