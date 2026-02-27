@@ -389,12 +389,35 @@ class DataSource(ABC):
 # =============================================================================
 
 class ModbusDataSource(DataSource):
-    """Modbus TCP data source using SunSpec DER models."""
+    """Modbus TCP data source using SunSpec DER models + Franklin extensions."""
 
     MODELS = {
         "Model 701": {"addr": 72, "length": 153},   # AC Measurement
         "Model 713": {"addr": 1035, "length": 7},    # DER Status
         "Model 702": {"addr": 227, "length": 50},    # DC Measurement
+    }
+
+    # Franklin extension registers (15500+ range, proprietary)
+    EXT_BASE = 15500
+    EXT_READ_COUNT = 17          # 15500-15516
+    EXT_PV_OFFSET = 2            # 15502: PV output power (W)
+    EXT_HOME_LOAD_OFFSET = 6     # 15506: Home load power (W)
+    EXT_MODE_OFFSET = 7          # 15507: Operating mode
+    EXT_SELF_RESERVE_OFFSET = 8  # 15508: Self-consumption reserve %
+    EXT_TOU_RESERVE_OFFSET = 9   # 15509: TOU reserve %
+    EXT_TOU_DISPATCH_OFFSET = 16 # 15516: TOU dispatch state
+
+    EXT_MODE_MAP = {
+        0: ("standby", "Standby"),
+        1: ("emergency_backup", "Emergency Backup"),
+        2: ("self_consumption", "Self Consumption"),
+        3: ("time_of_use", "Time of Use"),
+    }
+
+    TOU_DISPATCH_MAP = {
+        0: "Idle", 1: "Home Loads", 2: "Standby",
+        3: "Solar Charging", 4: "Grid Charging", 5: "Grid Discharge",
+        6: "Self Consumption", 7: "Grid Export", 8: "Grid Charge",
     }
 
     def __init__(self):
@@ -446,7 +469,7 @@ class ModbusDataSource(DataSource):
         return val - 0x10000 if val >= 0x8000 else val
 
     async def read_battery_data(self) -> Optional[BatteryData]:
-        """Read battery data via Modbus TCP. Returns SOC + grid power."""
+        """Read battery data via Modbus TCP: SunSpec models + Franklin extensions."""
         start_time = time.time()
 
         try:
@@ -470,10 +493,10 @@ class ModbusDataSource(DataSource):
             # Build battery data with what Modbus provides
             battery_data = BatteryData(
                 soc_percent=soc_percent,
-                battery_power_kw=0.0,   # Not reliably available via Modbus yet
+                battery_power_kw=0.0,
                 grid_power_kw=0.0,
-                solar_power_kw=0.0,     # Will be filled from Enphase
-                home_load_kw=0.0,       # Not reliably available via Modbus yet
+                solar_power_kw=0.0,
+                home_load_kw=0.0,
                 source="modbus",
                 timestamp=datetime.now()
             )
@@ -505,12 +528,59 @@ class ModbusDataSource(DataSource):
                 if voltage_raw > 0:
                     battery_data.grid_voltage_v = voltage_raw / 10.0
 
+            # Grid connection state from offset 3
+            if model_701 and len(model_701) > 3:
+                battery_data.grid_status = "Connected" if model_701[3] == 1 else "Disconnected"
+
+            # --- Franklin Extension Registers (15500-15516) ---
+            ext = self._read_registers(self.EXT_BASE, self.EXT_READ_COUNT)
+            if ext and len(ext) >= 10:
+                # Home load (15506) - watts
+                load_val = ext[self.EXT_HOME_LOAD_OFFSET]
+                if load_val != 0xFFFF:
+                    battery_data.home_load_kw = load_val / 1000.0
+
+                # PV/solar from Franklin (15502) - watts
+                # Store as ext_solar for cross-check; Enphase will override in merge
+                pv_val = ext[self.EXT_PV_OFFSET]
+                if pv_val != 0xFFFF:
+                    battery_data._ext_solar_kw = pv_val / 1000.0
+
+                # Derive battery power from energy balance:
+                # solar + grid + battery = home_load
+                # battery = home_load - solar - grid
+                if load_val != 0xFFFF:
+                    ext_solar_w = pv_val if pv_val != 0xFFFF else 0
+                    battery_data.battery_power_kw = (load_val - ext_solar_w - (battery_data.grid_power_kw * 1000)) / 1000.0
+
+                # Mode from 15507 - direct hardware state
+                mode_raw = ext[self.EXT_MODE_OFFSET]
+                if mode_raw in self.EXT_MODE_MAP:
+                    mode_id, mode_label = self.EXT_MODE_MAP[mode_raw]
+                    battery_data._ext_mode = mode_id
+                    battery_data._ext_mode_name = mode_label
+
+                    # TOU dispatch sub-state from 15516
+                    if mode_raw == 3 and len(ext) > self.EXT_TOU_DISPATCH_OFFSET:
+                        dispatch = ext[self.EXT_TOU_DISPATCH_OFFSET]
+                        dispatch_text = self.TOU_DISPATCH_MAP.get(dispatch, f"Unknown({dispatch})")
+                        battery_data._ext_tou_dispatch = dispatch
+                        battery_data._ext_tou_dispatch_text = dispatch_text
+                        battery_data._ext_mode_name = f"TOU-{dispatch_text}"
+
+                # Reserves
+                battery_data._ext_self_reserve = ext[self.EXT_SELF_RESERVE_OFFSET]
+                battery_data._ext_tou_reserve = ext[self.EXT_TOU_RESERVE_OFFSET]
+            else:
+                logger.debug("Franklin extension registers not available")
+
             # Record success
             response_time = (time.time() - start_time) * 1000
             self.stats.record_success(response_time)
 
             logger.debug(f"Modbus read: SOC={soc_percent:.1f}%, "
                         f"Grid={battery_data.grid_power_kw:.3f}kW, "
+                        f"Load={battery_data.home_load_kw:.3f}kW, "
                         f"Time={response_time:.0f}ms")
 
             return battery_data
@@ -860,27 +930,48 @@ class DataSourceManager:
                 if solar_kw is not None:
                     battery_data.solar_power_kw = solar_kw
                     battery_data.source = "modbus+enphase"
+                elif hasattr(battery_data, '_ext_solar_kw') and battery_data._ext_solar_kw > 0:
+                    battery_data.solar_power_kw = battery_data._ext_solar_kw
+                    battery_data.source = "modbus+ext"
                 else:
-                    # No solar data available — not critical at night
                     logger.debug("No solar data available (may be nighttime)")
 
                 # Track SOC for trend analysis
                 self.soc_tracker.record(battery_data.soc_percent)
 
-                # Derive solar-to-battery rate from SOC trend
-                solar_to_bat = self.soc_tracker.estimate_solar_to_battery(
-                    battery_data.solar_power_kw,
-                    battery_data.grid_power_kw
-                )
-                battery_data.solar_to_battery_kw = solar_to_bat
+                # Charging flow estimation: use battery_power from extension registers
+                # battery_power_kw > 0 means discharging, < 0 means charging
+                if battery_data.battery_power_kw < -0.05:
+                    # Battery is charging — figure out from where
+                    charge_rate = abs(battery_data.battery_power_kw)
+                    if battery_data.solar_power_kw > 0.1:
+                        battery_data.solar_to_battery_kw = min(charge_rate, battery_data.solar_power_kw)
+                        battery_data.grid_to_battery_kw = max(0, charge_rate - battery_data.solar_to_battery_kw)
+                    else:
+                        battery_data.grid_to_battery_kw = charge_rate
+                        battery_data.solar_to_battery_kw = 0.0
+                elif battery_data.battery_power_kw > 0.05:
+                    battery_data.solar_to_battery_kw = 0.0
+                    battery_data.grid_to_battery_kw = 0.0
+                else:
+                    # Near-zero battery power — fall back to SOC trend
+                    solar_to_bat = self.soc_tracker.estimate_solar_to_battery(
+                        battery_data.solar_power_kw,
+                        battery_data.grid_power_kw
+                    )
+                    battery_data.solar_to_battery_kw = solar_to_bat
+                    charging_rate = self.soc_tracker.get_charging_rate_kw()
+                    if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
+                        battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
 
-                # Derive grid-to-battery: if SOC rising and grid importing
-                charging_rate = self.soc_tracker.get_charging_rate_kw()
-                if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
-                    battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
-
-                # Apply mode from local tracker (baseline)
-                battery_data.mode_name = self.mode_tracker.get_mode_name()
+                # Mode: prefer extension register (direct hardware state) over tracker
+                ext_mode = getattr(battery_data, '_ext_mode', None)
+                ext_mode_name = getattr(battery_data, '_ext_mode_name', None)
+                if ext_mode and ext_mode_name:
+                    battery_data.mode_name = ext_mode_name
+                    self.mode_tracker.record_verification(ext_mode, ext_mode_name)
+                else:
+                    battery_data.mode_name = self.mode_tracker.get_mode_name()
 
                 # Smart mode verification schedule:
                 # The ModeStateTracker only knows what we last commanded, not what
