@@ -1273,30 +1273,30 @@ class AdaptiveEngine:
             'hours_to_peak': round(state.hours_to_peak, 1),
         }
 
-        # Solar surplus — skip grid charging entirely
+        # Solar surplus — skip grid charging entirely, hold in TOU
         if gap_kwh <= 0:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"Solar surplus: {plan.recommendation}",
                 confidence=0.85 if plan.forecast_source.startswith('forecast_solar') else 0.7,
-                priority=7, action="hold", metrics=metrics,
+                priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Tiny gap — not worth a mode switch
+        # Tiny gap — not worth a mode switch, hold in TOU
         if gap_kwh < 1.0:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"Tiny gap ({gap_kwh:.1f} kWh) — solar/natural will cover. {plan.recommendation}",
-                confidence=0.8, priority=7, action="hold", metrics=metrics,
+                confidence=0.8, priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Small gap with active solar and plenty of time
+        # Small gap with active solar and plenty of time, hold in TOU
         if gap_kwh < 2.0 and state.solar_kw > 0.3 and state.hours_to_peak > 4:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"Small gap ({gap_kwh:.1f} kWh) with solar producing ({state.solar_kw:.1f} kW) "
                 f"and {state.hours_to_peak:.1f}h to peak — letting solar handle it",
-                confidence=0.75, priority=7, action="hold", metrics=metrics,
+                confidence=0.75, priority=7, action="switch_to_tou", metrics=metrics,
             )
 
         # Already at or above the forecast ceiling — solar takes it from here
@@ -1495,11 +1495,11 @@ class AdaptiveEngine:
 
         if gap_kwh <= 0:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"No charging gap — solar forecast ({forecast_solar_kwh:.1f} kWh) covers "
                 f"the {target_kwh - current_kwh:.1f} kWh needed",
                 confidence=0.8, priority=7,
-                action="hold",
+                action="switch_to_tou",
                 metrics=metrics,
             )
 
@@ -1508,19 +1508,19 @@ class AdaptiveEngine:
         # - OR gap < 1 kWh regardless (not worth a mode switch for ~5 min of grid charging)
         if gap_kwh < 1.0:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"Tiny charging gap ({gap_kwh:.1f} kWh) — not worth grid charging, solar/natural will cover",
                 confidence=0.8, priority=7,
-                action="hold",
+                action="switch_to_tou",
                 metrics=metrics,
             )
         if gap_kwh < 2.0 and state.solar_kw > 0.3 and state.hours_to_peak > 4:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"Small gap ({gap_kwh:.1f} kWh) with solar producing ({state.solar_kw:.1f} kW) "
                 f"and {state.hours_to_peak:.1f}h to peak — letting solar handle it",
                 confidence=0.75, priority=7,
-                action="hold",
+                action="switch_to_tou",
                 metrics=metrics,
             )
 
