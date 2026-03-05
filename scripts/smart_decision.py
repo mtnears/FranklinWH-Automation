@@ -75,19 +75,35 @@ adaptive_engine_instance = None
 
 if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
     try:
-        # Connect v4 module loggers to solar_intelligence.log
         import logging
-        _v4_handler = logging.FileHandler(str(config.INTELLIGENCE_LOG))
-        _v4_handler.setFormatter(logging.Formatter('%(asctime)s - [%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
         _v4_level = logging.DEBUG if config.DEBUG_MODE else logging.INFO
+
+        # DB handler: writes intelligence log entries to SQLite
+        class _IntelligenceDBHandler(logging.Handler):
+            """Logging handler that writes to the intelligence_log DB table."""
+            def emit(self, record):
+                try:
+                    import db as db_mod
+                    db_mod.store.intelligence_log(
+                        timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        level=record.levelname,
+                        logger=record.name,
+                        message=self.format(record),
+                    )
+                except Exception:
+                    pass
+
+        _db_handler = _IntelligenceDBHandler()
+        _db_handler.setFormatter(logging.Formatter('%(message)s'))
+        _db_handler.setLevel(_v4_level)
+
         for _logger_name in ('adaptive_engine', 'solar_forecast', 'rate_schedule', 'system_profile'):
             _l = logging.getLogger(_logger_name)
             _l.setLevel(_v4_level)
-            _l.addHandler(_v4_handler)
+            _l.addHandler(_db_handler)
 
         from adaptive_engine import create_engine, SystemState, Decision
         adaptive_engine_instance = create_engine(
-            csv_path=str(config.LOG_FILE),
             profile_path=str(config.DATA_DIR / 'system_profile.json'),
             rate_schedule_path=str(config.DATA_DIR / 'rate_schedule.json'),
             config={
@@ -111,14 +127,19 @@ if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
 # Weather/forecast integration placeholder
 # Note: weather.py module not yet implemented. The WEATHER_ENABLED toggle
 # and get_solar_forecast() interface are reserved for v4.0 forecast engine.
-# collect_weather.py handles raw weather data collection separately.
+# collect_weather_db.py handles raw weather data collection to SQLite.
 
 
 def log_intelligence(message: str):
-    """Write to intelligence log with timestamp."""
+    """Write to intelligence log DB."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with open(config.INTELLIGENCE_LOG, 'a') as f:
-        f.write(f"{timestamp} - {message}\n")
+    try:
+        import db as db_mod
+        db_mod.store.intelligence_log(
+            timestamp=timestamp, level='INFO',
+            logger='smart_decision', message=message)
+    except Exception:
+        pass
 
 
 def save_mode_log(mode: str):
@@ -935,16 +956,6 @@ async def main() -> int:
                     _json.dump(status, f, indent=2, default=str)
             except Exception:
                 pass
-        
-        # Write to CSV
-        file_exists = config.LOG_FILE.exists()
-        
-        with open(config.LOG_FILE, 'a', newline='') as csvfile:
-            fieldnames = list(data.keys())
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(data)
         
         # Summary output
         num_batteries = len(battery_data.per_battery_soc) if battery_data.per_battery_soc else 1

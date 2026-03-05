@@ -4,8 +4,8 @@ Generate dashboard data JSON file from Franklin battery, solar, and savings data
 
 This script collects data from:
 - Franklin WH API (battery status, power flow, raw gateway status)
-- continuous_monitoring.csv (historical data)
-- daily_savings.csv (savings tracking)
+- SQLite system_readings table (historical data, replaces continuous_monitoring.csv)
+- SQLite daily_savings table (savings tracking, replaces daily_savings.csv)
 - System logs (automation health)
 
 Outputs: power_dashboard_data.json to WEB_DIR
@@ -15,6 +15,7 @@ Can also run standalone for testing.
 
 v3.4 - Added extended status block with per-battery SOC, environment data,
        energy totals, mode detection via name field, and config export.
+v3.5 - Switched from CSV reads to SQLite database queries.
 """
 
 import json
@@ -46,9 +47,15 @@ except ImportError:
         SOLAR_ENABLED = True
         DYNAMIC_PRICING_ENABLED = False
         HOME_MODE = "tou"
-        LOG_FILE = LOG_DIR / "continuous_monitoring.csv"
-        INTELLIGENCE_LOG = LOG_DIR / "solar_intelligence.log"
     config = FallbackConfig()
+
+# Import database
+try:
+    import db as db_mod
+    db_mod.init_db()
+    DB_AVAILABLE = True
+except Exception:
+    DB_AVAILABLE = False
 
 # Try to import franklinwh
 try:
@@ -295,85 +302,58 @@ def get_peak_countdown():
 
 
 def get_latest_monitoring_data():
-    """Get the most recent entry from continuous_monitoring.csv."""
-    monitoring_file = config.LOG_FILE
-    
-    if not monitoring_file.exists():
+    """Get the most recent system reading from SQLite."""
+    if not DB_AVAILABLE:
+        print("Warning: Database not available for monitoring data")
         return None
-    
+
     try:
-        with open(monitoring_file, 'r') as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-            if rows:
-                latest = rows[-1]
-                soc = float(latest.get('soc_percent', 0))
-                return {
-                    'soc': soc,
-                    'mode': latest.get('mode', 'UNKNOWN'),
-                    'battery_power': float(latest.get('battery_kw', 0)),
-                    'solar_power': float(latest.get('solar_kw', 0)),
-                    'grid_power': float(latest.get('grid_kw', 0)),
-                    'home_load': float(latest.get('home_load_kw', 0)),
-                    'battery_capacity': config.BATTERY_CAPACITY_KWH,
-                    'available_energy': soc / 100 * config.BATTERY_CAPACITY_KWH,
-                    # CSV enriched fields (v3.2.0+)
-                    'grid_charging_kw': float(latest.get('grid_charging_kw', 0)),
-                    'solar_charging_kw': float(latest.get('solar_charging_kw', 0)),
-                    'mode_name': latest.get('mode_name', ''),
-                    'run_status': latest.get('run_status', ''),
-                }
+        row = db_mod.get_latest_system()
+        if row:
+            soc = float(row.get('soc_pct') or 0)
+            return {
+                'soc': soc,
+                'mode': row.get('mode', 'UNKNOWN'),
+                'battery_power': float(row.get('battery_kw') or 0),
+                'solar_power': float(row.get('solar_kw') or 0),
+                'grid_power': float(row.get('grid_kw') or 0),
+                'home_load': float(row.get('home_load_kw') or 0),
+                'battery_capacity': config.BATTERY_CAPACITY_KWH,
+                'available_energy': soc / 100 * config.BATTERY_CAPACITY_KWH,
+                'grid_charging_kw': float(row.get('grid_to_battery_kw') or 0),
+                'solar_charging_kw': float(row.get('solar_to_battery_kw') or 0),
+                'mode_name': row.get('mode_detail', ''),
+                'run_status': str(row.get('run_status', '')),
+            }
     except Exception as e:
-        print(f"Error reading monitoring data: {e}")
-    
+        print(f"Error reading monitoring data from SQLite: {e}")
+
     return None
 
 
 def get_today_stats():
-    """Get today's charging and solar stats from CSV."""
-    monitoring_file = config.LOG_FILE
-    
-    if not monitoring_file.exists():
+    """Get today's charging and solar stats from SQLite."""
+    if not DB_AVAILABLE:
         return None
-    
+
     try:
-        today = datetime.now().date()
-        today_rows = []
-        
-        with open(monitoring_file, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    timestamp = datetime.fromisoformat(row['timestamp'])
-                    if timestamp.date() == today:
-                        today_rows.append(row)
-                except:
-                    continue
-        
-        if not today_rows:
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        rows = db_mod.get_readings_for_date(today_str)
+        if not rows:
             return None
-        
-        last_row = today_rows[-1]
-        
-        # Calculate totals from deltas
-        charge_values = [float(row.get('battery_charge_total', 0)) for row in today_rows]
-        discharge_values = [float(row.get('battery_discharge_total', 0)) for row in today_rows]
-        solar_values = [float(row.get('solar_total', 0)) for row in today_rows]
-        
-        min_charge = min(charge_values) if charge_values else 0
-        min_discharge = min(discharge_values) if discharge_values else 0
-        min_solar = min(solar_values) if solar_values else 0
-        
-        current_charge = float(last_row.get('battery_charge_total', 0))
-        current_discharge = float(last_row.get('battery_discharge_total', 0))
-        current_solar = float(last_row.get('solar_total', 0))
-        
-        total_charged = current_charge - min_charge
-        total_discharged = current_discharge - min_discharge
-        solar_generated = current_solar - min_solar
-        
+
+        charge_vals = [r['kwh_battery_charge'] for r in rows if r.get('kwh_battery_charge') is not None]
+        discharge_vals = [r['kwh_battery_discharge'] for r in rows if r.get('kwh_battery_discharge') is not None]
+        solar_vals = [r['kwh_solar'] for r in rows if r.get('kwh_solar') is not None]
+
+        def day_delta(vals):
+            return (max(vals) - min(vals)) if vals else 0
+
+        total_charged = day_delta(charge_vals)
+        total_discharged = day_delta(discharge_vals)
+        solar_generated = day_delta(solar_vals)
         solar_ratio = (solar_generated / total_charged * 100) if total_charged > 0 else 0
-        
+
         return {
             'total_charged': round(total_charged, 2),
             'total_discharged': round(total_discharged, 2),
@@ -381,44 +361,40 @@ def get_today_stats():
             'solar_ratio': round(solar_ratio, 1)
         }
     except Exception as e:
-        print(f"Error calculating today stats: {e}")
-    
+        print(f"Error calculating today stats from SQLite: {e}")
+
     return None
 
 
 def get_savings_data():
-    """Get savings data from daily_savings.csv."""
-    savings_file = config.DATA_DIR / 'daily_savings.csv'
-    
-    if not savings_file.exists():
+    """Get savings data from SQLite daily_savings table."""
+    if not DB_AVAILABLE:
         return None
-    
+
     try:
-        with open(savings_file, 'r') as f:
-            reader = csv.DictReader(f)
-            rows = list(reader)
-            
-            if not rows:
-                return None
-            
-            today = rows[-1]
-            
-            current_month = datetime.now().strftime('%Y-%m')
-            month_rows = [r for r in rows if r['date'].startswith(current_month)]
-            month_total = sum(float(r.get('total_savings', 0)) for r in month_rows)
-            
-            avg_daily = sum(float(r.get('total_savings', 0)) for r in rows) / len(rows)
-            
-            return {
-                'today': round(float(today.get('total_savings', 0)), 2),
-                'month_total': round(month_total, 2),
-                'days_this_month': len(month_rows),
-                'avg_daily': round(avg_daily, 2),
-                'solar_ratio_today': round(float(today.get('solar_ratio', 0)) * 100, 1)
-            }
+        rows = db_mod.get_daily_savings_recent(limit=365)
+        if not rows:
+            return None
+
+        rows = sorted(rows, key=lambda r: r['date'])
+        today_row = rows[-1]
+
+        current_month = datetime.now().strftime('%Y-%m')
+        month_rows = [r for r in rows if r['date'].startswith(current_month)]
+        month_total = sum(float(r.get('total_savings') or 0) for r in month_rows)
+
+        avg_daily = sum(float(r.get('total_savings') or 0) for r in rows) / len(rows)
+
+        return {
+            'today': round(float(today_row.get('total_savings') or 0), 2),
+            'month_total': round(month_total, 2),
+            'days_this_month': len(month_rows),
+            'avg_daily': round(avg_daily, 2),
+            'solar_ratio_today': round(float(today_row.get('solar_ratio') or 0) * 100, 1)
+        }
     except Exception as e:
-        print(f"Error reading savings data: {e}")
-    
+        print(f"Error reading savings data from SQLite: {e}")
+
     return None
 
 
@@ -456,17 +432,19 @@ def get_system_health():
         'generator': 'standby'
     }
     
-    # Check if automation is running (intelligence log fresh?)
-    log_file = config.INTELLIGENCE_LOG
-    if log_file.exists():
-        try:
-            mtime = datetime.fromtimestamp(log_file.stat().st_mtime)
-            age = datetime.now() - mtime
+    # Check if automation is running (recent intelligence log entries in DB?)
+    try:
+        import db as db_mod
+        rows = db_mod.get_recent_intelligence_logs(limit=1)
+        if rows:
+            from datetime import datetime as dt
+            last_ts = dt.strptime(rows[0]['timestamp'], '%Y-%m-%d %H:%M:%S')
+            age = datetime.now() - last_ts
             if age > timedelta(hours=1):
                 health['automation_script'] = 'warning'
-        except:
-            pass
-    else:
+        else:
+            health['automation_script'] = 'warning'
+    except Exception:
         health['automation_script'] = 'error'
     
     return health

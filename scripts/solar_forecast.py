@@ -12,15 +12,22 @@ NEM2 billing, not for charging decisions.
 
 Forecast sources (priority order):
   1. Forecast.Solar API (free, no key) — weather-aware hourly estimates
-  2. Weather-calibrated clear-sky model — uses 13+ years of local weather
-     history from Weather Underground to estimate production quality
+  2. Weather-calibrated clear-sky model — uses local weather history
+     from SQLite (weather_daily + weather_observations tables) to
+     estimate production quality
   3. Learned profile fallback — system_profile.py historical averages
 
 The gap calculation:
   target_kwh = capacity * target_soc%
-  forecast_solar_to_battery = forecast_solar - expected_consumption
-  gap = target_kwh - current_kwh - forecast_solar_to_battery
+  forecast_solar_to_battery = mode-aware (see below)
+  gap = target_kwh - current_kwh - forecast_solar_to_battery - tou_drift
   morning_ceiling = current_kwh + max(0, gap)
+
+Mode-aware solar model:
+  - Non-export (TOU mode): Grid powers home, solar goes to battery directly.
+    net_solar ≈ 85% of forecast (small losses for inverter/transients).
+  - Export (SC mode): Solar powers home first, surplus charges battery.
+    net_solar = sum(max(0, solar_hour - consumption_hour))
 
 If gap <= 0: solar alone will fill the battery. Do NOT grid charge.
 If gap > 0:  grid charge only this much, leaving room for free solar.
@@ -31,7 +38,6 @@ Part of the v4.0 Adaptive Decision Engine.
 import json
 import logging
 import os
-import csv
 import math
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field, asdict
@@ -317,25 +323,24 @@ class ForecastSolarAPI:
 class WeatherCalibration:
     """Adjusts forecasts using local weather observations.
 
-    Weather data sources (checked in order):
-      1. daily_summary.csv — long-term daily aggregates (e.g., 13 years from WU)
-      2. weather_data.csv  — 15-minute observations from collect_weather.py,
-         aggregated into daily summaries on the fly
-      3. Weather Underground API — live current conditions for "today"
+    Weather data sources (all from SQLite via db module):
+      1. weather_daily table — long-term daily aggregates (imported history + live)
+      2. weather_observations table — 15-minute readings from collect_weather_db.py,
+         aggregated into daily summaries for recent days
+      3. Weather Underground API — live current conditions for "today" (fallback)
 
     Any user with WEATHER_ENABLED=true and a WU API key will start building
-    history immediately. After 14 days of paired weather + solar data, the
-    calibration model activates automatically.
+    history immediately via collect_weather_db.py. After 14 days of paired
+    weather + solar data, the calibration model activates automatically.
 
     Users without WU still get Forecast.Solar API (which has its own weather
     model) — the calibration just adds local fine-tuning on top.
     """
 
-    def __init__(self, weather_csv: str = None, house_kwp: float = HOUSE_ARRAY_KWP,
-                 weather_data_csv: str = None, wu_station_id: str = None,
-                 wu_api_key: str = None):
-        self.weather_csv = weather_csv              # daily_summary.csv (long history)
-        self.weather_data_csv = weather_data_csv    # weather_data.csv (15-min obs)
+    def __init__(self, house_kwp: float = HOUSE_ARRAY_KWP,
+                 wu_station_id: str = None, wu_api_key: str = None,
+                 db_module=None):
+        self._db = db_module                        # db.py module (required source)
         self.wu_station_id = wu_station_id or os.getenv('WEATHER_STATION_ID', '')
         self.wu_api_key = wu_api_key or os.getenv('WEATHER_API_KEY', '')
         self.house_kwp = house_kwp
@@ -343,146 +348,90 @@ class WeatherCalibration:
         self._model: Optional[dict] = None
 
     def load_weather(self) -> int:
-        """Load weather from all available sources.
+        """Load weather from SQLite database.
 
-        Priority: daily_summary.csv (most data), then weather_data.csv (recent).
-        weather_data.csv entries override daily_summary for the same date,
-        since they're from actual local observations.
+        Sources: weather_daily table (long-term history),
+        then weather_observations for recent days to fill gaps.
+        Requires db module — fails visibly if unavailable.
         """
+        if not self._db:
+            logger.warning("Weather: no db module — calibration disabled")
+            return 0
+
         count = 0
 
-        # Source 1: daily_summary.csv (long-term history)
-        count += self._load_daily_summary()
+        # Source 1: weather_daily table (all historical data)
+        count += self._load_daily_from_db()
 
-        # Source 2: weather_data.csv (15-min observations, aggregated to daily)
-        count_obs = self._load_weather_observations()
+        # Source 2: weather_observations (recent, overrides stale daily rows)
+        count_obs = self._load_observations_from_db()
         if count_obs > 0:
-            logger.info(f"Weather observations: {count_obs} days aggregated from weather_data.csv")
+            logger.info(f"Weather observations (DB): {count_obs} days aggregated")
 
         logger.info(f"Weather: {len(self._weather)} total days loaded")
         return len(self._weather)
 
-    def _load_daily_summary(self) -> int:
-        """Load from daily_summary.csv (collect_daily_summary.py output)."""
-        if not self.weather_csv or not os.path.exists(self.weather_csv):
+    def _load_daily_from_db(self) -> int:
+        """Load from weather_daily SQLite table."""
+        if not self._db:
+            return 0
+        try:
+            rows = self._db.get_weather_daily_all()
+            count = 0
+            for row in rows:
+                d = row.get('date', '').strip()
+                if not d:
+                    continue
+                self._weather[d] = {
+                    'temp_high': row.get('temp_high') or 0,
+                    'temp_low': row.get('temp_low') or 0,
+                    'humidity_avg': row.get('humidity_avg') or 0,
+                    'precip_total': row.get('precip_total') or 0,
+                    'pressure_max': row.get('pressure_max') or 0,
+                    'source': 'weather_daily_db',
+                }
+                count += 1
+            if count > 0:
+                logger.info(f"weather_daily (DB): {count} days")
+            return count
+        except Exception as e:
+            logger.error(f"weather_daily DB error: {e}")
             return 0
 
-        count = 0
-        try:
-            with open(self.weather_csv, 'r', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    d = row.get('date', '').strip().rstrip('\r')
-                    if not d:
-                        continue
-                    try:
-                        self._weather[d] = {
-                            'temp_high': float(row.get('temp_high') or 0),
-                            'temp_low': float(row.get('temp_low') or 0),
-                            'humidity_avg': float(row.get('humidity_avg') or 0),
-                            'precip_total': float(row.get('precip_total') or 0),
-                            'pressure_max': float(row.get('pressure_max') or 0),
-                            'source': 'daily_summary',
-                        }
-                        count += 1
-                    except (ValueError, TypeError):
-                        continue
-        except Exception as e:
-            logger.error(f"daily_summary.csv error: {e}")
+    def _load_observations_from_db(self) -> int:
+        """Load recent weather_observations from DB, aggregate to daily.
 
-        if count > 0:
-            logger.info(f"daily_summary.csv: {count} days")
-        return count
-
-    def _load_weather_observations(self) -> int:
-        """Load and aggregate weather_data.csv (15-minute observations).
-
-        This is what collect_weather.py writes every 15 minutes via the WU API.
-        We aggregate into daily summaries: max temp, min temp, avg humidity,
-        total precip, max pressure — matching the daily_summary format.
-
-        This provides weather history for users who don't have years of
-        daily_summary.csv data — it builds up automatically from day 1.
+        Only overrides dates not already covered by weather_daily,
+        or recent dates where observations may be more current.
         """
-        # Find weather_data.csv
-        csv_path = self.weather_data_csv
-        if not csv_path:
-            # Check common locations
-            for candidate in [
-                os.path.join(os.getenv('LOG_DIR', '/app/logs'), 'weather_data.csv'),
-                '/app/logs/weather_data.csv',
-                '/volume1/docker/franklin-git/logs/weather_data.csv',
-            ]:
-                if os.path.exists(candidate):
-                    csv_path = candidate
-                    break
-
-        if not csv_path or not os.path.exists(csv_path):
+        if not self._db:
             return 0
-
-        # Aggregate by date
-        daily_agg: Dict[str, dict] = {}
         try:
-            with open(csv_path, 'r', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    ts = row.get('timestamp', '').strip()
-                    if not ts:
-                        continue
-                    try:
-                        # Parse date from timestamp
-                        if 'T' in ts:
-                            d = ts.split('T')[0]
-                        else:
-                            d = ts.split(' ')[0]
-
-                        temp = float(row.get('temp_f') or 0)
-                        humidity = float(row.get('humidity') or 0)
-                        precip_total = float(row.get('precip_total_in') or 0)
-                        pressure = float(row.get('pressure_inhg') or 0)
-
-                        if d not in daily_agg:
-                            daily_agg[d] = {
-                                'temps': [], 'humidities': [],
-                                'precip_max': 0, 'pressures': [],
-                            }
-                        agg = daily_agg[d]
-                        if temp != 0:
-                            agg['temps'].append(temp)
-                        if humidity != 0:
-                            agg['humidities'].append(humidity)
-                        if precip_total > agg['precip_max']:
-                            agg['precip_max'] = precip_total
-                        if pressure > 0:
-                            agg['pressures'].append(pressure)
-                    except (ValueError, TypeError):
-                        continue
+            recent_start = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            today = datetime.now().strftime('%Y-%m-%d')
+            new_days = 0
+            d = datetime.strptime(recent_start, '%Y-%m-%d')
+            end = datetime.strptime(today, '%Y-%m-%d')
+            while d <= end:
+                date_str = d.strftime('%Y-%m-%d')
+                agg = self._db.get_weather_observations_daily_agg(date_str)
+                if agg and agg.get('observation_count', 0) > 0:
+                    daily = {
+                        'temp_high': agg.get('temp_high') or 0,
+                        'temp_low': agg.get('temp_low') or 0,
+                        'humidity_avg': agg.get('humidity_avg') or 0,
+                        'precip_total': agg.get('precip_total') or 0,
+                        'pressure_max': agg.get('pressure_max') or 0,
+                        'source': 'weather_observations_db',
+                    }
+                    if date_str not in self._weather or self._weather[date_str].get('source') != 'weather_daily_db':
+                        self._weather[date_str] = daily
+                        new_days += 1
+                d += timedelta(days=1)
+            return new_days
         except Exception as e:
-            logger.error(f"weather_data.csv error: {e}")
+            logger.error(f"weather_observations DB error: {e}")
             return 0
-
-        # Convert aggregations to daily summaries
-        new_days = 0
-        for d, agg in daily_agg.items():
-            if not agg['temps']:
-                continue
-
-            daily = {
-                'temp_high': max(agg['temps']),
-                'temp_low': min(agg['temps']),
-                'humidity_avg': sum(agg['humidities']) / len(agg['humidities']) if agg['humidities'] else 50,
-                'precip_total': agg['precip_max'],  # WU precip_total is running daily total
-                'pressure_max': max(agg['pressures']) if agg['pressures'] else 30.0,
-                'source': 'weather_data',
-            }
-
-            # Only override if we don't already have daily_summary data for this date
-            # (daily_summary is more complete), OR if this is a recent date
-            if d not in self._weather or self._weather[d].get('source') != 'daily_summary':
-                self._weather[d] = daily
-                new_days += 1
-
-        return new_days
 
     def weather_score(self, weather: dict = None, date_str: str = None) -> float:
         """Weather conditions → 0.0-1.0 solar quality score."""
@@ -601,12 +550,30 @@ class WeatherCalibration:
         return self.house_kwp * eff * (sunset - sunrise) * 0.82  # 0.82 = WNW penalty
 
     def get_today_weather(self) -> Optional[dict]:
-        """Get today's weather — from loaded data or live WU API."""
+        """Get today's weather — from loaded data, DB observations, or live WU API."""
         today = datetime.now().strftime('%Y-%m-%d')
 
         # Check loaded data first
         if today in self._weather:
             return self._weather[today]
+
+        # Try DB observations for today (partial day aggregate)
+        if self._db:
+            try:
+                agg = self._db.get_weather_observations_daily_agg(today)
+                if agg and agg.get('observation_count', 0) > 0:
+                    daily = {
+                        'temp_high': agg.get('temp_high') or 60,
+                        'temp_low': agg.get('temp_low') or 40,
+                        'humidity_avg': agg.get('humidity_avg') or 50,
+                        'precip_total': agg.get('precip_total') or 0,
+                        'pressure_max': agg.get('pressure_max') or 30.0,
+                        'source': 'weather_observations_db',
+                    }
+                    self._weather[today] = daily
+                    return daily
+            except Exception as e:
+                logger.debug(f"DB today weather: {e}")
 
         # Try live WU API if configured
         if self.wu_station_id and self.wu_api_key and HAS_URLLIB:
@@ -620,7 +587,7 @@ class WeatherCalibration:
     def _fetch_wu_current(self) -> Optional[dict]:
         """Fetch current conditions from Weather Underground API.
 
-        Uses the same API endpoint as collect_weather.py.
+        Uses the same API endpoint as collect_weather_db.py.
         Returns a daily-summary-format dict for weather_score().
         """
         try:
@@ -703,18 +670,17 @@ class SolarForecastEngine:
     All forecasts are for the HOUSE ARRAY ONLY (battery-connected).
     """
 
-    def __init__(self, arrays: List[ArrayConfig] = None, weather_csv: str = None,
+    def __init__(self, arrays: List[ArrayConfig] = None,
                  cache_dir: str = None, solar_profile=None,
-                 weather_data_csv: str = None):
+                 db_module=None):
         self.arrays = arrays or get_default_arrays()
         self.cache_dir = cache_dir or os.getenv('DATA_DIR', '/app/data')
         self.solar_profile = solar_profile
 
         self._api = ForecastSolarAPI(self.arrays)
         self._calibration = WeatherCalibration(
-            weather_csv=weather_csv,
             house_kwp=self.arrays[0].kwp if self.arrays else HOUSE_ARRAY_KWP,
-            weather_data_csv=weather_data_csv,
+            db_module=db_module,
         )
         self._clear_sky = ClearSkyFallback(self.arrays[0].kwp if self.arrays else HOUSE_ARRAY_KWP)
         self._cache: Dict[str, DayForecast] = {}
@@ -723,7 +689,7 @@ class SolarForecastEngine:
     def initialize(self):
         if self._initialized:
             return
-        if self._calibration.weather_csv:
+        if self._calibration._db:
             self._calibration.load_weather()
         if self.solar_profile and hasattr(self.solar_profile, 'solar'):
             recent = getattr(self.solar_profile.solar, 'recent_daily_kwh', [])
@@ -798,14 +764,24 @@ class SolarForecastEngine:
 
     def morning_plan(self, current_soc_pct: float, target_soc_pct: float,
                      battery_capacity_kwh: float, peak_start_hour: int = 17,
-                     consumption_profile=None) -> MorningPlan:
+                     consumption_profile=None, solar_export: bool = True,
+                     tou_drift_kwh: float = 0.0) -> MorningPlan:
         """THE CORE ALGORITHM — calculate how much grid charging is needed.
 
         1. Get solar forecast remaining until peak
-        2. Subtract expected home consumption (solar powers home first)
-        3. Net surplus = what reaches the battery for free
-        4. Gap = target − current − net surplus
+        2. Estimate how much solar reaches the battery (mode-aware)
+        3. Account for TOU drift (phantom grid→battery charging)
+        4. Gap = target − current − net solar − drift
         5. Ceiling = current + gap (leave room for solar)
+
+        Mode-aware solar model:
+        - Export systems (solar_export=True): Solar powers home first,
+          only surplus above consumption reaches the battery.
+        - Non-export systems (solar_export=False): In TOU mode the grid
+          powers the home and solar goes directly to the battery. Only a
+          small fraction is lost to inverter overhead / momentary loads.
+          This dramatically increases net_solar_to_battery vs the old
+          surplus-only model that assumed Self-Consumption behavior.
         """
         now = datetime.now()
         forecast = self.get_today_forecast()
@@ -814,38 +790,62 @@ class SolarForecastEngine:
         target_kwh = battery_capacity_kwh * target_soc_pct / 100.0
         forecast_remaining = forecast.remaining_kwh(until_hour=peak_start_hour)
 
-        # Consumption estimate
+        # Consumption estimate (used for both models, different purposes)
         if consumption_profile and hasattr(consumption_profile, 'expected_kwh'):
             peak_dt = now.replace(hour=peak_start_hour, minute=0, second=0)
             expected_consumption = consumption_profile.expected_kwh(now, peak_dt) if now < peak_dt else 0.0
         else:
             hours_to_peak = max(0, peak_start_hour - now.hour - now.minute / 60.0)
-            expected_consumption = 1.2 * hours_to_peak  # ~1.2 kW default
+            expected_consumption = 1.2 * hours_to_peak
 
-        # Solar that reaches battery — HOURLY surplus model
-        # Compute per-hour: max(0, solar_hour - consumption_hour) and sum.
-        # This captures midday surplus that charges the battery even when
-        # daily totals show consumption > solar (the old daily-total model
-        # returned 0 in that case, inflating gap by 10-20 kWh).
         current_hour = now.hour
-        consumption_per_hour = expected_consumption / max(1, peak_start_hour - current_hour) if peak_start_hour > current_hour else 0.0
         net_solar_to_battery = 0.0
-        for h in forecast.hourly:
-            if h.hour < current_hour or h.hour >= peak_start_hour:
-                continue
-            solar_kwh = h.watt_hours / 1000.0
-            # For the current partial hour, scale by remaining fraction
-            if h.hour == current_hour:
-                remaining_frac = 1.0 - (now.minute / 60.0)
-                solar_kwh *= remaining_frac
-                hour_consumption = consumption_per_hour * remaining_frac
-            else:
-                hour_consumption = consumption_per_hour
-            # Only surplus above consumption reaches the battery
-            net_solar_to_battery += max(0.0, solar_kwh - hour_consumption)
 
-        # The gap
-        gap = target_kwh - current_kwh - net_solar_to_battery
+        if not solar_export:
+            # --- NON-EXPORT TOU MODEL ---
+            # In TOU mode, the grid powers the home. Solar goes to the battery
+            # with only minor losses. The system spends most pre-peak hours in
+            # TOU, so nearly all forecast solar reaches the battery.
+            #
+            # We apply a 15% haircut for:
+            #   - Inverter conversion losses (~3-5%)
+            #   - Momentary load spikes that pull from solar before grid responds
+            #   - Periods when engine switches to SC (e.g., small gap deferral)
+            #   - Ramp-up/ramp-down periods at dawn/dusk with low output
+            TOU_SOLAR_EFFICIENCY = 0.85
+
+            for h in forecast.hourly:
+                if h.hour < current_hour or h.hour >= peak_start_hour:
+                    continue
+                solar_kwh = h.watt_hours / 1000.0
+                if h.hour == current_hour:
+                    remaining_frac = 1.0 - (now.minute / 60.0)
+                    solar_kwh *= remaining_frac
+                net_solar_to_battery += solar_kwh * TOU_SOLAR_EFFICIENCY
+
+        else:
+            # --- EXPORT / SELF-CONSUMPTION MODEL (original) ---
+            # Solar powers the home first, only surplus charges the battery.
+            consumption_per_hour = expected_consumption / max(1, peak_start_hour - current_hour) if peak_start_hour > current_hour else 0.0
+            for h in forecast.hourly:
+                if h.hour < current_hour or h.hour >= peak_start_hour:
+                    continue
+                solar_kwh = h.watt_hours / 1000.0
+                if h.hour == current_hour:
+                    remaining_frac = 1.0 - (now.minute / 60.0)
+                    solar_kwh *= remaining_frac
+                    hour_consumption = consumption_per_hour * remaining_frac
+                else:
+                    hour_consumption = consumption_per_hour
+                net_solar_to_battery += max(0.0, solar_kwh - hour_consumption)
+
+        # TOU drift: phantom grid→battery charging in TOU mode.
+        # The adaptive engine tracks this and passes the estimated
+        # drift-kWh from now until peak. Reduces the gap further.
+        drift_credit = max(0.0, tou_drift_kwh)
+
+        # The gap (accounting for solar AND drift)
+        gap = target_kwh - current_kwh - net_solar_to_battery - drift_credit
 
         # Set ceiling
         if gap <= 0:
@@ -854,7 +854,8 @@ class SolarForecastEngine:
             rec = (f"Solar surplus of {abs(gap):.1f} kWh — skip grid charging. "
                    f"Forecast {forecast_remaining:.1f} kWh solar, "
                    f"{expected_consumption:.1f} kWh consumption, "
-                   f"{net_solar_to_battery:.1f} kWh free to battery.")
+                   f"{net_solar_to_battery:.1f} kWh free to battery"
+                   f"{f', drift +{drift_credit:.1f} kWh' if drift_credit > 0.1 else ''}.")
         else:
             ceiling_kwh = current_kwh + gap
             ceiling_pct = min(target_soc_pct, ceiling_kwh / battery_capacity_kwh * 100.0)
@@ -863,7 +864,8 @@ class SolarForecastEngine:
             rec = (f"Grid charge {gap:.1f} kWh to {ceiling_pct:.0f}%, "
                    f"then solar fills {net_solar_to_battery:.1f} kWh. "
                    f"Forecast {forecast_remaining:.1f} kWh solar, "
-                   f"{expected_consumption:.1f} kWh consumption.")
+                   f"{expected_consumption:.1f} kWh consumption"
+                   f"{f', drift +{drift_credit:.1f} kWh' if drift_credit > 0.1 else ''}.")
 
         # Low-confidence safety buffer: charge 10% extra
         if forecast.source in ('clear_sky', 'profile_fallback') and gap > 0:
@@ -933,46 +935,33 @@ class SolarForecastEngine:
 _engine: Optional[SolarForecastEngine] = None
 
 
-def get_forecast_engine(config=None, weather_csv: str = None,
-                        solar_profile=None) -> SolarForecastEngine:
+def get_forecast_engine(config=None, solar_profile=None) -> SolarForecastEngine:
     """Get or create the singleton forecast engine.
 
-    Automatically finds weather data from multiple sources:
-      - daily_summary.csv: long-term daily aggregates (collect_daily_summary.py)
-      - weather_data.csv: 15-minute observations (collect_weather.py)
-      - WU API: live current conditions (if WEATHER_STATION_ID + WEATHER_API_KEY set)
+    Weather data comes from SQLite tables (weather_daily, weather_observations)
+    populated by collect_weather_db.py every 15 minutes.
 
-    New users start with just weather_data.csv (builds from day 1).
-    Power users with daily_summary.csv get immediate deep calibration.
+    The db module is required — if unavailable, weather calibration is disabled
+    but the engine still works via Forecast.Solar API and clear-sky fallback.
     """
     global _engine
     if _engine is not None:
         return _engine
 
-    # Find daily_summary.csv (long-term history)
-    if weather_csv is None:
-        for path in ['/app/logs/daily_summary.csv',
-                     '/volume1/docker/franklin/logs/daily_summary.csv',
-                     os.path.join(os.getenv('LOG_DIR', '/app/logs'), 'daily_summary.csv')]:
-            if os.path.exists(path):
-                weather_csv = path
-                break
-
-    # Find weather_data.csv (15-min observations)
-    weather_data_csv = None
-    for path in [os.path.join(os.getenv('LOG_DIR', '/app/logs'), 'weather_data.csv'),
-                 '/app/logs/weather_data.csv',
-                 '/volume1/docker/franklin-git/logs/weather_data.csv']:
-        if os.path.exists(path):
-            weather_data_csv = path
-            break
+    # Load db module for SQLite weather access
+    db_module = None
+    try:
+        import db as db_mod
+        db_mod.init_db()
+        db_module = db_mod
+    except ImportError:
+        logger.warning("db module not available — weather calibration disabled")
 
     _engine = SolarForecastEngine(
         arrays=get_default_arrays(),
-        weather_csv=weather_csv,
-        weather_data_csv=weather_data_csv,
         cache_dir=os.getenv('DATA_DIR', '/app/data'),
         solar_profile=solar_profile,
+        db_module=db_module,
     )
     _engine.initialize()
     return _engine
@@ -986,8 +975,7 @@ if __name__ == '__main__':
     import sys
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s', datefmt='%H:%M:%S')
 
-    weather_csv = sys.argv[1] if len(sys.argv) > 1 else None
-    current_soc = float(sys.argv[2]) if len(sys.argv) > 2 else 40.0
+    current_soc = float(sys.argv[1]) if len(sys.argv) > 1 else 40.0
 
     print("=" * 60)
     print("SOLAR FORECAST ENGINE — Test Run")
@@ -998,7 +986,15 @@ if __name__ == '__main__':
         print(f"\nArray: {a.name} ({a.kwp} kWp, tilt={a.declination}°, az={a.azimuth}°)")
         print(f"  API: {FORECAST_SOLAR_BASE_URL}/estimate/{a.latitude}/{a.longitude}/{a.api_path()}")
 
-    engine = SolarForecastEngine(arrays=arrays, weather_csv=weather_csv)
+    db_module = None
+    try:
+        import db as db_mod
+        db_mod.init_db()
+        db_module = db_mod
+    except ImportError:
+        print("WARNING: db module not available — weather calibration disabled")
+
+    engine = SolarForecastEngine(arrays=arrays, db_module=db_module)
     engine.initialize()
 
     # Recent weather scores

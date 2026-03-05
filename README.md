@@ -10,7 +10,80 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
-> **🔬 v4 Status (Feb 2026):** The v4 adaptive engine is feature-complete on the `v4-forecast-engine` branch and running in production validation. Recent fixes to overnight battery preservation, solar-first charging deferral, and the forecast gap model have significantly reduced unnecessary grid purchases. The plan is to monitor for approximately one week with minimal changes before merging to `main`. **Testers welcome** — if you have a FranklinWH system and want to try the v4 engine, open a [Discussion](https://github.com/mtnears/FranklinWH-Automation/discussions) or reach out. Feedback on different utility configurations (especially dynamic pricing) is particularly valuable.
+> **🚧 v4.1 Beta (March 2026):** This branch contains a major update that has been running in production for several weeks and is stable, but is still considered beta until merged to `main`. The SQLite migration, engine hardening, and dashboard overhaul represent significant changes across nearly every script. **If you are upgrading from any previous version, start fresh — do not attempt an in-place upgrade.** See the [Fresh Install](#upgrading-fresh-install-required) section below. Merge to `main` is planned for mid-March 2026 after DST validation. **Testers welcome** — open a [Discussion](https://github.com/mtnears/FranklinWH-Automation/discussions) or reach out.
+
+---
+
+## What's New in v4.1
+
+### SQLite Database (Breaking Change)
+All data collection has migrated from CSV files to a SQLite database (`data/franklin.db`). This is the largest structural change since the project began.
+
+- `db.py` — new unified database layer; all 15 tables initialized on first run
+- All collectors rewritten to write directly to SQLite: `collect_franklin_cloud.py`, `collect_modbus.py`, `collect_solar_enphase.py`, `collect_weather_db.py`, `collect_pv_output.py`, `collect_device_inventory.py`
+- `rollup_daily_energy.py` — new daily energy rollup replacing CSV-based summaries
+- Several old scripts removed: `collect_enphase.py`, `collect_pvoutput.py`, `collect_solaredge.py`, `collect_weather.py`, `capture_grid_status.py`, `daily_status_report.py`, `generate_weekly_charts.py`
+- The database file is created automatically on first container startup — no migration needed for new installs
+
+### Adaptive Engine Hardening
+- **Post-peak solar discharge** — after peak, engine burns free solar stored in the battery via Self-Consumption instead of defaulting back to TOU. Computes net solar excess, sets a target SOC drain point, returns to TOU once reached
+- **Taper ceiling** (`TAPER_CEILING_PCT`) — caps grid charging ceiling for non-export systems to prevent curtailment. Tunable via `.env`, default 85% (start at 95% and lower by 5 per sunny day until curtailment clears)
+- **Pre-peak gate** — within 30 min of peak, engine holds current mode rather than starting a new EB burst if not already charging. Prevents unnecessary late charging cycles
+- **Anchor drift fix** — `_get_soc_at_peak_end()` now pins to the first reading at-or-after peak end instead of `rows[-1]`, which drifted as float arithmetic shifted window edges
+- **Peak discharge fallback** — new `_compute_peak_discharge_kwh()` queries SOC at peak start and end from `system_readings` when `daily_savings` hasn't run yet. Fixes post-peak target SOC being too aggressive early in the evening
+
+### System Profile Overhaul
+- `system_profile.py` now reads from SQLite (`scan_db()`) instead of CSV, with CSV fallback
+- Solar interval calculation uses actual time intervals between readings instead of hardcoded 15-min CSV assumption (1-min Modbus rows were inflating solar totals by ~15×)
+- Capacity bug fixed — `BATTERY_CAPACITY_KWH` env var was being mapped to per-battery capacity, doubling the total
+- Weekly rebuild job added to scheduler (Sunday 3 AM), runs before first engine cycle on restart
+- Profile now shows 16 grid charge curve buckets with real taper data (80–85%: 12.2 kW, 85–90%: 7.7 kW, 90–95%: 4.9 kW, 95–100%: 4.7 kW)
+
+### Dashboard — Fire HD 10 Optimized
+- Layout validated and optimized for Fire HD 10 tablet (1507×943 CSS pixels) in Fully Kiosk Browser
+- **Plotly.js analytics tab** replaces static weekly PNG charts — interactive charts with zoom, pan, hover tooltips, and touch support. Date range selection, carousel navigation
+- All chart data now sourced from SQLite via `generate_dashboard_data.py`
+- Static PNG generation removed
+
+### Other Changes
+- `collect_device_inventory.py` — tracks serial numbers and firmware versions across Enphase, SolarEdge, and Franklin devices; only writes on change
+- `collect_solaredge_panels.py` — panel-level optimizer data for barn array health monitoring
+- Telemetry pipeline stabilized — `engine_version`, `multi_meter`, `FORECAST_ENABLED` config gaps fixed
+
+---
+
+## Upgrading — Fresh Install Required
+
+This update touches nearly every script, replaces the entire data storage layer, and removes several files. There is no supported upgrade path from v3.5 or v4.0.
+
+**Steps for existing users:**
+
+```bash
+# 1. Back up your .env and any data you want to keep
+cp .env .env.backup
+
+# 2. Clone fresh into a new directory
+git clone https://github.com/mtnears/FranklinWH-Automation.git FranklinWH-v41
+cd FranklinWH-v41
+git checkout v4-forecast-engine
+
+# 3. Copy your .env settings — review .env.example first, new vars have been added
+cp ../<old-dir>/.env .env
+nano .env   # Review and add any new required settings
+
+# 4. Stop the old container
+cd ../<old-dir> && docker compose down
+
+# 5. Build and start fresh
+cd ../FranklinWH-v41
+docker compose build --no-cache
+docker compose up -d
+
+# 6. Verify startup
+docker logs -f franklin-automation
+```
+
+Your historical data from CSV logs will not be migrated to the new SQLite database. The system starts collecting fresh from day one. If you need historical data preserved, open a [Discussion](https://github.com/mtnears/FranklinWH-Automation/discussions) before upgrading.
 
 ---
 
@@ -20,13 +93,15 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 - **Adaptive Decision Engine** — 8-phase priority system (P1-P8) continuously asks "what is the optimal mode right now?" instead of following rigid time-based rules
 - **Forecast-Aware Charging** — Calculates dynamic charging gap based on SOC, expected solar, and time to peak. Limits morning grid charging on high-solar days to leave headroom for free solar. Defers grid charging when solar is actively producing and can fill the gap before peak
 - **Curtailment Protection** — Detects when battery is full during solar production and switches modes to prevent wasting free energy
+- **Post-Peak Solar Discharge** — Burns free solar stored in the battery after peak instead of importing from the grid overnight
+- **SQLite Data Layer** — All readings, decisions, weather, and solar data stored in a local SQLite database. Fast queries, no CSV parsing, dashboard analytics from real data
 - **Hybrid Data Collection** — Modbus TCP for fast local monitoring (26ms) with Franklin cloud API for mode switching. Falls back gracefully if Modbus isn't available
 - **Rate Schedule Flexibility** — Supports PG&E E-TOU-D, SMUD TOD, ComEd dynamic pricing, and custom schedules with multiple peak windows
 - **Peak Safety Net** — Hardware mode verification during peak hours ensures the battery is never charging from the grid at peak rates, even if a mode switch fails
 - **Per-Battery Monitoring** — Individual SOC tracking for multi-battery systems
-- **Web Dashboard** — Real-time energy flow visualization, weekly performance charts, system health monitoring, and one-click diagnostic reporting
+- **Web Dashboard** — Real-time energy flow, Plotly.js interactive analytics, system health monitoring, one-click diagnostic reporting. Optimized for Fire HD 10 tablet kiosk display
 - **Manual Override System** — Self-consumption and emergency backup buttons with auto-expiring timers
-- **Anonymous Telemetry** — Opt-in usage stats to help guide development 
+- **Anonymous Telemetry** — Opt-in usage stats to help guide development
 - **Docker Deployment** — Single command startup with built-in scheduler and dashboard
 
 ---
@@ -55,10 +130,10 @@ The v4 engine uses three battery modes to optimize across all conditions:
 | Mode | When | What Happens |
 |------|------|-------------|
 | **TOU** | Default (overnight, daytime, waiting for solar) | Solar → battery, grid → home. Battery holds charge overnight instead of draining. |
-| **Self-Consumption** | Peak hours only | Battery discharges to power home, avoids expensive grid rates. |
+| **Self-Consumption** | Peak hours + post-peak solar burn | Battery discharges to power home, avoids expensive grid rates. After peak, burns net solar surplus before returning to TOU. |
 | **Emergency Backup** | Short gap-fill bursts only | Grid charges battery at max rate. Used only when forecast shows solar won't meet peak target. |
 
-A typical day: **TOU overnight** (battery holds steady, grid powers home at off-peak rates) → **TOU daytime** (solar fills battery, grid covers house loads) → **brief Emergency Backup** if needed (grid tops off what solar can't cover) → **Self-Consumption at peak** (battery powers home) → **back to TOU after peak**.
+A typical day: **TOU overnight** (battery holds steady, grid powers home at off-peak rates) → **TOU daytime** (solar fills battery, grid covers house loads) → **brief Emergency Backup** if needed (grid tops off what solar can't cover) → **Self-Consumption at peak** (battery powers home) → **post-peak Self-Consumption** (burns net solar excess) → **back to TOU**.
 
 ### Required: TOU Tariff Configuration
 
@@ -112,11 +187,12 @@ See [MODBUS_REGISTER_MAP.md](docs/MODBUS_REGISTER_MAP.md) for the full register 
 # 1. Clone and configure
 git clone https://github.com/mtnears/FranklinWH-Automation.git
 cd FranklinWH-Automation
+git checkout v4-forecast-engine
 cp .env.example .env
 nano .env   # Set your credentials, battery config, TOU schedule
 
 # 2. Build and start
-docker compose build
+docker compose build --no-cache
 docker compose up -d
 
 # 3. Open the dashboard
@@ -126,7 +202,7 @@ docker compose up -d
 docker logs -f franklin-automation
 ```
 
-You should see `FranklinWH Automation Scheduler v4.0` in the startup banner, the three-mode configuration notice, and decision lines like:
+You should see `FranklinWH Automation Scheduler` in the startup banner and decision lines like:
 ```
 Decision: TIME_OF_USE mode ([v4 P8] No peak approaching — TOU default) via MODBUS+ENPHASE [v4]
 ```
@@ -148,7 +224,7 @@ PEAK_DAYS=weekdays
 ADAPTIVE_ENGINE_ENABLED=true
 ```
 
-See [.env.example](.env.example) for all options including weather, solar arrays, SolarEdge panel monitoring, dynamic pricing, Modbus, and telemetry.
+See [.env.example](.env.example) for all options including weather, solar arrays, SolarEdge panel monitoring, dynamic pricing, Modbus, telemetry, and the new `TAPER_CEILING_PCT` tuning variable.
 
 ---
 
@@ -178,7 +254,13 @@ All settings live in your `.env` file. No code edits needed.
 | `PEAK2_START_HOUR` | — | Optional second peak window |
 | `PEAK2_END_HOUR` | — | Optional second peak window |
 | `PEAK_DAYS` | `weekdays` | `weekdays`, `weekends`, or `all` |
-| `HOME_MODE` | `tou` | Default resting mode: `tou` (recommended for v4 three-mode strategy) or `self_consumption` |
+| `HOME_MODE` | `tou` | Default resting mode |
+
+### Engine Tuning
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `TAPER_CEILING_PCT` | `85` | Grid charging ceiling for non-export systems. Start at 95 and lower by 5 per sunny day until curtailment clears |
 
 See [CONFIGURATION_REFERENCE.md](docs/CONFIGURATION_REFERENCE.md) for complete details.
 
@@ -189,11 +271,13 @@ See [CONFIGURATION_REFERENCE.md](docs/CONFIGURATION_REFERENCE.md) for complete d
 Real-time monitoring at `http://YOUR-SERVER-IP:8100`:
 
 - **Live Dashboard** — Battery SOC, energy flow, charging status, peak countdown, system health indicators
-- **Weekly Reports** — 7-day SOC timeline, daily summaries, power flow charts
+- **Analytics** — Plotly.js interactive charts with date range selection, zoom, pan, and touch support. Sourced directly from SQLite
 - **Script Status** — All scheduled scripts with run status, success/fail counts, error history
 - **System Logs** — Intelligence log, scheduler log, monitoring data with auto-refresh
 - **Override Controls** — Self-consumption and emergency backup buttons with auto-expiring timers
 - **Diagnostic Reporting** — One-click sanitized diagnostic bundle for issue reporting
+
+The dashboard is optimized for a **Fire HD 10 tablet** running Fully Kiosk Browser as a dedicated wall display, and works in any modern browser.
 
 ### Override System
 
@@ -228,8 +312,8 @@ On first dashboard load, a one-time popup asks if you'd like to opt in. No `.env
 ## Results
 
 ### Tested Configuration
-- **Battery:** FranklinWH aPower2 (2× FHP, 30 kWh total)
-- **Solar:** 28.26 kW capacity (dual-meter, 16-panel Enphase house + 60-panel SolarEdge barn)
+- **Battery:** FranklinWH aPower2 (2× FHP, 27.2 kWh total)
+- **Solar:** 28.26 kW capacity (dual-meter, 16-panel Enphase house array + 60-panel SolarEdge barn array)
 - **Utility:** PG&E E-TOU-D with CARE discount, NEM2
 - **Location:** Georgetown, CA
 
@@ -252,8 +336,8 @@ Modbus TCP (local, 26-50ms)           Cloud API (remote, 2-7s)
 ├── Voltage / frequency
 └── Real-time dashboard updates
 
-Enphase Local API
-└── Solar production (house array)
+Enphase Local API (house array)        SolarEdge Cloud API (barn array)
+└── Solar production + per-panel data  └── Per-optimizer panel health
 ```
 
 ### Core Scripts
@@ -261,11 +345,20 @@ Enphase Local API
 | Script | Purpose |
 |--------|---------|
 | `smart_decision.py` | Main decision engine — v4 adaptive with v3.5 fallback |
-| `adaptive_engine.py` | v4 priority-based decision logic |
+| `adaptive_engine.py` | v4 priority-based decision logic (P1-P8) |
 | `solar_forecast.py` | Solar production forecasting and morning gap calculation |
+| `db.py` | SQLite database layer — all tables, queries, and schema init |
+| `collect_franklin_cloud.py` | Franklin cloud API data collection |
+| `collect_modbus.py` | Modbus TCP local data collection |
+| `collect_solar_enphase.py` | Enphase local API — house array production + per-panel data |
+| `collect_solaredge_panels.py` | SolarEdge cloud API — barn array optimizer health |
+| `collect_weather_db.py` | Weather observation collection to SQLite |
+| `collect_device_inventory.py` | Hardware inventory — firmware and serial number tracking |
+| `rollup_daily_energy.py` | Daily energy summary rollup from SQLite readings |
 | `data_sources.py` | Unified Modbus/Cloud/Enphase data with fallback |
 | `config.py` | Configuration management from `.env` |
 | `scheduler.py` | Task runner, web server, API endpoints |
+| `system_profile.py` | Battery charge curve profiling from DB data |
 | `telemetry_reporter.py` | Anonymous opt-in telemetry |
 
 ---

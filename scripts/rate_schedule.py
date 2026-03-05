@@ -252,6 +252,35 @@ class RateSchedule:
             return 0.0
         return (end - start).total_seconds() / 3600.0
 
+    def hours_since_peak_end(self, dt: Optional[datetime] = None) -> Optional[float]:
+        """Hours since the most recent peak period ended.
+
+        Returns None if:
+          - No peak has occurred in the last 24 hours
+          - Currently in peak (use is_peak() for that)
+          - Today is not a peak day and yesterday wasn't either
+
+        Used by post-peak logic to determine if we just came out of peak
+        and should consider burning solar-charged battery energy.
+        """
+        if dt is None:
+            dt = datetime.now()
+
+        if self.is_peak(dt):
+            return None
+
+        search = dt - timedelta(minutes=5)
+        limit = dt - timedelta(hours=24)
+        while search >= limit:
+            if self.is_peak(search):
+                peak_end = self.next_peak_end(search)
+                if peak_end and peak_end <= dt:
+                    return (dt - peak_end).total_seconds() / 3600.0
+                return (dt - search).total_seconds() / 3600.0
+            search -= timedelta(minutes=15)
+
+        return None
+
     def rate_spread(self, dt: Optional[datetime] = None) -> float:
         """Difference between peak and current rate in cents/kWh.
         Indicates value of peak avoidance."""

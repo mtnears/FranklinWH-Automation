@@ -20,10 +20,10 @@ Health Analysis per optimizer:
   - Underperformer detection
 
 Output files:
-  data/solaredge_panel_log.csv       - Append-only historical log
   data/solaredge_panel_current.json  - Latest snapshot (all optimizers + totals + health)
   data/solaredge_panel_peaks.json    - Per-panel lifetime peak daily production
   web/solaredge_panel_current.json   - Copy for dashboard access
+  SQLite: solaredge_readings table   - Historical per-optimizer data
 
 Portal API details:
   - Uses HTTP Basic Auth with portal username/password
@@ -45,7 +45,6 @@ Environment Variables:
 
 import os
 import sys
-import csv
 import json
 import time
 import logging
@@ -54,6 +53,12 @@ import argparse
 import requests
 from datetime import datetime, date, timedelta
 from pathlib import Path
+
+try:
+    from db import store as db_store, init_db as db_init
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
 
 # Configure logging
 configure_logging()
@@ -65,25 +70,11 @@ DATA_DIR = SCRIPT_DIR.parent / "data"
 WEB_DIR = SCRIPT_DIR.parent / "web"
 
 # Output files
-CSV_LOG = DATA_DIR / "solaredge_panel_log.csv"
 CURRENT_JSON = DATA_DIR / "solaredge_panel_current.json"
 PEAKS_JSON = DATA_DIR / "solaredge_panel_peaks.json"
 LAYOUT_CACHE = DATA_DIR / "solaredge_panel_layout.json"
 DAILY_HISTORY = DATA_DIR / "solaredge_daily_history.json"
 WEB_JSON = WEB_DIR / "solaredge_panel_current.json"
-
-# CSV columns
-CSV_HEADERS = [
-    "timestamp",
-    "serial_number",
-    "inverter",
-    "inverter_sn",
-    "string",
-    "today_wh",
-    "week_wh",
-    "month_wh",
-    "lifetime_wh",
-]
 
 # Layout cache duration (seconds) - re-fetch layout once per day
 LAYOUT_CACHE_MAX_AGE = 86400
@@ -656,33 +647,6 @@ def collect(config):
     return result
 
 
-def append_csv(data):
-    """Append optimizer readings to the historical CSV log."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    write_header = not CSV_LOG.exists()
-
-    with open(CSV_LOG, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        if write_header:
-            writer.writeheader()
-
-        ts = data["timestamp"]
-        for opt in data["optimizers"]:
-            writer.writerow({
-                "timestamp": ts,
-                "serial_number": opt["serial_number"],
-                "inverter": opt["inverter"],
-                "inverter_sn": opt["inverter_sn"],
-                "string": opt["string"],
-                "today_wh": opt["today_wh"],
-                "week_wh": opt["week_wh"],
-                "month_wh": opt["month_wh"],
-                "lifetime_wh": opt["lifetime_wh"],
-            })
-
-    logger.info(f"CSV: {len(data['optimizers'])} rows appended to {CSV_LOG.name}")
-
-
 def update_peaks(data):
     """
     Track per-panel peak daily production for health monitoring.
@@ -1099,6 +1063,38 @@ def print_health_report(data):
     print(f"\n{'=' * 80}\n")
 
 
+def store_to_db(data):
+    """Write optimizer readings to SQLite solaredge_readings table."""
+    if not DB_AVAILABLE:
+        return
+
+    db_init()
+    ts = data["timestamp"][:19].replace("T", " ")
+    count = 0
+
+    for opt in data["optimizers"]:
+        health = opt.get("health", {})
+        db_store.solaredge_reading(
+            timestamp=ts,
+            serial_number=opt["serial_number"],
+            site_id=data.get("site_id", "1241660"),
+            inverter=opt.get("inverter"),
+            inverter_sn=opt.get("inverter_sn"),
+            string=opt.get("string"),
+            today_wh=opt.get("today_wh"),
+            week_wh=opt.get("week_wh"),
+            month_wh=opt.get("month_wh"),
+            lifetime_wh=opt.get("lifetime_wh"),
+            current_power_w=opt.get("current_watts"),
+            health_status=health.get("status"),
+            health_ratio_vs_string=health.get("ratio_vs_string"),
+            health_ratio_vs_array=health.get("ratio_vs_array"),
+        )
+        count += 1
+
+    logger.info(f"SQLite: {count} optimizer readings stored")
+
+
 def main():
     parser = argparse.ArgumentParser(description="SolarEdge per-panel data collector")
     parser.add_argument("--test", action="store_true", help="Print results only, don't save")
@@ -1126,11 +1122,11 @@ def main():
         return
 
     # Production mode: save everything
-    append_csv(data)
     update_peaks(data)
     save_current(data)
     daily_history = update_daily_history(data)
     save_dashboard_json(data, config, daily_history)
+    store_to_db(data)
 
     logger.info("Collection complete")
 

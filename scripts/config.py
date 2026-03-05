@@ -152,6 +152,9 @@ class Config:
     TELEMETRY_ENABLED: bool = field(default_factory=lambda: get_bool('TELEMETRY_ENABLED', False))
     TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
     TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
+    ENGINE_VERSION: str = field(default_factory=lambda: os.getenv('ENGINE_VERSION', '4.0'))
+    MULTI_METER: bool = field(default_factory=lambda: get_bool('MULTI_METER', False))
+    FORECAST_ENABLED: bool = field(default_factory=lambda: get_bool('FORECAST_ENABLED', False))
 
     # ===== NEW: V4.0 Adaptive Decision Engine =====
     # When enabled, smart_decision.py delegates to adaptive_engine.py
@@ -275,11 +278,8 @@ class Config:
             directory.mkdir(parents=True, exist_ok=True)
         
         # Set up derived file paths
-        self.LOG_FILE = self.LOG_DIR / "continuous_monitoring.csv"
-        self.INTELLIGENCE_LOG = self.LOG_DIR / "solar_intelligence.log"
         self.STATE_FILE = self.LOG_DIR / "battery_mode.txt"
         self.PEAK_STATE_FILE = self.LOG_DIR / "peak_state.txt"
-        self.WEATHER_LOG = self.LOG_DIR / "weather_data.csv"
 
     def _calculate_polling_interval(self):
         """Calculate optimal polling interval based on features and data source."""

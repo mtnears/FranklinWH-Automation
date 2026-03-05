@@ -37,7 +37,6 @@ import os
 import platform
 import sys
 import uuid
-import csv
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -54,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ──────────────────────────────────────────────────────────
 # /data/ is on the persistent Docker volume (survives rebuilds)
-# /app/logs/ has the CSV performance logs
+# /app/logs/ has the intelligence log CSV
 DATA_DIR = Path(os.getenv('DATA_DIR', '/app/data'))
 LOG_DIR = Path(os.getenv('LOG_DIR', '/app/logs'))
 CONSENT_FILE = DATA_DIR / 'telemetry_consent.json'
@@ -435,7 +434,7 @@ def _build_config_flags() -> Dict[str, Any]:
         flags['adaptive_engine'] = getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False)
         flags['modbus_enabled'] = getattr(config, 'MODBUS_ENABLED', False)
         flags['emergency_prep_mode'] = getattr(config, 'EMERGENCY_PREP_MODE', False)
-        flags['forecast_solar_enabled'] = getattr(config, 'FORECAST_SOLAR_ENABLED', False)
+        flags['forecast_solar_enabled'] = getattr(config, 'FORECAST_ENABLED', False)
         flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(os.getenv('METER2_ACCOUNT', ''))
         flags['care_rate'] = getattr(config, 'CARE_RATE', False) or os.getenv('CARE_RATE', '').lower() in ('true', '1', 'yes')
         flags['solar_export'] = getattr(config, 'SOLAR_EXPORT', False)
@@ -507,10 +506,10 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
 
 
 def _build_performance_stats(days: int) -> Dict[str, Any]:
-    """Compute aggregate performance from CSV logs.
+    """Compute aggregate performance from intelligence log and DB.
 
-    Reads the intelligence log (smart_decision output) to calculate
-    peak protection, solar self-consumption, decision counts, etc.
+    Reads the intelligence log CSV for decision/mode stats, and the
+    daily_savings SQLite table for peak protection and self-consumption.
     Returns pre-aggregated stats — no raw time-series data.
     """
     stats = {
@@ -523,123 +522,79 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         'curtailment_kwh_avg': None,
         'tou_drift_rate_kw': None,
         'tou_drift_rate_pct_per_hour': None,
+        'solar_discharge_session_kwh': None,
+        'solar_discharge_activations': None,
+        'solar_discharge_kwh_avg': None,
+        'solar_discharge_days': None,
     }
 
     cutoff = datetime.now() - timedelta(days=days)
 
-    # Try to compute from intelligence log CSV
-    intel_log = LOG_DIR / 'intelligence_log.csv'
-    if not intel_log.exists():
-        return stats
-
+    # Compute decision/mode stats from intelligence_log DB table
     try:
-        decisions = 0
-        mode_switches = 0
-        api_errors = 0
-        api_total = 0
-        peak_protected_days = 0
-        total_days_with_peak = 0
-        days_seen = set()
-        prev_mode = None
+        from db import get_intelligence_log_stats
+        intel_stats = get_intelligence_log_stats(days=days)
+        stats['daily_decisions_avg'] = intel_stats.get('daily_decisions_avg')
+        stats['mode_switches_avg'] = intel_stats.get('mode_switches_avg')
+        stats['api_error_rate_pct'] = intel_stats.get('api_error_rate_pct')
+    except Exception as e:
+        logger.debug(f"Intelligence log DB stats error: {e}")
 
-        with open(intel_log, 'r', newline='') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    ts_str = row.get('timestamp', row.get('datetime', ''))
-                    if not ts_str:
-                        continue
-                    # Parse timestamp — handle multiple formats
-                    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M'):
-                        try:
-                            ts = datetime.strptime(ts_str[:19], fmt)
-                            break
-                        except ValueError:
-                            continue
-                    else:
-                        continue
+    # Try daily_savings DB table for peak protection and solar self-consumption
+    try:
+        from db import get_daily_savings_recent
+        savings_rows = get_daily_savings_recent(limit=days)
 
-                    if ts < cutoff:
-                        continue
+        peak_protected = 0
+        total_peak_days = 0
+        solar_ratios = []
 
-                    day_key = ts.strftime('%Y-%m-%d')
-                    days_seen.add(day_key)
-                    decisions += 1
-
-                    # Track mode switches
-                    current_mode = row.get('mode', row.get('action', ''))
-                    if prev_mode and current_mode != prev_mode:
-                        mode_switches += 1
-                    prev_mode = current_mode
-
-                    # Track API errors
-                    api_total += 1
-                    error_field = row.get('error', row.get('api_error', ''))
-                    if error_field and error_field.lower() not in ('', 'none', 'false', '0'):
-                        api_errors += 1
-
-                except (ValueError, KeyError):
+        for row in savings_rows:
+            try:
+                date_str = row.get('date', '')
+                if not date_str:
+                    continue
+                row_date = datetime.strptime(date_str, '%Y-%m-%d')
+                if row_date < cutoff:
                     continue
 
-        num_days = max(len(days_seen), 1)
+                grid_charged = float(row.get('grid_charged_kwh', 0) or 0)
+                total_peak_days += 1
+                if grid_charged <= 0.5:
+                    peak_protected += 1
 
-        stats['daily_decisions_avg'] = round(decisions / num_days, 1)
-        stats['mode_switches_avg'] = round(mode_switches / num_days, 1)
+                if stats['grid_import_peak_kwh_avg'] is None:
+                    stats['grid_import_peak_kwh_avg'] = 0
+                stats['grid_import_peak_kwh_avg'] += grid_charged
 
-        if api_total > 0:
-            stats['api_error_rate_pct'] = round((api_errors / api_total) * 100, 2)
+                solar_ratio = row.get('solar_ratio')
+                if solar_ratio is not None and str(solar_ratio) not in ('', 'None'):
+                    solar_ratios.append(float(solar_ratio))
+
+            except (ValueError, KeyError):
+                continue
+
+        if total_peak_days > 0:
+            stats['peak_protection_pct'] = round((peak_protected / total_peak_days) * 100, 1)
+            if stats['grid_import_peak_kwh_avg'] is not None:
+                stats['grid_import_peak_kwh_avg'] = round(stats['grid_import_peak_kwh_avg'] / total_peak_days, 2)
+
+        if solar_ratios:
+            stats['solar_self_consumption_pct'] = round(sum(solar_ratios) / len(solar_ratios) * 100, 1)
+
+        # Solar discharge daily average (from daily_savings)
+        solar_discharge_values = []
+        for row in savings_rows:
+            sd = row.get('solar_discharge_kwh')
+            if sd is not None and float(sd) > 0:
+                solar_discharge_values.append(float(sd))
+        if solar_discharge_values:
+            stats['solar_discharge_kwh_avg'] = round(
+                sum(solar_discharge_values) / len(solar_discharge_values), 2)
+            stats['solar_discharge_days'] = len(solar_discharge_values)
 
     except Exception as e:
-        logger.debug(f"Performance stats error: {e}")
-
-    # Try daily savings CSV for peak protection and solar self-consumption
-    savings_log = LOG_DIR / 'daily_savings.csv'
-    if savings_log.exists():
-        try:
-            peak_protected = 0
-            total_peak_days = 0
-            solar_self_pcts = []
-
-            with open(savings_log, 'r', newline='') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    try:
-                        date_str = row.get('date', '')
-                        if not date_str:
-                            continue
-                        row_date = datetime.strptime(date_str, '%Y-%m-%d')
-                        if row_date < cutoff:
-                            continue
-
-                        # Peak protection
-                        peak_import = float(row.get('peak_grid_import_kwh', row.get('grid_import_peak_kwh', 0)) or 0)
-                        total_peak_days += 1
-                        if peak_import <= 0.5:  # Under 0.5 kWh = effectively protected
-                            peak_protected += 1
-
-                        # Grid import during peak (for avg)
-                        if stats['grid_import_peak_kwh_avg'] is None:
-                            stats['grid_import_peak_kwh_avg'] = 0
-                        stats['grid_import_peak_kwh_avg'] += peak_import
-
-                        # Solar self-consumption if available
-                        self_con = row.get('solar_self_consumption_pct', '')
-                        if self_con and self_con not in ('', 'None'):
-                            solar_self_pcts.append(float(self_con))
-
-                    except (ValueError, KeyError):
-                        continue
-
-            if total_peak_days > 0:
-                stats['peak_protection_pct'] = round((peak_protected / total_peak_days) * 100, 1)
-                if stats['grid_import_peak_kwh_avg'] is not None:
-                    stats['grid_import_peak_kwh_avg'] = round(stats['grid_import_peak_kwh_avg'] / total_peak_days, 2)
-
-            if solar_self_pcts:
-                stats['solar_self_consumption_pct'] = round(sum(solar_self_pcts) / len(solar_self_pcts), 1)
-
-        except Exception as e:
-            logger.debug(f"Daily savings stats error: {e}")
+        logger.debug(f"Daily savings DB stats error: {e}")
 
     # TOU drift rate — from engine status if available
     try:
@@ -651,6 +606,10 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
             if tou_drift.get('sample_count', 0) > 0:
                 stats['tou_drift_rate_kw'] = tou_drift.get('drift_rate_kw')
                 stats['tou_drift_rate_pct_per_hour'] = tou_drift.get('drift_rate_pct_per_hour')
+            solar_discharge = es.get('solar_discharge', {})
+            if solar_discharge.get('activations', 0) > 0:
+                stats['solar_discharge_session_kwh'] = solar_discharge.get('session_kwh')
+                stats['solar_discharge_activations'] = solar_discharge.get('activations')
     except Exception:
         pass
 

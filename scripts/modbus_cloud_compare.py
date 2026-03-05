@@ -48,7 +48,6 @@ try:
         script_dir / ".env",
         script_dir.parent / ".env",
         pathlib.Path("/volume1/docker/franklin-git/.env"),
-        pathlib.Path("/volume1/docker/franklin/.env"),
     ]:
         if env_path.exists():
             load_dotenv(env_path)

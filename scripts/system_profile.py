@@ -317,6 +317,62 @@ def scan_csv(csv_path: str) -> list:
     return rows
 
 
+def scan_db(db_path: str = None) -> list:
+    """Read system_readings from SQLite database.
+
+    Returns rows in the same dict format as scan_csv so all downstream
+    profile builders work unchanged:
+        timestamp, soc_percent, solar_kw, grid_kw, battery_kw, home_load_kw,
+        grid_status, mode
+    """
+    if db_path is None:
+        db_path = os.path.join(
+            os.environ.get('DATA_DIR', '/app/data'), 'franklin.db'
+        )
+
+    if not os.path.exists(db_path):
+        logger.warning(f"Database not found at {db_path}")
+        return []
+
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.execute(
+        "SELECT timestamp, soc_pct, solar_kw, grid_kw, battery_kw, "
+        "home_load_kw, grid_status, mode "
+        "FROM system_readings "
+        "WHERE soc_pct IS NOT NULL "
+        "ORDER BY timestamp"
+    )
+
+    rows = []
+    skipped = 0
+    for r in cursor:
+        try:
+            ts_str = r['timestamp']
+            # Handle fractional seconds if present
+            if '.' in ts_str:
+                ts_str = ts_str.split('.')[0]
+            ts = datetime.strptime(ts_str[:19], '%Y-%m-%d %H:%M:%S')
+
+            rows.append({
+                'timestamp': ts,
+                'soc_percent': float(r['soc_pct']),
+                'solar_kw': max(0.0, float(r['solar_kw'] or 0)),
+                'grid_kw': float(r['grid_kw'] or 0),
+                'battery_kw': float(r['battery_kw'] or 0),
+                'home_load_kw': float(r['home_load_kw'] or 0),
+                'grid_status': r['grid_status'] or 'Unknown',
+                'mode': r['mode'],
+            })
+        except (ValueError, TypeError):
+            skipped += 1
+
+    conn.close()
+    logger.info(f"Scanned {len(rows)} rows from {db_path} ({skipped} skipped)")
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Profile Builders
 # ---------------------------------------------------------------------------
@@ -413,15 +469,19 @@ def build_consumption_profile(rows: list) -> ConsumptionProfile:
 
 
 def build_solar_profile(rows: list) -> SolarProfile:
-    """Build solar production profile from CSV history.
-    
+    """Build solar production profile from history.
+
     Groups by month and hour. Also computes daily totals for monthly summaries.
     This represents the house array (battery-contributing) only.
+
+    Uses actual time intervals between consecutive readings rather than
+    assuming a fixed interval — works correctly with both DB (~1 min)
+    and CSV (~15 min) data sources.
     """
     by_month_hour = defaultdict(lambda: defaultdict(list))
     daily_totals = defaultdict(float)
 
-    for row in rows:
+    for i, row in enumerate(rows):
         ts = row['timestamp']
         solar = row['solar_kw']
         month = ts.month
@@ -430,8 +490,16 @@ def build_solar_profile(rows: list) -> SolarProfile:
         if solar > MIN_SOLAR_KW:
             by_month_hour[month][hour].append(solar)
 
-        # Accumulate daily estimate (kW * interval hours)
-        daily_totals[ts.strftime('%Y-%m-%d')] += solar * CSV_INTERVAL_HOURS
+        # Accumulate daily estimate using actual interval between readings
+        if i > 0:
+            prev_ts = rows[i - 1]['timestamp']
+            interval_hours = (ts - prev_ts).total_seconds() / 3600.0
+            # Cap at 1 hour to ignore gaps (restarts, outages)
+            if 0 < interval_hours < 1.0:
+                daily_totals[ts.strftime('%Y-%m-%d')] += solar * interval_hours
+        else:
+            # First row: assume ~1 min for DB, use CSV_INTERVAL as fallback
+            daily_totals[ts.strftime('%Y-%m-%d')] += solar * CSV_INTERVAL_HOURS
 
     profile = SolarProfile()
 
@@ -583,17 +651,30 @@ def discover_capacity(rows: list, config: Optional[dict] = None) -> SystemCapaci
 # Profile Build & Save
 # ---------------------------------------------------------------------------
 
-def build_profile(csv_path: str, config: Optional[dict] = None) -> SystemProfile:
-    """Build complete system profile from CSV history.
-    
+def build_profile(csv_path: str = None, config: Optional[dict] = None,
+                  db_path: str = None) -> SystemProfile:
+    """Build complete system profile from database or CSV history.
+
+    Data source priority:
+      1. SQLite database (system_readings table) — preferred
+      2. CSV file (continuous_monitoring.csv) — legacy fallback
+
     This is the main entry point. Call on first run (scans all history)
     or periodically to rebuild with latest data.
     """
-    logger.info(f"Building system profile from {csv_path}")
-    rows = scan_csv(csv_path)
+    rows = []
+
+    # Try database first
+    rows = scan_db(db_path)
+    if rows:
+        logger.info(f"Building system profile from database ({len(rows)} rows)")
+    elif csv_path and os.path.exists(csv_path):
+        # Fall back to CSV
+        logger.info(f"Building system profile from {csv_path}")
+        rows = scan_csv(csv_path)
 
     if not rows:
-        logger.warning("No data found in CSV — using defaults")
+        logger.warning("No data found in DB or CSV — using defaults")
         return SystemProfile(
             capacity=SystemCapacity(),
             last_rebuilt=datetime.now().isoformat(),
@@ -725,19 +806,38 @@ if __name__ == '__main__':
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else 'data/continuous_monitoring.csv'
-    output_path = sys.argv[2] if len(sys.argv) > 2 else 'data/system_profile.json'
+    # Parse args: optional csv_path and output_path, or --db for database source
+    csv_path = None
+    db_path = None
+    default_data_dir = os.environ.get('DATA_DIR', '/app/data')
+    output_path = os.path.join(default_data_dir, 'system_profile.json')
+
+    args = sys.argv[1:]
+    if '--db' in args:
+        args.remove('--db')
+        db_path = args[0] if args else None
+        output_path = args[1] if len(args) > 1 else output_path
+    elif args and not args[0].startswith('-'):
+        csv_path = args[0]
+        output_path = args[1] if len(args) > 1 else output_path
+    else:
+        # Default: try DB first, then CSV
+        db_path = None  # scan_db will use default path
+        csv_path = 'data/continuous_monitoring.csv'
 
     # Optional config overrides via environment
     config = {}
     if os.environ.get('BATTERY_COUNT'):
         config['battery_count'] = int(os.environ['BATTERY_COUNT'])
-    if os.environ.get('BATTERY_CAPACITY_KWH'):
-        config['capacity_per_battery_kwh'] = float(os.environ['BATTERY_CAPACITY_KWH'])
+    # Note: BATTERY_CAPACITY_KWH is the total system capacity used by the
+    # adaptive engine. Per-battery capacity for the profile comes from Modbus
+    # auto-discovery (13.6 kWh per aPower) or the DEFAULT_CAPACITY_KWH constant.
+    # Don't map BATTERY_CAPACITY_KWH to capacity_per_battery_kwh here — it
+    # would override the accurate Modbus value with a rounded total.
     if os.environ.get('BACKUP_RESERVE_PCT'):
         config['backup_reserve_pct'] = float(os.environ['BACKUP_RESERVE_PCT'])
 
-    profile = build_profile(csv_path, config)
+    profile = build_profile(csv_path=csv_path, config=config, db_path=db_path)
     save_profile(profile, output_path)
 
     # Print summary

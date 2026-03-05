@@ -23,11 +23,18 @@ from pathlib import Path
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Base paths — adjusted at runtime if needed
-BASE_DIR = Path('/volume1/docker/franklin')
-LOG_DIR = BASE_DIR / 'logs'
-DATA_DIR = BASE_DIR / 'data'
-WEB_DIR = BASE_DIR / 'web'
+# Base paths — use config if available, else Docker defaults
+try:
+    from config import config as _cfg
+    BASE_DIR = _cfg.BASE_DIR
+    LOG_DIR = _cfg.LOG_DIR
+    DATA_DIR = _cfg.DATA_DIR
+    WEB_DIR = _cfg.WEB_DIR
+except ImportError:
+    BASE_DIR = Path(os.getenv('BASE_DIR', '/app'))
+    LOG_DIR = BASE_DIR / 'logs'
+    DATA_DIR = BASE_DIR / 'data'
+    WEB_DIR = BASE_DIR / 'web'
 
 
 def get_cloud_mode_debug() -> str:
@@ -76,10 +83,8 @@ def get_cloud_mode_debug() -> str:
         return f"[Cloud API mode query failed: {e}]"
 
 # Files to include (relative to BASE_DIR)
-LOG_FILES = {
-    'solar_intelligence.log': LOG_DIR / 'solar_intelligence.log',
-    'scheduler.log': LOG_DIR / 'scheduler.log',
-}
+# Log files retired — intelligence_log and scheduler_log now in SQLite DB
+LOG_FILES = {}
 
 DATA_FILES = {
     'override.json': LOG_DIR / 'override.json',
@@ -315,14 +320,21 @@ def build_summary(hours: int = 24) -> str:
 
     summary_parts.append("")
 
-    # Recent errors
-    intel_path = LOG_DIR / 'solar_intelligence.log'
-    error_text = extract_errors(intel_path, hours)
-    if '[No errors' in error_text:
-        summary_parts.append("**Errors (last {}h):** None".format(hours))
-    else:
-        error_count = error_text.count('\n')
-        summary_parts.append(f"**Errors (last {hours}h):** {error_count} (see attached bundle)")
+    # Recent errors from DB
+    try:
+        import db as db_mod
+        cutoff = (now - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
+        err_rows = db_mod.query(
+            "SELECT COUNT(*) as cnt FROM intelligence_log "
+            "WHERE timestamp >= ? AND (level = 'ERROR' OR message LIKE '%ERROR%' "
+            "OR message LIKE '%FAIL%' OR message LIKE '%Exception%')", (cutoff,))
+        error_count = err_rows[0]['cnt'] if err_rows else 0
+        if error_count == 0:
+            summary_parts.append("**Errors (last {}h):** None".format(hours))
+        else:
+            summary_parts.append(f"**Errors (last {hours}h):** {error_count} (see attached bundle)")
+    except Exception:
+        summary_parts.append("**Errors (last {}h):** Unable to query DB".format(hours))
 
     summary_parts.append("")
     summary_parts.append("**Full diagnostic data is in the attached zip file.**")
@@ -362,33 +374,71 @@ def generate_bundle(hours: int = 24, max_log_lines: int = 500,
         sys_info = get_system_info()
         zf.writestr('system_info.json', json.dumps(sys_info, indent=2))
 
-        # 3. Intelligence log (last N lines)
-        intel_path = LOG_DIR / 'solar_intelligence.log'
-        if intel_path.exists():
-            content = tail_file(intel_path, max_log_lines)
-            zf.writestr('logs/solar_intelligence.log', sanitize_text(content))
+        # 3. Intelligence log from DB (last N entries)
+        try:
+            import db as db_mod
+            db_mod.init_db()
+            intel_rows = db_mod.get_recent_intelligence_logs(limit=max_log_lines)
+            if intel_rows:
+                intel_content = '\n'.join(
+                    f"{r['timestamp']} - {r['message']}" for r in reversed(intel_rows))
+                zf.writestr('logs/intelligence_log.txt', sanitize_text(intel_content))
+        except Exception:
+            pass
 
-        # 4. Recent decisions (structured extraction)
-        if intel_path.exists():
-            decisions = extract_recent_decisions(intel_path, max_decisions=30)
-            zf.writestr('logs/recent_decisions.txt', sanitize_text(decisions))
+        # 4. Recent decisions from DB
+        try:
+            import db as db_mod
+            rows = db_mod.query(
+                "SELECT timestamp, message FROM intelligence_log "
+                "WHERE message LIKE 'Decision:%' ORDER BY id DESC LIMIT 30")
+            if rows:
+                decisions_text = '\n'.join(
+                    f"{r['timestamp']} - {r['message']}" for r in reversed(rows))
+                zf.writestr('logs/recent_decisions.txt', sanitize_text(decisions_text))
+        except Exception:
+            pass
 
-        # 5. Errors only
-        if intel_path.exists():
-            errors = extract_errors(intel_path, hours)
-            zf.writestr('logs/errors.txt', sanitize_text(errors))
+        # 5. Errors from DB
+        try:
+            import db as db_mod
+            cutoff = (datetime.now() - timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
+            rows = db_mod.query(
+                "SELECT timestamp, level, message FROM intelligence_log "
+                "WHERE timestamp >= ? AND (level = 'ERROR' OR message LIKE '%ERROR%' "
+                "OR message LIKE '%FAIL%' OR message LIKE '%Exception%') "
+                "ORDER BY id DESC LIMIT 100", (cutoff,))
+            if rows:
+                error_text = '\n'.join(
+                    f"{r['timestamp']} [{r.get('level','')}] {r['message']}" for r in reversed(rows))
+                zf.writestr('logs/errors.txt', sanitize_text(error_text))
+        except Exception:
+            pass
 
-        # 6. Scheduler log
-        sched_path = LOG_DIR / 'scheduler.log'
-        if sched_path.exists():
-            content = tail_file(sched_path, max_log_lines)
-            zf.writestr('logs/scheduler.log', sanitize_text(content))
+        # 6. Scheduler log from DB
+        try:
+            import db as db_mod
+            sched_rows = db_mod.get_recent_scheduler_logs(limit=max_log_lines)
+            if sched_rows:
+                sched_content = '\n'.join(
+                    f"[{r['timestamp']}] {r['message']}" for r in reversed(sched_rows))
+                zf.writestr('logs/scheduler_log.txt', sanitize_text(sched_content))
+        except Exception:
+            pass
 
-        # 7. Recent monitoring CSV (last 50 rows with header)
-        csv_path = LOG_DIR / 'continuous_monitoring.csv'
-        if csv_path.exists():
-            content = tail_csv(csv_path, max_rows=100)
-            zf.writestr('logs/continuous_monitoring_recent.csv', sanitize_text(content))
+        # 7. Recent system readings from DB (last 100 rows)
+        try:
+            import db as db_mod
+            readings = db_mod.get_readings_since(hours_ago=24)
+            if readings:
+                cols = ['timestamp', 'soc_pct', 'solar_kw', 'grid_kw', 'battery_kw', 'home_load_kw', 'mode']
+                header = ','.join(cols)
+                data_lines = []
+                for r in readings[-100:]:
+                    data_lines.append(','.join(str(r.get(c, '')) for c in cols))
+                zf.writestr('logs/system_readings_recent.csv', header + '\n' + '\n'.join(data_lines))
+        except Exception:
+            pass
 
         # 8. Configuration (.env structure — keys only)
         env_structure = get_env_structure()
