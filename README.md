@@ -148,10 +148,6 @@ This tells the Franklin hardware to route solar production to the battery while 
 
 > **Note:** In the app's **Settings → Mode** screen, you can also set the backup reserve SOC percentage for TOU and Self-Consumption. This is the minimum battery level the system will maintain. The v4 engine respects whatever you configure here. A typical setting is 20%.
 
-### Startup Grace Period
-
-On container restart, the first decision cycle observes and logs baseline data without switching modes. This prevents aggressive Emergency Backup charging on startup before the engine has context. Normal decisions begin on the second cycle (30 minutes later).
-
 ### Mode Switch Verification
 
 Every mode switch command is verified against the actual hardware state via the Franklin cloud API. If the hardware doesn't confirm the change, the system retries up to 3 times with increasing delays. During peak hours and the hour before peak, hardware mode is checked every cycle to catch any desync immediately.
