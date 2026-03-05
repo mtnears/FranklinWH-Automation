@@ -244,6 +244,7 @@ All settings live in your `.env` file. No code edits needed.
 | `WEATHER_ENABLED` | `false` | Weather data collection |
 | `CARE_RATE` | `false` | CARE/FERA discount program |
 | `NEM_VERSION` | `nem2` | Net metering version (nem2 or nem3) |
+| `SOLAR_EXPORT` | `false` | Export system (NEM2/NEM3 with grid export). Disables post-peak self-consumption discharge — set `true` for full-export setups |
 
 ### TOU Settings
 

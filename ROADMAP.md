@@ -6,11 +6,6 @@ Planned features and improvements. Items are listed in rough priority order. Con
 
 ## 🔧 In Progress
 
-### Export System Support
-**Priority: High**
-
-The post-peak solar discharge feature (now deployed) assumes a non-export system — burning free solar overnight in the battery is net-positive when you can't export. For full-export systems (NEM2/NEM3 with a separate export meter), discharging overnight may be less valuable than exporting that energy directly. A `GRID_EXPORT_ENABLED` config flag will cause the engine to skip post-peak Self-Consumption discharge on export systems, returning directly to TOU after peak. This is a small targeted change but the right behavior for dual-meter setups.
-
 ### Telemetry Expansion
 **Priority: Medium**
 
@@ -90,6 +85,7 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 - **System profile overhaul**: `scan_db()` replaces CSV scan; solar interval uses actual reading timestamps; capacity bug fixed (was doubling total kWh); weekly rebuild job added
 - **Plotly.js analytics tab**: Interactive charts replace static weekly PNGs. Date range selection, carousel, zoom/pan/hover, touch support. All data sourced from SQLite
 - **Fire HD 10 dashboard optimization**: Layout validated at 1507×943 CSS pixels for Fully Kiosk Browser tablet display
+- **Export system support** (`SOLAR_EXPORT=true`): Post-peak solar discharge and curtailment protection both skip on export systems. Set in `.env` for NEM2/NEM3 full-export setups
 - **Solar health monitor wired**: Nightly panel health report at 8:30 PM using 21-day rolling window. SolarEdge per-optimizer health scoring
 
 ### v4.0.3 — Overnight Preservation, Solar Deferral, Hourly Gap Model (Feb 2026)
