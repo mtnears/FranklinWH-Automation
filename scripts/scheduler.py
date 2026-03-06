@@ -356,6 +356,12 @@ def format_time(hour: int, minute: int) -> str:
     return f"{hour:02d}:{minute:02d}"
 
 
+def _register(name, schedule_str):
+    """Log a scheduled task and add it to REGISTERED_TASKS."""
+    log(f"  - {name}: {schedule_str}")
+    REGISTERED_TASKS.append({'name': name, 'schedule': schedule_str})
+
+
 def setup_schedule():
     """Configure all scheduled tasks."""
     log("=" * 60)
@@ -406,13 +412,15 @@ def setup_schedule():
     
     log("-" * 60)
     log("Scheduling tasks:")
+    global REGISTERED_TASKS
+    REGISTERED_TASKS = []
     
     # Core automation - clock-aligned at :00 and :30 every hour
     # Fixed at 30-minute intervals to stay within Franklin API rate limits.
     # Clock-aligned ensures predictable timing regardless of container start.
     schedule.every().hour.at(":00").do(job_smart_decision)
     schedule.every().hour.at(":30").do(job_smart_decision)
-    log(f"  - Smart Decision: Every 30 minutes (clock-aligned at :00 and :30)")
+    _register("Smart Decision (v4.0)", "Every 30 minutes (clock-aligned at :00 and :30)")
     
     # Peak transition checks - pinned to exact times
     if CONFIG_LOADED and config.TOU_ENABLED:
@@ -428,12 +436,12 @@ def setup_schedule():
         
         pre_peak_time = format_time(pre_peak_hour, pre_peak_minute)
         schedule.every().day.at(pre_peak_time).do(job_smart_decision_peak_start)
-        log(f"  - Pre-peak check: Daily at {pre_peak_time} ({buffer_minutes}min before peak)")
+        _register("Smart Decision [pre-peak]", f"Daily at {pre_peak_time} ({buffer_minutes}min before peak)")
         
         # Post-peak check: PEAK_END hour + 1 minute
         post_peak_time = format_time(config.PEAK_END_HOUR, 1)
         schedule.every().day.at(post_peak_time).do(job_smart_decision_peak_end)
-        log(f"  - Post-peak check: Daily at {post_peak_time} (1min after peak ends)")
+        _register("Smart Decision [post-peak]", f"Daily at {post_peak_time} (1min after peak ends)")
         
         # Secondary peak period if configured
         if config.PEAK2_START_HOUR and config.PEAK2_END_HOUR:
@@ -448,15 +456,15 @@ def setup_schedule():
             
             pre_peak2_time = format_time(pre_peak2_hour, pre_peak2_minute)
             schedule.every().day.at(pre_peak2_time).do(job_smart_decision_peak_start)
-            log(f"  - Pre-peak2 check: Daily at {pre_peak2_time}")
+            _register("Smart Decision [pre-peak2]", f"Daily at {pre_peak2_time}")
             
             post_peak2_time = format_time(config.PEAK2_END_HOUR, 1)
             schedule.every().day.at(post_peak2_time).do(job_smart_decision_peak_end)
-            log(f"  - Post-peak2 check: Daily at {post_peak2_time}")
+            _register("Smart Decision [post-peak2]", f"Daily at {post_peak2_time}")
     
     # Dashboard data - every minute
     schedule.every(1).minutes.do(job_dashboard_data)
-    log("  - Dashboard Data: Every 1 minute")
+    _register("Dashboard Data", "Every 1 minute")
     
     # Weather — legacy collect_weather.py removed in Iteration 2
     # Weather data now comes exclusively from collect_weather_db.py (SQLite)
@@ -465,7 +473,7 @@ def setup_schedule():
     # PVOutput - hourly (if enabled)
     if CONFIG_LOADED and config.PVOUTPUT_ENABLED:
         schedule.every().hour.at(":05").do(job_pvoutput)
-        log("  - PVOutput Collection: Hourly at :05")
+        _register("PVOutput Collection", "Hourly at :05")
     
     # Solar arrays - every 5 minutes (if any configured)
     solar_arrays = getattr(config, 'SOLAR_ARRAYS', '') if CONFIG_LOADED else ''
@@ -473,25 +481,25 @@ def setup_schedule():
     if solar_arrays or enphase_legacy:
         schedule.every(5).minutes.do(job_solar_arrays)
         if solar_arrays:
-            log(f"  - Solar Array Collection: Every 5 minutes ({solar_arrays})")
+            _register("Solar [house]", f"Every 5 min")
         else:
-            log("  - Enphase Solar Collection: Every 5 minutes (legacy)")
+            _register("Enphase Solar Collection", "Every 5 minutes (legacy)")
     
     # SolarEdge panel monitoring - every 15 minutes (if enabled)
     # Separate from the solar array collection above; this collects real
     # per-optimizer energy data for health monitoring / anomaly detection
     if CONFIG_LOADED and getattr(config, 'SOLAREDGE_PANEL_MONITORING', False):
         schedule.every(15).minutes.do(job_solaredge_panels)
-        log(f"  - SolarEdge Panel Monitoring: Every 15 minutes (site {config.SOLAREDGE_SITE_ID})")
+        _register("SolarEdge Panel Monitoring", f"Every 15 minutes (site {config.SOLAREDGE_SITE_ID})")
     
     # Daily report - 4:30 PM (if email enabled)
     if CONFIG_LOADED and getattr(config, 'EMAIL_ENABLED', False):
         schedule.every().day.at("16:30").do(job_daily_report)
-        log("  - Daily Status Report: Daily at 4:30 PM")
+        _register("Daily Status Report", "Daily at 4:30 PM")
     
     # Daily savings - 00:05 AM (calculates previous day's savings with full data)
     schedule.every().day.at("00:05").do(job_daily_savings)
-    log("  - Daily Savings: Daily at 00:05 AM (previous day)")
+    _register("Daily Savings", "Daily at 00:05 AM (previous day)")
     
     # Solar health monitor - 20:30 (after sunset, full day's data available)
     # Runs for all solar arrays regardless of type (SolarEdge, Enphase, or both)
@@ -500,7 +508,7 @@ def setup_schedule():
     se_panel_health = getattr(config, 'SOLAREDGE_PANEL_MONITORING', False) if CONFIG_LOADED else False
     if solar_arrays or enphase_legacy_health or se_panel_health:
         schedule.every().day.at("20:30").do(job_solar_health)
-        log("  - Solar Health Monitor: Daily at 8:30 PM")
+        _register("Solar Health Monitor", "Daily at 8:30 PM")
     
     # Weekly charts retired — replaced by interactive Analytics tab
     
@@ -508,31 +516,31 @@ def setup_schedule():
     # Modbus + Enphase run back-to-back in a single job for time-aligned data
     if Path(SCRIPT_DIR / "collect_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every(5).minutes.do(job_collect_system_snapshot)
-        log("  - System Snapshot (Modbus + Enphase): Every 5 minutes")
+        _register("SQLite Modbus Collection", "Every 5 min")
     if Path(SCRIPT_DIR / "collect_weather_db.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         if CONFIG_LOADED and getattr(config, 'WEATHER_ENABLED', False):
             schedule.every(15).minutes.do(job_collect_weather_db)
-            log("  - SQLite Weather Collector: Every 15 minutes")
+            _register("SQLite Weather Collection", "Every 15 minutes")
     if Path(SCRIPT_DIR / "collect_device_inventory.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every().day.at("03:00").do(job_collect_device_inventory)
-        log("  - Device Inventory: Daily at 3:00 AM")
+        _register("Device Inventory Collection", "Daily at 3:00 AM")
     if Path(SCRIPT_DIR / "collect_franklin_cloud.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every(15).minutes.do(job_collect_franklin_cloud)
-        log("  - Franklin Cloud Collector: Every 15 minutes")
+        _register("Franklin Cloud Collection", "Every 15 minutes")
     if Path(SCRIPT_DIR / "collect_pv_output.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         if CONFIG_LOADED and getattr(config, 'PVOUTPUT_ENABLED', False):
             schedule.every().day.at("00:15").do(job_collect_pv_output)
-            log("  - PVOutput Daily (SQLite): Daily at 00:15 AM")
+            _register("PVOutput Daily Collection", "Daily at 00:15 AM")
     if Path(SCRIPT_DIR / "rollup_daily_energy.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every().day.at("00:10").do(job_rollup_daily_energy)
-        log("  - Daily Energy Rollup: Daily at 00:10 AM")
+        _register("Daily Energy Rollup", "Daily at 00:10 AM")
     if Path(SCRIPT_DIR / "db.py").exists():
         schedule.every().day.at("03:30").do(job_prune_logs)
-        log("  - Log Pruning: Daily at 3:30 AM (30-day retention)")
+        _register("Log Pruning", "Daily at 3:30 AM (30-day retention)")
 
     if Path(SCRIPT_DIR / "system_profile.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every().sunday.at("03:00").do(job_rebuild_system_profile)
-        log("  - System Profile Rebuild: Weekly Sunday at 3:00 AM (from DB)")
+        _register("System Profile Rebuild", "Weekly Sunday at 3:00 AM (from DB)")
     
     # Anonymous telemetry — daily at 6:00 AM + retry at 7:00 AM
     # Only runs if user has opted in (consent file or .env)
@@ -544,7 +552,7 @@ def setup_schedule():
         telemetry_status = get_consent_status().get('status', 'unknown')
     except ImportError:
         telemetry_status = 'not installed'
-    log(f"  - Telemetry: Daily at 6:00 AM (status: {telemetry_status})")
+    _register("Telemetry", f"Daily at 6:00 AM (status: {telemetry_status})")
     
     log("-" * 60)
     log("Scheduler ready. Running initial tasks...")
@@ -573,6 +581,8 @@ def setup_schedule():
 
 # ===== Internal API Server =====
 API_PORT = int(os.getenv('API_PORT', '8101'))
+DOCKER_START_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+REGISTERED_TASKS = []
 DATA_DIR = SCRIPT_DIR.parent / (os.getenv('DATA_DIR', '') or 'data')
 WEB_DIR_PATH = SCRIPT_DIR.parent / (os.getenv('WEB_DIR', '') or 'web')
 # Handle absolute Docker paths
@@ -677,6 +687,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self._get_system_readings()
         elif path == '/api/db-stats':
             self._get_db_stats()
+        elif path == '/api/docker-start':
+            self._json_response(200, {'docker_start': DOCKER_START_TIME})
+        elif path == '/api/scheduler-tasks':
+            self._json_response(200, {'tasks': REGISTERED_TASKS})
         elif path.startswith('/api/scheduler-logs'):
             self._get_log_entries('scheduler')
         elif path.startswith('/api/intelligence-logs'):

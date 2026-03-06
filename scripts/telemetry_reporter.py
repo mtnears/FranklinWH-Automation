@@ -341,12 +341,25 @@ def _build_system_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
     except ImportError:
         pass
 
-    # If no config version, try reading from a version file
+    # If still unknown, try VERSION file
     if version == 'unknown':
         for vf in [SCRIPT_DIR / 'VERSION', SCRIPT_DIR.parent / 'VERSION']:
             if vf.exists():
                 version = vf.read_text().strip()
                 break
+
+    # If still unknown, read from engine_status.json
+    if version == 'unknown':
+        try:
+            engine_status_path = DATA_DIR / 'engine_status.json'
+            if engine_status_path.exists():
+                with open(engine_status_path, 'r') as f:
+                    es = json.load(f)
+                v = es.get('engine_version') or es.get('version')
+                if v:
+                    version = v
+        except Exception:
+            pass
 
     uptime_days = 0
     try:
@@ -356,8 +369,22 @@ def _build_system_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
     except (OSError, ValueError):
         pass
 
+    # Git commit hash — short hash for version tracking across fleet
+    git_commit = None
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['git', '-C', str(SCRIPT_DIR.parent), 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            git_commit = result.stdout.strip()
+    except Exception:
+        pass
+
     info = {
         'engine_version': version,
+        'git_commit': git_commit,
         'python_version': platform.python_version(),
         'docker': os.path.exists('/.dockerenv'),
         'os_arch': platform.machine(),
@@ -438,6 +465,17 @@ def _build_config_flags() -> Dict[str, Any]:
         flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(os.getenv('METER2_ACCOUNT', ''))
         flags['care_rate'] = getattr(config, 'CARE_RATE', False) or os.getenv('CARE_RATE', '').lower() in ('true', '1', 'yes')
         flags['solar_export'] = getattr(config, 'SOLAR_EXPORT', False)
+
+        # Enrich forecast flag from engine_status.json runtime state
+        if not flags['forecast_solar_enabled']:
+            try:
+                engine_status_path = DATA_DIR / 'engine_status.json'
+                if engine_status_path.exists():
+                    with open(engine_status_path, 'r') as f:
+                        es = json.load(f)
+                    flags['forecast_solar_enabled'] = bool(es.get('forecast_engine', False))
+            except Exception:
+                pass
     except ImportError:
         pass
 
@@ -450,8 +488,10 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
     Region priority:
       1. TELEMETRY_REGION env var (power users, state-level: "CA", "IL")
       2. Consent file region field (dashboard country picker: "US", "AU")
-      3. Grid frequency + voltage from Modbus (auto, continent-level)
-      4. null
+      3. Weather station ID prefix (e.g. KCASANTA123 → CA, KILCHIC456 → IL)
+      4. TZ env var (e.g. America/Los_Angeles → US, Europe/London → GB)
+      5. Grid frequency + voltage from Modbus (auto, continent-level)
+      6. null
     """
     # Priority 1: .env override
     user_region = os.getenv('TELEMETRY_REGION', None)
@@ -466,7 +506,48 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Priority 3: auto-detect from Modbus grid characteristics
+    # Priority 3: derive US state from weather station ID (ICAO format: K + 2-letter state + chars)
+    station_region = None
+    try:
+        from config import config
+        station_id = getattr(config, 'WEATHER_STATION_ID', '') or ''
+        if station_id and station_id.upper().startswith('K') and len(station_id) >= 4:
+            # Personal weather stations: KCASANTA123 → state = CA
+            # ASOS/AWOS stations: KSFO → state = SF (not useful), skip 4-char
+            if len(station_id) > 4:
+                state_code = station_id[1:3].upper()
+                us_states = {
+                    'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID',
+                    'IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS',
+                    'MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK',
+                    'OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV',
+                    'WI','WY','DC'
+                }
+                if state_code in us_states:
+                    station_region = state_code
+    except Exception:
+        pass
+
+    # Priority 4: derive country/region from TZ env var
+    tz_region = None
+    if not (user_region or consent_region or station_region):
+        try:
+            tz = os.getenv('TZ', '')
+            if not tz:
+                from config import config
+                tz = getattr(config, 'TZ', '')
+            if tz.startswith('America/'):
+                tz_region = 'US'
+            elif tz.startswith('Europe/'):
+                tz_region = 'EU'
+            elif tz.startswith('Australia/'):
+                tz_region = 'AU'
+            elif tz.startswith('Asia/'):
+                tz_region = 'AS'
+        except Exception:
+            pass
+
+    # Priority 5: auto-detect from Modbus grid characteristics
     grid_region = None
     if modbus_data:
         freq = modbus_data.get('grid_frequency_hz')
@@ -475,8 +556,10 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
             grid_region = _infer_grid_region(freq, volt)
 
     info = {
-        'region': user_region or consent_region,     # Best available specific region
-        'grid_region': grid_region,                   # Continent-level (auto from Modbus)
+        'region': user_region or consent_region or station_region or tz_region or 'n/a',
+        'region_station': station_region or 'n/a',
+        'region_tz': tz_region or 'n/a',
+        'grid_region': grid_region or 'n/a',
         'rate_structure_type': 'unknown',
         'peak_window_hours': 0,
         'nem_version': None,
@@ -532,47 +615,70 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
 
     # Compute decision/mode stats from intelligence_log DB table
     try:
-        from db import get_intelligence_log_stats
-        intel_stats = get_intelligence_log_stats(days=days)
-        stats['daily_decisions_avg'] = intel_stats.get('daily_decisions_avg')
-        stats['mode_switches_avg'] = intel_stats.get('mode_switches_avg')
-        stats['api_error_rate_pct'] = intel_stats.get('api_error_rate_pct')
+        import sqlite3 as _sqlite3
+        db_path = DATA_DIR / 'franklin.db'
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+
+        day_rows = conn.execute(
+            "SELECT date(timestamp) as day, COUNT(*) as cnt FROM intelligence_log "
+            "WHERE timestamp >= ? AND level != 'DEBUG' GROUP BY day", (cutoff_str,)
+        ).fetchall()
+        if day_rows:
+            stats['daily_decisions_avg'] = round(sum(r['cnt'] for r in day_rows) / len(day_rows), 1)
+
+        mode_rows = conn.execute(
+            "SELECT date(timestamp) as day, COUNT(*) as cnt FROM intelligence_log "
+            "WHERE timestamp >= ? AND message LIKE 'Action:%' GROUP BY day", (cutoff_str,)
+        ).fetchall()
+        if mode_rows:
+            stats['mode_switches_avg'] = round(sum(r['cnt'] for r in mode_rows) / len(mode_rows), 1)
+
+        total_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM intelligence_log WHERE timestamp >= ?", (cutoff_str,)
+        ).fetchone()['cnt']
+        error_count = conn.execute(
+            "SELECT COUNT(*) as cnt FROM intelligence_log WHERE timestamp >= ? AND level = 'ERROR'", (cutoff_str,)
+        ).fetchone()['cnt']
+        if total_count > 0:
+            stats['api_error_rate_pct'] = round((error_count / total_count) * 100, 2)
+
+        conn.close()
     except Exception as e:
         logger.debug(f"Intelligence log DB stats error: {e}")
 
     # Try daily_savings DB table for peak protection and solar self-consumption
     try:
-        from db import get_daily_savings_recent
-        savings_rows = get_daily_savings_recent(limit=days)
+        import sqlite3 as _sqlite3
+        db_path = DATA_DIR / 'franklin.db'
+        conn = _sqlite3.connect(str(db_path))
+        conn.row_factory = _sqlite3.Row
+        cutoff_date = cutoff.strftime('%Y-%m-%d')
+
+        savings_rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM daily_savings WHERE date >= ? ORDER BY date DESC LIMIT ?",
+            (cutoff_date, days)
+        ).fetchall()]
+        conn.close()
 
         peak_protected = 0
         total_peak_days = 0
         solar_ratios = []
 
         for row in savings_rows:
-            try:
-                date_str = row.get('date', '')
-                if not date_str:
-                    continue
-                row_date = datetime.strptime(date_str, '%Y-%m-%d')
-                if row_date < cutoff:
-                    continue
+            grid_charged = float(row.get('grid_charged_kwh') or 0)
+            total_peak_days += 1
+            if grid_charged <= 0.5:
+                peak_protected += 1
 
-                grid_charged = float(row.get('grid_charged_kwh', 0) or 0)
-                total_peak_days += 1
-                if grid_charged <= 0.5:
-                    peak_protected += 1
+            if stats['grid_import_peak_kwh_avg'] is None:
+                stats['grid_import_peak_kwh_avg'] = 0
+            stats['grid_import_peak_kwh_avg'] += grid_charged
 
-                if stats['grid_import_peak_kwh_avg'] is None:
-                    stats['grid_import_peak_kwh_avg'] = 0
-                stats['grid_import_peak_kwh_avg'] += grid_charged
-
-                solar_ratio = row.get('solar_ratio')
-                if solar_ratio is not None and str(solar_ratio) not in ('', 'None'):
-                    solar_ratios.append(float(solar_ratio))
-
-            except (ValueError, KeyError):
-                continue
+            solar_ratio = row.get('solar_ratio')
+            if solar_ratio is not None and str(solar_ratio) not in ('', 'None'):
+                solar_ratios.append(float(solar_ratio))
 
         if total_peak_days > 0:
             stats['peak_protection_pct'] = round((peak_protected / total_peak_days) * 100, 1)
@@ -582,15 +688,14 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         if solar_ratios:
             stats['solar_self_consumption_pct'] = round(sum(solar_ratios) / len(solar_ratios) * 100, 1)
 
-        # Solar discharge daily average (from daily_savings)
-        solar_discharge_values = []
-        for row in savings_rows:
-            sd = row.get('solar_discharge_kwh')
-            if sd is not None and float(sd) > 0:
-                solar_discharge_values.append(float(sd))
+        # Post-peak solar discharge — column is post_peak_discharge_kwh
+        solar_discharge_values = [
+            float(row['post_peak_discharge_kwh'])
+            for row in savings_rows
+            if row.get('post_peak_discharge_kwh') and float(row['post_peak_discharge_kwh']) > 0
+        ]
         if solar_discharge_values:
-            stats['solar_discharge_kwh_avg'] = round(
-                sum(solar_discharge_values) / len(solar_discharge_values), 2)
+            stats['solar_discharge_kwh_avg'] = round(sum(solar_discharge_values) / len(solar_discharge_values), 2)
             stats['solar_discharge_days'] = len(solar_discharge_values)
 
     except Exception as e:

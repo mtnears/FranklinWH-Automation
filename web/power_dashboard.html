@@ -1959,7 +1959,7 @@ function toggleScriptAR() { document.getElementById('scripts-auto').checked ? st
 
 async function checkScriptHealth() {
     try {
-        const r = await fetch('/api/scheduler-logs?limit=2000');
+        const r = await fetch('/api/scheduler-logs?limit=500');
         if (!r.ok) { _scriptHealthClass = 'off'; return; }
         const d = await r.json();
         if (!d.entries || d.entries.length === 0) { _scriptHealthClass = 'off'; return; }
@@ -2019,68 +2019,28 @@ function getSolarMeta(name) {
 
 async function loadScriptStatus() {
     try {
-        const r = await fetch('/api/scheduler-logs?limit=2000');
+        // Fetch docker start time from dedicated endpoint (avoids log scanning)
+        try {
+            const ds = await fetch('/api/docker-start');
+            if (ds.ok) { const dsData = await ds.json(); if (dsData.docker_start) _scriptDockerStart = dsData.docker_start; }
+        } catch (e) { /* non-fatal */ }
+
+        // Fetch registered task list from dedicated endpoint (avoids startup log scanning)
+        const registered = {};
+        try {
+            const tr = await fetch('/api/scheduler-tasks');
+            if (tr.ok) {
+                const td = await tr.json();
+                (td.tasks || []).forEach(t => { registered[t.name] = { sched: t.schedule, schedRaw: t.schedule }; });
+            }
+        } catch (e) { /* non-fatal */ }
+
+        const r = await fetch('/api/scheduler-logs?limit=5000');
         if (!r.ok) throw new Error('API returned ' + r.status);
         const d = await r.json();
         if (!d.entries || d.entries.length === 0) throw new Error('No log entries');
         const lines = d.entries.map(e => '[' + e.timestamp + '] ' + e.message);
-
-        // Find Docker start time (last occurrence of scheduler banner)
-        let dockerStart = null;
-        let startIdx = 0;
-        for (let i = lines.length - 1; i >= 0; i--) {
-            if (lines[i].includes('Automation Scheduler v')) {
-                const m = lines[i].match(/\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/);
-                if (m) { dockerStart = m[1]; startIdx = i; break; }
-            }
-        }
-        _scriptDockerStart = dockerStart;
-
-        // Parse scheduled tasks from startup log lines
-        // Only parse between "Scheduling tasks:" and "Scheduler ready." to avoid config lines
-        const registered = {};
-        const schedLineRe = /^\[.*\]\s+[•\-]\s+(.+?):\s+(.+)/;
-        let inScheduleBlock = false;
-        for (let i = startIdx; i < lines.length; i++) {
-            if (lines[i].includes('Scheduling tasks:')) { inScheduleBlock = true; continue; }
-            if (lines[i].includes('Scheduler ready.')) break;
-            if (!inScheduleBlock) continue;
-            // Skip separator lines
-            if (lines[i].match(/[-=]{10,}/)) continue;
-            const sm = lines[i].match(schedLineRe);
-            if (sm) {
-                const taskName = sm[1].trim();
-                const schedDesc = sm[2].trim();
-                const nameMap = {
-                    'Smart Decision': 'Smart Decision',
-                    'Pre-peak check': 'Smart Decision [pre-peak]',
-                    'Post-peak check': 'Smart Decision [post-peak]',
-                    'Pre-peak2 check': 'Smart Decision [pre-peak]',
-                    'Post-peak2 check': 'Smart Decision [post-peak]',
-                    'Dashboard Data': 'Dashboard Data',
-                    'PVOutput Collection': 'PVOutput Collection',
-                    'Solar Array Collection': null,
-                    'Enphase Solar Collection': null,
-                    'System Snapshot (Modbus + Enphase)': null,
-                    'Daily Status Report': 'Daily Status Report',
-                    'Daily Savings': 'Daily Savings',
-                    'Weekly Charts': 'Weekly Charts',
-                    'SolarEdge Panel Monitoring': 'SolarEdge Panel Monitoring',
-                    'Solar Health Monitor': 'Solar Health Monitor',
-                    'SQLite Modbus Collector': 'SQLite Modbus Collection',
-                    'SQLite Enphase Collector': 'SQLite Enphase Collection',
-                    'SQLite Weather Collector': 'SQLite Weather Collection',
-                    'Franklin Cloud Collector': 'Franklin Cloud Collection',
-                    'Device Inventory': 'Device Inventory Collection',
-                    'PVOutput Daily (SQLite)': 'PVOutput Daily Collection',
-                    'Daily Energy Rollup': 'Daily Energy Rollup',
-                    'Log Pruning': 'Log Pruning',
-                    'Telemetry': 'Telemetry',
-                };
-                const mappedName = nameMap.hasOwnProperty(taskName) ? nameMap[taskName] : taskName;
-                if (mappedName) registered[mappedName] = { sched: schedDesc, schedRaw: schedDesc };
-            }
-        }
+        const startIdx = 0;
 
         // Track per-script stats from run logs
         const scripts = {};
