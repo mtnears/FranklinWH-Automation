@@ -768,6 +768,25 @@ class AdaptiveEngine:
         if state.hours_to_peak is not None and state.hours_to_peak < HEADROOM_MIN_HOURS_TO_PEAK:
             return None
 
+        # Last-responsible-moment drain timing — mirror EB deferral philosophy.
+        # Don't drain at midnight when solar won't start for 8+ hours.
+        # Calculate how long it will actually take to drain to target, then only
+        # trigger when hours_to_peak <= hours_needed_to_drain + small buffer.
+        # This lets the forecast evolve overnight — if conditions deteriorate by
+        # morning, the drain never fires and the battery keeps its charge.
+        if state.hours_to_peak is not None:
+            drain_pct = max(0, state.soc_percent - target_soc)
+            drain_kwh = drain_pct / 100.0 * battery_kwh
+            # Net discharge rate = home load kW (SC uses battery to power home)
+            # Use profile average if live reading is zero/missing
+            net_discharge_kw = state.home_load_kw if state.home_load_kw > 0.5 else avg_load_kw
+            net_discharge_kw = max(net_discharge_kw, 0.5)  # floor: never divide by zero
+            hours_needed_to_drain = drain_kwh / net_discharge_kw
+            # Add one engine cycle (30 min) as safety buffer
+            drain_trigger_hours = hours_needed_to_drain + 0.5
+            if state.hours_to_peak > drain_trigger_hours:
+                return None  # Too early — wait, let forecast evolve
+
         metrics = {
             'headroom_target_soc': round(target_soc, 1),
             'current_soc': round(state.soc_percent, 1),
@@ -1388,13 +1407,18 @@ class AdaptiveEngine:
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
                     and buffer_hours > safety_margin_hours
                     and solar_contribution_pct >= 15):
+                # Stay in current mode — if already TOU, keep letting solar charge
+                # the battery at full rate. Only switch to SC if already there.
+                # Either way this is "hold" — don't start EB, let solar fill.
+                hold_mode = state.current_mode if state.current_mode in ('time_of_use', 'self_consumption') else 'time_of_use'
+                hold_action = 'hold' if state.current_mode == hold_mode else 'switch_to_tou'
                 return self._decide(
-                    state, "self_consumption",
+                    state, hold_mode,
                     f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
                     f"but solar producing ({state.solar_kw:.1f} kW, "
                     f"{solar_contribution_pct:.0f}% of gap) with "
                     f"{buffer_hours:.1f}h buffer — deferring to let solar fill",
-                    confidence=0.75, priority=7, action="hold",
+                    confidence=0.75, priority=7, action=hold_action,
                     metrics=metrics,
                 )
 
