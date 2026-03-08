@@ -15,11 +15,11 @@ Decision Priority Stack:
   2. Emergency preparedness → enforce floor SOC
   3. Dynamic pricing override → charge on negative/credit pricing
   4. Peak rate protection → never buy at peak
-  5. Solar curtailment prevention → log wasted solar
+  5. Solar curtailment prevention → SC when SOC at ceiling with solar producing
   6. Dynamic pricing cheap power → charge below threshold
   7. Forecast-aware charging gap → charge only what solar won't provide
-  8. Solar headroom + post-peak/weekend solar discharge + default TOU
-  9. Default → self-consumption
+  8. Overnight drain → burn unused solar + make headroom for tomorrow, last-responsible-moment
+  9. Default → TOU
 
 Part of the v4.0 Adaptive Decision Engine.
 """
@@ -78,19 +78,12 @@ MODE_SWITCH_COOLDOWN_S = 300
 # EB until hours_to_peak <= 3.0h (i.e., ~2pm for 5pm peak).
 EB_DEFERRAL_MIN_BUFFER_HOURS = 2.0
 
-# Solar headroom management — drain battery to absorb forecast solar
-HEADROOM_MIN_HOURS_TO_PEAK = 6.0       # Don't drain if peak is closer than this
-HEADROOM_MIN_SOC_FLOOR = 20.0          # Never drain below this (backup reserve)
-HEADROOM_DEFAULT_DRAIN_BUFFER_PCT = 3.0  # Minimum buffer below target for TOU drift
-HEADROOM_CURTAILMENT_THRESHOLD = 3.0   # kWh excess solar before activating drain
-
-# Post-peak / non-peak solar discharge — burn free solar energy instead of TOU
-# Applies to: weekday evenings after peak ends, AND weekends/non-peak days
-# Skip entirely for export systems (they sell surplus for credit)
-POST_PEAK_WINDOW_HOURS = 10.0          # Hours after peak end to consider (covers 8PM-6AM)
-POST_PEAK_MIN_SOLAR_EXCESS_KWH = 1.0  # Minimum solar excess worth discharging
-POST_PEAK_DISCHARGE_FLOOR_PCT = 40.0  # Never discharge below this SOC
-POST_PEAK_MIN_SOC_ABOVE_RESERVE = 10.0  # Must be this many % above reserve to bother
+# Overnight drain — burn unused solar + make headroom for tomorrow's solar.
+# Fires once after solar production ends for the day. Uses last-responsible-moment
+# timing so it never drains earlier than necessary.
+OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW = 0.3   # kW below which solar is considered done
+OVERNIGHT_DRAIN_CONFIRM_CYCLES = 2          # Consecutive low-solar cycles to confirm end-of-day
+OVERNIGHT_DRAIN_MIN_HOUR = 15              # Earliest hour to consider solar day complete (avoids AM cloud gaps)
 
 # Taper-aware ceiling — hard cap on grid charging target SOC.
 # Above this SOC, battery charge rate tapers significantly on Franklin systems,
@@ -406,12 +399,16 @@ class AdaptiveEngine:
         self.curtailed_value_cents = 0.0
         self.decisions_made = 0
 
-        # Solar discharge tracking (post-peak + weekend)
-        self.solar_discharge_kwh = 0.0          # kWh discharged via solar discharge feature
-        self.solar_discharge_value_cents = 0.0   # Value of avoided grid import
-        self.solar_discharge_activations = 0     # Number of cycles spent in SC for solar discharge
-        self._solar_discharge_target_soc: Optional[float] = None  # Current target if active
-        self._solar_discharge_start_soc: Optional[float] = None   # SOC when discharge started
+        # Overnight drain state — tracks consecutive low-solar cycles for end-of-day detection
+        self._low_solar_cycles: int = 0           # consecutive cycles with solar < threshold
+        self._overnight_drain_target: Optional[float] = None  # locked drain target SOC once set
+
+        # Retained for backward compatibility with dashboard/telemetry readers
+        self.solar_discharge_kwh: float = 0.0
+        self.solar_discharge_value_cents: float = 0.0
+        self.solar_discharge_activations: int = 0
+        self._solar_discharge_target_soc: Optional[float] = None
+        self._solar_discharge_start_soc: Optional[float] = None
 
         logger.info(f"AdaptiveEngine initialized: target_soc={target_soc}%, "
                     f"rate_schedule={rate_schedule.name}, "
@@ -628,592 +625,176 @@ class AdaptiveEngine:
         if decision:
             return decision
 
-        # --- Priority 8: Solar Headroom / Consumption-Aware Self-Consumption ---
-        if state.hours_to_peak is None or state.hours_to_peak > 12:
-            # On non-export systems, manage SOC to maximize solar absorption
-            if not self.solar_export:
-                headroom_decision = self._evaluate_solar_headroom(state)
-                if headroom_decision:
-                    return headroom_decision
+        # --- Priority 8: Overnight Drain ---
+        # After solar ends for the day: burn unused solar energy and make
+        # headroom for tomorrow's forecast. TOU is the default; SC only fires
+        # at last-responsible-moment. Non-export systems only.
+        if not self.solar_export:
+            drain_decision = self._evaluate_overnight_drain(state)
+            if drain_decision:
+                return drain_decision
 
-            # --- Default mode: TOU (not SC) when no peak is approaching ---
-            # Self-consumption drains the battery to the reserve floor overnight,
-            # then the engine has to panic-charge from grid the next morning.
-            # TOU lets grid power the home while battery holds its SOC.
-            #
-            # EXCEPTION: Solar discharge. On non-export systems, if the battery
-            # has free solar energy it should be self-consumed rather than wasted.
-            # Two scenarios:
-            #   A) Weekday post-peak: solar charged battery, peak used some,
-            #      net excess should be burned overnight.
-            #   B) Weekend/non-peak: solar charged battery with no peak to
-            #      protect against — self-consume it that evening.
-            # The method computes a TARGET SOC based on net solar excess.
-            # Once SOC reaches the target, it returns None and we fall
-            # through to TOU. This prevents draining past the solar excess.
-            #
-            # The headroom logic above handles a separate concern: making
-            # room for TOMORROW's solar forecast. Both can coexist.
-
-            # Post-peak solar discharge: burn free solar energy overnight
-            post_peak_decision = self._evaluate_post_peak_discharge(state)
-            if post_peak_decision:
-                return post_peak_decision
-
-            backup_reserve = self.config.get('backup_reserve_pct', 20.0)
-
-            # If already at or below backup reserve, definitely TOU —
-            # Franklin won't discharge further anyway, just let grid run
-            if state.soc_percent <= backup_reserve + 2.0:
-                return self._decide(
-                    state, "time_of_use",
-                    f"No peak approaching, SOC {state.soc_percent:.0f}% near reserve "
-                    f"({backup_reserve:.0f}%) — TOU to let grid power home",
-                    confidence=0.85, priority=8,
-                    action="switch_to_tou",
-                )
-
-            # Default: TOU preserves battery, grid powers home
+        # --- Default: TOU ---
+        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
+        if state.soc_percent <= backup_reserve + 2.0:
             return self._decide(
                 state, "time_of_use",
-                "No peak approaching — TOU (preserve battery, grid powers home)",
-                confidence=0.8, priority=8,
+                f"No peak approaching, SOC {state.soc_percent:.0f}% near reserve "
+                f"({backup_reserve:.0f}%) — TOU to let grid power home",
+                confidence=0.85, priority=8,
                 action="switch_to_tou",
             )
 
-        # --- Priority 9: Default ---
         return self._decide(
-            state, "self_consumption",
-            "Default — self-consumption",
-            confidence=0.7, priority=9,
-            action="switch_to_self_consumption",
+            state, "time_of_use",
+            "No peak approaching — TOU (preserve battery, grid powers home)",
+            confidence=0.8, priority=8,
+            action="switch_to_tou",
         )
 
-    def _evaluate_solar_headroom(self, state: SystemState) -> Optional[Decision]:
-        """Manage SOC to maximize solar absorption when no peak is imminent.
+    def _evaluate_overnight_drain(self, state: SystemState) -> Optional[Decision]:
+        """Priority 8: Overnight drain — burn unused solar + headroom for tomorrow.
 
-        When the forecast predicts more solar production during peak sun hours
-        than the home will consume during those same hours, the excess tries to
-        charge the battery. If the battery doesn't have enough headroom, solar
-        gets curtailed (wasted on non-export systems).
+        Fires only after solar production ends for the day. Uses last-responsible-moment
+        timing so it never drains earlier than necessary. Returns None (TOU) until
+        the moment it must act.
 
-        Uses peak-hours surplus estimation rather than the morning plan's
-        cumulative net_to_bat, because the morning plan includes overnight
-        consumption that masks the daytime solar surplus signal.
-
-        Non-export systems only — export systems send surplus to grid for
-        credit, so curtailment isn't an issue.
-        """
-        plan = self._get_morning_plan(state.soc_percent, state.timestamp)
-        if plan is None:
-            return None
-
-        # Battery capacity
-        battery_kwh = self.config.get(
-            'battery_capacity_kwh',
-            getattr(getattr(self.profile, 'capacity', None),
-                    'total_capacity_kwh', 30.0)
-        )
-
-        # --- Estimate peak-hours solar surplus ---
-        # The morning plan gives us total remaining solar forecast.
-        # We need to estimate what surplus will try to charge the battery
-        # during peak production hours (roughly 9am-4pm, ~7 hours).
-        #
-        # Instead of plan.forecast_to_battery_kwh (which uses remaining
-        # day totals and goes to 0 when consumption > solar at night),
-        # we estimate: surplus = total_solar - consumption_during_solar_hours
-        #
-        # Consumption during solar hours uses the profile's hourly rate
-        # for a conservative estimate.
-        solar_hours = 7.0  # Approximate peak production window
-        if hasattr(self.profile, 'consumption') and hasattr(self.profile.consumption, 'avg_kwh_per_hour'):
-            avg_load_kw = self.profile.consumption.avg_kwh_per_hour
-        else:
-            avg_load_kw = plan.expected_consumption_kwh / 24.0 if plan.expected_consumption_kwh > 0 else 2.0
-        consumption_during_solar = avg_load_kw * solar_hours
-
-        forecast_solar_kwh = plan.forecast_remaining_kwh
-        peak_surplus_kwh = max(0, forecast_solar_kwh - consumption_during_solar)
-
-        if peak_surplus_kwh <= 0:
-            return None  # No surplus solar expected
-
-        # Current headroom vs. what's needed
-        headroom_kwh = (100.0 - state.soc_percent) / 100.0 * battery_kwh
-        excess_kwh = peak_surplus_kwh - headroom_kwh
-
-        if excess_kwh < HEADROOM_CURTAILMENT_THRESHOLD:
-            return None  # Enough headroom already
-
-        # --- Calculate drain target ---
-        # Leave room for all forecast peak-hours surplus
-        target_soc = 100.0 - (peak_surplus_kwh / battery_kwh * 100.0)
-
-        # Buffer for TOU drift (measured phantom grid charging)
-        # Estimate ~4 hours of TOU mode before solar production ramps
-        drift_hours = 4.0
-        drift_buffer_pct = self.tou_drift.drift_rate_pct_per_hour * drift_hours
-        drift_buffer_pct = max(drift_buffer_pct, HEADROOM_DEFAULT_DRAIN_BUFFER_PCT)
-        target_soc -= drift_buffer_pct
-
-        # Enforce minimum floor
-        min_floor = max(
-            HEADROOM_MIN_SOC_FLOOR,
-            self.config.get('backup_reserve_pct', 20.0),
-        )
-        target_soc = max(target_soc, min_floor)
-
-        # Safety: don't drain if peak is too close to recover
-        if state.hours_to_peak is not None and state.hours_to_peak < HEADROOM_MIN_HOURS_TO_PEAK:
-            return None
-
-        # Last-responsible-moment drain timing — mirror EB deferral philosophy.
-        # Don't drain at midnight when solar won't start for 8+ hours.
-        # Calculate how long it will actually take to drain to target, then only
-        # trigger when hours_to_peak <= hours_needed_to_drain + small buffer.
-        # This lets the forecast evolve overnight — if conditions deteriorate by
-        # morning, the drain never fires and the battery keeps its charge.
-        if state.hours_to_peak is not None:
-            drain_pct = max(0, state.soc_percent - target_soc)
-            drain_kwh = drain_pct / 100.0 * battery_kwh
-            # Net discharge rate = home load kW (SC uses battery to power home)
-            # Use profile average if live reading is zero/missing
-            net_discharge_kw = state.home_load_kw if state.home_load_kw > 0.5 else avg_load_kw
-            net_discharge_kw = max(net_discharge_kw, 0.5)  # floor: never divide by zero
-            hours_needed_to_drain = drain_kwh / net_discharge_kw
-            # Add one engine cycle (30 min) as safety buffer
-            drain_trigger_hours = hours_needed_to_drain + 0.5
-            if state.hours_to_peak > drain_trigger_hours:
-                return None  # Too early — wait, let forecast evolve
-
-        metrics = {
-            'headroom_target_soc': round(target_soc, 1),
-            'current_soc': round(state.soc_percent, 1),
-            'peak_surplus_kwh': round(peak_surplus_kwh, 1),
-            'forecast_solar_kwh': round(forecast_solar_kwh, 1),
-            'consumption_during_solar_kwh': round(consumption_during_solar, 1),
-            'headroom_kwh': round(headroom_kwh, 1),
-            'excess_kwh': round(excess_kwh, 1),
-            'drift_buffer_pct': round(drift_buffer_pct, 1),
-            'tou_drift_rate_pct_h': self.tou_drift.drift_rate_pct_per_hour,
-            'tou_drift_samples': self.tou_drift.sample_count,
-            'forecast_source': plan.forecast_source,
-            'solar_export': False,
-        }
-
-        if state.soc_percent > target_soc + drift_buffer_pct:
-            # SOC is above target+buffer — drain via self-consumption
-            return self._decide(
-                state, "self_consumption",
-                f"Solar headroom: draining {state.soc_percent:.0f}% → "
-                f"{target_soc:.0f}% target "
-                f"({peak_surplus_kwh:.0f} kWh peak surplus forecast, "
-                f"{excess_kwh:.0f} kWh would be curtailed, "
-                f"drift buffer {drift_buffer_pct:.0f}%)",
-                confidence=0.8, priority=8,
-                action="switch_to_self_consumption",
-                metrics=metrics,
-            )
-
-        elif state.soc_percent <= target_soc:
-            # At or below target — park in TOU to hold position
-            return self._decide(
-                state, "time_of_use",
-                f"Solar headroom: SOC {state.soc_percent:.0f}% at "
-                f"target {target_soc:.0f}% — parking in TOU, "
-                f"waiting for solar",
-                confidence=0.8, priority=8,
-                action="switch_to_tou",
-                metrics=metrics,
-            )
-
-        else:
-            # In the buffer zone (between target and target+buffer)
-            # Hold current mode — don't flap
-            return self._decide(
-                state, state.current_mode,
-                f"Solar headroom: SOC {state.soc_percent:.0f}% in buffer zone "
-                f"({target_soc:.0f}%-{target_soc + drift_buffer_pct:.0f}%) — holding",
-                confidence=0.75, priority=8,
-                action="hold",
-                metrics=metrics,
-            )
-
-    def _evaluate_post_peak_discharge(self, state: SystemState) -> Optional[Decision]:
-        """Evaluate whether to discharge free solar energy via Self-Consumption.
-
-        Covers two scenarios:
-          A) Weekday post-peak: peak just ended, battery has solar excess after
-             peak discharge. Burn only the net solar excess overnight.
-          B) Weekend / non-peak day: no peak at all today, but solar charged
-             the battery. That energy should be self-consumed rather than
-             sitting idle in TOU while the grid powers the home.
-
-        Export systems skip this entirely — they sell surplus for credit,
-        so there's no "wasted" solar in the battery.
-
-        IMPORTANT: The target SOC is anchored to the SOC at peak-end (from
-        system_readings DB), NOT recalculated from current SOC each cycle.
-        Without this anchor, every 30-min cycle recomputes
-        target = current_soc - excess_pct, creating a moving target that
-        chases SOC down to the floor instead of draining only the solar excess.
+        Logic:
+          1. Confirm solar day is complete (time + observed low production)
+          2. Compute drain target: leave enough for peak need + tomorrow's solar headroom
+          3. If already at or below target, return None (TOU)
+          4. Last-responsible-moment: only fire when hours_to_next_peak <= hours_needed
+          5. Return SC to drain to target
         """
         if self.solar_export:
             return None
 
-        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
-        discharge_floor = max(POST_PEAK_DISCHARGE_FLOOR_PCT, backup_reserve + 5.0)
+        # --- Step 1: Confirm solar day is complete ---
+        # Use monthly sunset table from solar_forecast for location-aware, seasonal timing.
+        # Require current hour to be past sunset AND solar has been below threshold
+        # for OVERNIGHT_DRAIN_CONFIRM_CYCLES consecutive cycles.
+        # The minimum hour guard (OVERNIGHT_DRAIN_MIN_HOUR) prevents false triggers
+        # from morning cloud gaps.
+        now_hour = state.timestamp.hour + state.timestamp.minute / 60.0
 
-        if state.soc_percent <= discharge_floor:
+        if now_hour < OVERNIGHT_DRAIN_MIN_HOUR:
+            self._low_solar_cycles = 0
             return None
 
-        if state.soc_percent < backup_reserve + POST_PEAK_MIN_SOC_ABOVE_RESERVE:
+        # Get sunset hour for this month (from solar_forecast SUN_SCHEDULE)
+        sunset_hour = 18.0  # safe default
+        try:
+            from solar_forecast import SUN_SCHEDULE
+            _, sunset_hour = SUN_SCHEDULE.get(state.timestamp.month, (7.0, 18.0))
+        except ImportError:
+            pass
+
+        # Track consecutive low-solar cycles
+        if state.solar_kw < OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW:
+            self._low_solar_cycles += 1
+        else:
+            self._low_solar_cycles = 0
+
+        solar_done = (
+            now_hour > sunset_hour + 0.5
+            and self._low_solar_cycles >= OVERNIGHT_DRAIN_CONFIRM_CYCLES
+        )
+
+        if not solar_done:
             return None
 
+        # --- Step 2: Compute drain target ---
         battery_kwh = self.config.get(
             'battery_capacity_kwh',
             getattr(getattr(self.profile, 'capacity', None),
-                    'total_capacity_kwh', 30.0)
+                    'total_capacity_kwh', 27.2)
         )
+        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
 
-        # Determine which scenario we're in and get solar excess
-        is_post_peak = False
-        hours_since = self.rates.hours_since_peak_end(state.timestamp)
-        if hours_since is not None and hours_since <= POST_PEAK_WINDOW_HOURS:
-            is_post_peak = True
+        # What we need in the battery at peak start
+        avg_load_kw = 2.0
+        if hasattr(self.profile, 'consumption') and hasattr(self.profile.consumption, 'avg_kwh_per_hour'):
+            avg_load_kw = max(self.profile.consumption.avg_kwh_per_hour, 0.5)
+        peak_duration = state.peak_duration_hours if state.peak_duration_hours > 0 else 3.0
+        peak_need_kwh = avg_load_kw * peak_duration
+        peak_need_pct = peak_need_kwh / battery_kwh * 100.0
 
-        # Non-peak day: today had no peak at all (weekend/holiday).
-        is_non_peak_day = (hours_since is None and
-                           (state.hours_to_peak is None or state.hours_to_peak > 12))
-        if not is_post_peak and not is_non_peak_day:
+        # Headroom for tomorrow's solar forecast
+        tomorrow_solar_kwh = 0.0
+        try:
+            plan = self._get_morning_plan(state.soc_percent, state.timestamp)
+            if plan is not None:
+                tomorrow_solar_kwh = plan.forecast_remaining_kwh
+        except Exception:
+            pass
+
+        usable_kwh = battery_kwh * (1.0 - backup_reserve / 100.0)
+        headroom_needed_kwh = max(0.0, tomorrow_solar_kwh - (usable_kwh - peak_need_kwh))
+        target_soc = 100.0 - (headroom_needed_kwh / battery_kwh * 100.0)
+
+        # Lock in target once set — prevents moving target across cycles
+        if self._overnight_drain_target is None:
+            self._overnight_drain_target = round(max(target_soc, backup_reserve + peak_need_pct), 1)
+            logger.info(
+                f"Overnight drain target set: {self._overnight_drain_target:.0f}% "
+                f"(peak_need={peak_need_kwh:.1f}kWh, "
+                f"tomorrow_solar={tomorrow_solar_kwh:.1f}kWh, "
+                f"headroom_needed={headroom_needed_kwh:.1f}kWh)"
+            )
+
+        target_soc = self._overnight_drain_target
+
+        # Reset target at start of each new solar day (before OVERNIGHT_DRAIN_MIN_HOUR)
+        # This happens naturally since solar_done=False early in the day resets nothing —
+        # target resets when engine restarts or when we detect a new day. New day detection:
+        # if solar is now producing again (daytime), clear the locked target.
+        if state.solar_kw > 1.0:
+            self._overnight_drain_target = None
+            self._low_solar_cycles = 0
             return None
 
-        # Get today's solar charging data
-        solar_data = self._get_today_solar_data(state.timestamp)
-        if solar_data is None:
+        # --- Step 3: Already at or below target? ---
+        if state.soc_percent <= target_soc + 1.0:
             return None
 
-        solar_charged_kwh = solar_data['solar_charged_kwh']
-        grid_charged_kwh = solar_data['grid_charged_kwh']
-        solar_ratio = solar_data['solar_ratio']
-        peak_discharge_kwh = solar_data.get('peak_discharge_kwh', 0)
+        # --- Step 4: Last-responsible-moment ---
+        # Resolve hours to next peak — works for weekdays and weekends
+        hours_to_next_peak = state.hours_to_peak
+        if hours_to_next_peak is None:
+            next_peak = self.rates.next_peak_start(state.timestamp)
+            if next_peak is not None:
+                delta = (next_peak - state.timestamp).total_seconds() / 3600.0
+                hours_to_next_peak = max(0.0, delta)
 
-        # Net solar excess: solar that went into the battery minus peak usage
-        if is_post_peak and not is_non_peak_day:
-            solar_excess_kwh = max(0, solar_charged_kwh - peak_discharge_kwh)
-            scenario = "post-peak"
-        else:
-            solar_excess_kwh = solar_charged_kwh
-            scenario = "non-peak day"
+        if hours_to_next_peak is not None:
+            drain_pct = max(0, state.soc_percent - target_soc)
+            drain_kwh = drain_pct / 100.0 * battery_kwh
+            hours_needed = drain_kwh / max(avg_load_kw, 0.5)
+            if hours_to_next_peak > hours_needed + 0.5:
+                return None  # Too early — wait, let forecast evolve
 
-        if solar_excess_kwh < POST_PEAK_MIN_SOLAR_EXCESS_KWH:
-            return None
-
-        # --- ANCHORED TARGET SOC ---
-        # Look up SOC at peak-end from system_readings so the target is
-        # fixed across engine cycles. Without this, target drifts downward
-        # every 30 minutes because it recalculates from current (falling) SOC.
-        anchor_soc = self._get_soc_at_peak_end(state.timestamp)
-        if anchor_soc is None:
-            # Fallback for non-peak days or missing data: use current SOC
-            # but only on the first cycle (when SOC is still near peak-end level)
-            if is_non_peak_day:
-                anchor_soc = state.soc_percent
-            else:
-                return None  # Can't compute target without anchor
-
-        excess_pct = solar_excess_kwh / battery_kwh * 100
-        target_soc = anchor_soc - excess_pct
-        target_soc = max(target_soc, discharge_floor)
-
-        # If we're already at or below the target, done — fall through to TOU
-        if state.soc_percent <= target_soc + 2.0:
-            return None
-
-        drain_kwh = (state.soc_percent - target_soc) / 100 * battery_kwh
-
-        # Track solar discharge session
-        self.solar_discharge_activations += 1
-        self._solar_discharge_target_soc = target_soc
-        if self._solar_discharge_start_soc is None:
-            self._solar_discharge_start_soc = state.soc_percent
-
-        # Estimate kWh discharged this cycle (interval-based)
-        interval_hours = self.config.get('decision_interval_minutes', 30) / 60.0
-        if state.home_load_kw > 0:
-            cycle_kwh = min(state.home_load_kw * interval_hours, drain_kwh)
-        else:
-            cycle_kwh = drain_kwh * (interval_hours / 8.0)  # rough estimate over 8h
-        _, current_rate = self.rates.current_tier(state.timestamp)
-        self.solar_discharge_kwh += cycle_kwh
-        self.solar_discharge_value_cents += cycle_kwh * current_rate
-
+        # --- Step 5: Drain ---
+        drain_kwh = (state.soc_percent - target_soc) / 100.0 * battery_kwh
         metrics = {
-            'scenario': scenario,
-            'solar_charged_kwh': round(solar_charged_kwh, 1),
-            'grid_charged_kwh': round(grid_charged_kwh, 1),
-            'solar_ratio': round(solar_ratio, 3),
-            'peak_discharge_kwh': round(peak_discharge_kwh, 1),
-            'solar_excess_kwh': round(solar_excess_kwh, 1),
-            'target_soc': round(target_soc, 1),
-            'anchor_soc': round(anchor_soc, 1),
+            'drain_target_soc': target_soc,
+            'current_soc': state.soc_percent,
             'drain_kwh': round(drain_kwh, 1),
-            'discharge_floor': round(discharge_floor, 1),
+            'peak_need_kwh': round(peak_need_kwh, 1),
+            'tomorrow_solar_kwh': round(tomorrow_solar_kwh, 1),
+            'headroom_needed_kwh': round(headroom_needed_kwh, 1),
+            'hours_to_next_peak': round(hours_to_next_peak, 1) if hours_to_next_peak is not None else None,
+            'sunset_hour': round(sunset_hour, 1),
         }
-
-        if is_post_peak:
-            metrics['hours_since_peak_end'] = round(hours_since, 1)
 
         return self._decide(
             state, "self_consumption",
-            f"Solar discharge ({scenario}): {solar_excess_kwh:.1f} kWh free solar "
-            f"(ratio {solar_ratio:.0%}) — draining {state.soc_percent:.0f}% → "
-            f"{target_soc:.0f}% (anchor {anchor_soc:.0f}%, {drain_kwh:.1f} kWh)",
+            f"Overnight drain: {state.soc_percent:.0f}% → {target_soc:.0f}% "
+            f"({drain_kwh:.1f} kWh, peak_need={peak_need_kwh:.1f}kWh, "
+            f"tomorrow={tomorrow_solar_kwh:.1f}kWh forecast)",
             confidence=0.85, priority=8,
             action="switch_to_self_consumption",
             metrics=metrics,
         )
-
-    def _get_soc_at_peak_end(self, timestamp: datetime) -> Optional[float]:
-        """Look up SOC at the most recent peak-end from system_readings.
-
-        Finds the system_readings row closest to when peak ended today.
-        This provides a stable anchor for post-peak discharge target
-        calculation that doesn't drift as SOC decreases each cycle.
-
-        Returns SOC percentage at peak end, or None if unavailable.
-        """
-        if not HAS_DB:
-            return None
-
-        try:
-            # Find when peak ended
-            hours_since = self.rates.hours_since_peak_end(timestamp)
-            if hours_since is None:
-                return None
-
-            peak_end_approx = timestamp - timedelta(hours=hours_since)
-            # Search for the closest reading within +/- 15 minutes of peak end
-            window_start = (peak_end_approx - timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
-            window_end = (peak_end_approx + timedelta(minutes=15)).strftime('%Y-%m-%d %H:%M:%S')
-
-            rows = db_mod.query(
-                "SELECT soc_pct, timestamp FROM system_readings "
-                "WHERE timestamp BETWEEN ? AND ? "
-                "AND soc_pct IS NOT NULL "
-                "ORDER BY timestamp",
-                (window_start, window_end),
-            )
-
-            if rows:
-                # Use the FIRST reading at or after peak end for a stable anchor.
-                # The window is peak_end ± 15 min. As hours_since_peak_end grows,
-                # float drift can shift the window edges, so pinning to the first
-                # reading (closest to actual peak end) prevents anchor drift.
-                best = None
-                peak_end_str = peak_end_approx.strftime('%Y-%m-%d %H:%M:%S')
-                for r in rows:
-                    if r['timestamp'] >= peak_end_str:
-                        best = r
-                        break
-                if best is None:
-                    best = rows[-1]  # all readings before peak end; use latest
-                soc = best.get('soc_pct')
-                if soc is not None:
-                    logger.debug(f"Peak-end SOC anchor: {soc}% at {best['timestamp']}")
-                    return float(soc)
-
-            # Wider fallback: first reading after peak end
-            rows = db_mod.query(
-                "SELECT soc_pct, timestamp FROM system_readings "
-                "WHERE timestamp >= ? AND soc_pct IS NOT NULL "
-                "ORDER BY timestamp LIMIT 1",
-                (peak_end_approx.strftime('%Y-%m-%d %H:%M:%S'),),
-            )
-            if rows:
-                soc = rows[0].get('soc_pct')
-                if soc is not None:
-                    return float(soc)
-
-        except Exception as e:
-            logger.debug(f"Peak-end SOC lookup: {e}")
-
-        return None
-
-    def _compute_peak_discharge_kwh(self, date_str: str) -> float:
-        """Compute peak discharge from system_readings SOC delta during peak window.
-
-        When daily_savings hasn't run yet (it runs at 00:05 AM), the fallback
-        paths in _get_today_solar_data() have no peak_discharge_kwh. This method
-        computes it in real-time from SOC at peak start vs peak end.
-
-        Returns estimated kWh discharged during peak, or 0 if data unavailable.
-        """
-        if not HAS_DB:
-            return 0.0
-
-        try:
-            battery_kwh = self.config.get(
-                'battery_capacity_kwh',
-                getattr(getattr(self.profile, 'capacity', None),
-                        'total_capacity_kwh', 30.0)
-            )
-
-            peak_start = f"{date_str} 17:00:00"
-            peak_end = f"{date_str} 20:00:00"
-
-            start_rows = db_mod.query(
-                "SELECT soc_pct FROM system_readings "
-                "WHERE timestamp >= ? AND timestamp <= ? "
-                "AND soc_pct IS NOT NULL "
-                "ORDER BY timestamp LIMIT 1",
-                (peak_start, f"{date_str} 17:15:00"),
-            )
-
-            end_rows = db_mod.query(
-                "SELECT soc_pct FROM system_readings "
-                "WHERE timestamp >= ? AND timestamp <= ? "
-                "AND soc_pct IS NOT NULL "
-                "ORDER BY timestamp DESC LIMIT 1",
-                (f"{date_str} 19:45:00", f"{date_str} 20:15:00"),
-            )
-
-            if start_rows and end_rows:
-                soc_start = start_rows[0].get('soc_pct', 0) or 0
-                soc_end = end_rows[0].get('soc_pct', 0) or 0
-                discharge_pct = max(0, soc_start - soc_end)
-                discharge_kwh = discharge_pct / 100.0 * battery_kwh
-                logger.debug(
-                    f"Peak discharge from SOC delta: {soc_start:.0f}% → "
-                    f"{soc_end:.0f}% = {discharge_kwh:.1f} kWh"
-                )
-                return round(discharge_kwh, 2)
-
-        except Exception as e:
-            logger.debug(f"Peak discharge SOC delta calc failed: {e}")
-
-        return 0.0
-
-    def _get_today_solar_data(self, timestamp: datetime) -> Optional[dict]:
-        """Get today's solar charging breakdown from the database.
-
-        Preferred source: daily_savings table (computed by calculate_daily_savings.py
-        with proper kWh math from cumulative counters).
-
-        Fallback: system_readings solar_to_battery_kw / grid_to_battery_kw,
-        but these are instantaneous kW readings and need interval-weighted
-        conversion to kWh.
-
-        Returns dict with: solar_charged_kwh, grid_charged_kwh, solar_ratio,
-        peak_discharge_kwh. Returns None if insufficient data.
-        """
-        if not HAS_DB:
-            return None
-
-        try:
-            date_str = timestamp.strftime('%Y-%m-%d')
-
-            # Preferred: daily_savings (accurate kWh from cumulative counters)
-            savings = db_mod.query(
-                "SELECT solar_ratio, solar_charged_kwh, grid_charged_kwh, "
-                "peak_discharge_kwh FROM daily_savings WHERE date = ?",
-                (date_str,)
-            )
-            if savings and savings[0].get('solar_charged_kwh') is not None:
-                s = savings[0]
-                return {
-                    'solar_charged_kwh': s['solar_charged_kwh'] or 0,
-                    'grid_charged_kwh': s['grid_charged_kwh'] or 0,
-                    'solar_ratio': s['solar_ratio'] or 0,
-                    'peak_discharge_kwh': s.get('peak_discharge_kwh') or 0,
-                    'source': 'daily_savings',
-                }
-
-            # Second choice: cumulative energy counters from system_readings.
-            # kwh_solar and kwh_battery_charge are running totals from the
-            # Franklin API — the diff between first and last reading of the
-            # day gives actual kWh. This works even before midnight rollup.
-            cumul = db_mod.query(
-                "SELECT kwh_solar, kwh_battery_charge "
-                "FROM system_readings "
-                "WHERE timestamp LIKE ? "
-                "AND kwh_battery_charge IS NOT NULL "
-                "ORDER BY timestamp",
-                (f"{date_str}%",)
-            )
-            if cumul and len(cumul) >= 2:
-                first = cumul[0]
-                last = cumul[-1]
-                bat_charge_kwh = (last.get('kwh_battery_charge') or 0) - (first.get('kwh_battery_charge') or 0)
-                solar_kwh = (last.get('kwh_solar') or 0) - (first.get('kwh_solar') or 0)
-                if bat_charge_kwh > 0.5:
-                    est_ratio = min(1.0, solar_kwh / max(bat_charge_kwh, solar_kwh)) if solar_kwh > 0 else 0
-                    return {
-                        'solar_charged_kwh': round(bat_charge_kwh * est_ratio, 2),
-                        'grid_charged_kwh': round(bat_charge_kwh * (1 - est_ratio), 2),
-                        'solar_ratio': round(est_ratio, 3),
-                        'peak_discharge_kwh': self._compute_peak_discharge_kwh(date_str),
-                        'source': 'cumulative_counters',
-                    }
-
-            # Last resort: raw system_readings (kW readings, need interval conversion)
-            rows = db_mod.query(
-                "SELECT solar_to_battery_kw, grid_to_battery_kw, timestamp "
-                "FROM system_readings "
-                "WHERE timestamp LIKE ? "
-                "AND (solar_to_battery_kw IS NOT NULL "
-                "     OR grid_to_battery_kw IS NOT NULL) "
-                "ORDER BY timestamp",
-                (f"{date_str}%",)
-            )
-
-            if not rows or len(rows) < 4:
-                return None
-
-            # Convert kW readings to kWh using intervals between readings
-            total_solar_kwh = 0.0
-            total_grid_kwh = 0.0
-            for i in range(1, len(rows)):
-                s2b = max(0, rows[i].get('solar_to_battery_kw') or 0)
-                g2b = max(0, rows[i].get('grid_to_battery_kw') or 0)
-                try:
-                    t1 = datetime.strptime(rows[i-1]['timestamp'][:19], '%Y-%m-%d %H:%M:%S')
-                    t2 = datetime.strptime(rows[i]['timestamp'][:19], '%Y-%m-%d %H:%M:%S')
-                    interval_hours = (t2 - t1).total_seconds() / 3600.0
-                    if 0 < interval_hours < 1.0:
-                        total_solar_kwh += s2b * interval_hours
-                        total_grid_kwh += g2b * interval_hours
-                except (ValueError, KeyError):
-                    continue
-
-            # Sanity cap: solar_to_battery_kw from the cloud API can report
-            # instantaneous flow direction even when battery is full and not
-            # absorbing. Cap at battery capacity so we never claim more solar
-            # charged than the battery can physically hold.
-            battery_kwh = self.config.get(
-                'battery_capacity_kwh',
-                getattr(getattr(self.profile, 'capacity', None),
-                        'total_capacity_kwh', 30.0)
-            )
-            total_solar_kwh = min(total_solar_kwh, battery_kwh)
-            total_grid_kwh = min(total_grid_kwh, battery_kwh)
-
-            total = total_solar_kwh + total_grid_kwh
-            if total < 0.5:
-                return None
-
-            return {
-                'solar_charged_kwh': round(total_solar_kwh, 2),
-                'grid_charged_kwh': round(total_grid_kwh, 2),
-                'solar_ratio': total_solar_kwh / total if total > 0 else 0,
-                'peak_discharge_kwh': self._compute_peak_discharge_kwh(date_str),
-                'source': 'readings_kwh',
-            }
-
-        except Exception as e:
-            logger.debug(f"Solar data query failed: {e}")
-            return None
 
     def _evaluate_charging_gap(self, state: SystemState) -> Optional[Decision]:
         """Priority 7: Calculate if we need grid charging to reach target SOC by peak.
@@ -1725,12 +1306,9 @@ class AdaptiveEngine:
             'forecast_engine': self.forecast_engine is not None,
             'solar_export': self.solar_export,
             'tou_drift': self.tou_drift.to_dict(),
-            'solar_discharge': {
-                'session_kwh': round(self.solar_discharge_kwh, 3),
-                'session_value_cents': round(self.solar_discharge_value_cents, 1),
-                'activations': self.solar_discharge_activations,
-                'target_soc': self._solar_discharge_target_soc,
-                'start_soc': self._solar_discharge_start_soc,
+            'overnight_drain': {
+                'target_soc': self._overnight_drain_target,
+                'low_solar_cycles': self._low_solar_cycles,
             },
         }
         if self._morning_plan:

@@ -129,7 +129,7 @@ class RateSchedule:
 
         current_tier, current_rate = self.current_tier(dt)
         check = dt + timedelta(minutes=5)
-        limit = dt + timedelta(hours=48)
+        limit = dt + timedelta(hours=96)
 
         while check <= limit:
             new_tier, new_rate = self.current_tier(check)
@@ -155,13 +155,13 @@ class RateSchedule:
         if self.is_peak(dt):
             # Already in peak — find when current peak ends, then next peak starts
             check = dt
-            while self.is_peak(check) and check < dt + timedelta(hours=48):
+            while self.is_peak(check) and check < dt + timedelta(hours=96):
                 check += timedelta(minutes=5)
             dt = check
 
         # Scan forward in 5-minute increments for precise detection
         check = dt + timedelta(minutes=5)
-        limit = dt + timedelta(hours=48)
+        limit = dt + timedelta(hours=96)
         was_peak = self.is_peak(dt)
         while check <= limit:
             now_peak = self.is_peak(check)
@@ -191,7 +191,7 @@ class RateSchedule:
 
         # Find when peak ends using 5-min increments
         check = dt + timedelta(minutes=5)
-        limit = dt + timedelta(hours=48)
+        limit = dt + timedelta(hours=96)
         while check <= limit:
             if not self.is_peak(check):
                 return check

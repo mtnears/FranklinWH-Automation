@@ -6,7 +6,7 @@
     <title>FranklinWH Power Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <style>
         :root {
@@ -19,7 +19,7 @@
             --home-color: #f97316; --generator-color: #a78bfa;
             --header-h: 56px; --tab-bar-h: 48px; --card-radius: 14px; --card-padding: 18px; --gap: 12px;
             --font-body: 'DM Sans', -apple-system, sans-serif;
-            --font-mono: 'JetBrains Mono', monospace;
+            --font-mono: 'DM Sans', sans-serif;
         }
         *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
         html { font-size: 15px; -webkit-font-smoothing: antialiased; }
@@ -1097,9 +1097,11 @@
             </div>
         </div>
     </div>
+
 </div>
 
 <script>
+
 let D=null,S={},OV={active:false},ovMode=null,ovDur='1h',logTimer=null,dashTimer=null;
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -1121,7 +1123,6 @@ document.addEventListener('DOMContentLoaded',()=>{
         try{const t=localStorage.getItem('fwh_tab');if(t&&document.getElementById('tab-'+t)){switchTab(t)}}catch(e){}
     })();
 });
-
 function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();if(t==='analytics')initAnalytics();if(t==='scripts'){loadScriptStatus();startScriptAR()}else{stopScriptAR()}try{localStorage.setItem('fwh_tab',t)}catch(e){}}
 
 // ===== SOLAR ARRAY TAB (Multi-Array) =====
@@ -1803,7 +1804,7 @@ function renderLive(d){
     document.getElementById('batt-power').textContent=bp.toFixed(2)+' kW';
     document.getElementById('batt-charged').textContent=(t.charged||0).toFixed(2)+' kWh';
     document.getElementById('batt-discharged').textContent=(t.discharged||0).toFixed(2)+' kWh';
-    document.getElementById('solar-ratio').textContent=(t.solar_ratio||0)+'%';
+    document.getElementById('solar-ratio').textContent=Math.min(100,(t.solar_ratio||0))+'%';
 
     // Per-battery
     const ps=x.per_battery_soc||b.per_battery_soc;
@@ -2898,14 +2899,15 @@ function anRenderSummary(data) {
     document.getElementById('ans-solar').textContent = solarMeterKwh.toFixed(1) + ' kWh';
     document.getElementById('ans-battery').textContent = (battNetKwh > 0 ? '+' : '') + battNetKwh.toFixed(1) + ' kWh';
 
-    const homeSum = gridImportKwh + solarMeterKwh + battDischargeKwh;
+    const battLabel = (battNetKwh >= 0 ? '+' : '') + battNetKwh.toFixed(1);
+    const homeSum = gridImportKwh + solarMeterKwh + battNetKwh;
     const homeDiff = Math.abs(homeSum - homeLoadKwh);
     const homeCheck = homeDiff < 3 ? 'an-eq-ok' : 'an-eq-warn';
     const homeCheckIcon = homeDiff < 3 ? '✓' : '△ ' + homeDiff.toFixed(1);
     document.getElementById('anb-home').innerHTML =
         '<span class="an-eq-val">' + gridImportKwh.toFixed(1) + '</span> grid' +
         '<span class="an-eq-op"> + </span><span class="an-eq-val">' + solarMeterKwh.toFixed(1) + '</span> solar' +
-        '<span class="an-eq-op"> + </span><span class="an-eq-val">' + battDischargeKwh.toFixed(1) + '</span> batt' +
+        '<span class="an-eq-op"> + </span><span class="an-eq-val">' + battLabel + '</span> batt' +
         '<span class="an-eq-op"> = </span><span class="an-eq-val">' + homeSum.toFixed(1) + '</span>' +
         '<span class="an-eq-op"> vs </span><span class="an-eq-val">' + homeLoadKwh.toFixed(1) + '</span> load' +
         '<span class="an-eq-check ' + homeCheck + '"> ' + homeCheckIcon + '</span>';
@@ -2962,7 +2964,7 @@ const AN_PLOTLY_LAYOUT = {
     xaxis: { type: 'date', gridcolor: 'rgba(99,133,255,0.06)', tickformat: '%H:%M', dtick: 3600000 },
     yaxis: { gridcolor: 'rgba(99,133,255,0.06)', zeroline: false },
     hovermode: 'x unified',
-    hoverlabel: { bgcolor: '#1a2040', bordercolor: 'rgba(99,133,255,0.2)', font: { family: 'JetBrains Mono', size: 11 } },
+    hoverlabel: { bgcolor: '#1a2040', bordercolor: 'rgba(99,133,255,0.2)', font: { family: 'DM Sans', size: 12 } },
 };
 
 const AN_PLOTLY_CONFIG = {
