@@ -496,14 +496,19 @@
         .an-stat-val { font-family: var(--font-mono); font-size: 15px; font-weight: 500; color: var(--text-primary); }
         .an-stat-warn { color: var(--accent-amber); }
         .an-chart-card { margin-bottom: var(--gap); }
-        .an-decision-list { max-height: 300px; overflow-y: auto; }
-        .an-dec-row { display: flex; align-items: baseline; gap: 12px; padding: 6px 0; border-bottom: 1px solid rgba(99,133,255,.04); font-size: 12px; }
-        .an-dec-time { font-family: var(--font-mono); color: var(--text-muted); white-space: nowrap; min-width: 70px; }
-        .an-dec-msg { color: var(--text-secondary); }
-        .an-dec-mode { display: inline-block; font-family: var(--font-mono); font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
-        .an-dec-tou { background: rgba(79,143,255,.12); color: var(--accent-blue); }
-        .an-dec-sc { background: rgba(34,211,238,.12); color: var(--accent-cyan); }
-        .an-dec-eb { background: rgba(248,113,113,.12); color: var(--accent-red); }
+        .an-decision-list { overflow-y: auto; }
+        .an-dec-row { display: flex; align-items: baseline; gap: 12px; padding: 6px 8px; border-bottom: 1px solid rgba(99,133,255,.04); font-size: 14px; border-left: 3px solid transparent; }
+        .an-dec-row.an-dec-changed { border-left-color: var(--accent-blue); background: rgba(255,255,255,.025); }
+        .an-dec-row.an-dec-changed.an-dec-sc-row { border-left-color: var(--accent-cyan); }
+        .an-dec-row.an-dec-changed.an-dec-eb-row { border-left-color: var(--accent-red); }
+        .an-dec-row.an-dec-nochange { opacity: 0.5; }
+        .an-dec-time { color: var(--text-muted); white-space: nowrap; min-width: 70px; flex-shrink: 0; }
+        .an-dec-msg { color: var(--text-secondary); line-height: 1.4; flex: 1; }
+        .an-dec-row.an-dec-changed .an-dec-msg { color: var(--text-primary); }
+        .an-dec-mode { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+        .an-dec-tou { background: rgba(79,143,255,.15); color: var(--accent-blue); }
+        .an-dec-sc { background: rgba(34,211,238,.15); color: var(--accent-cyan); }
+        .an-dec-eb { background: rgba(248,113,113,.2); color: var(--accent-red); }
         .an-no-data { text-align: center; padding: 60px; color: var(--text-muted); font-size: 14px; }
         .an-balance-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--gap); margin-bottom: var(--gap); }
         .an-balance-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px 14px; }
@@ -809,6 +814,8 @@
                 <button class="an-range-btn" onclick="anSetRange('48h')" id="anr-48h">48h</button>
                 <button class="an-range-btn" onclick="anSetRange('5d')" id="anr-5d">5d</button>
                 <button class="an-range-btn" onclick="anSetRange('7d')" id="anr-7d">7d</button>
+                <button class="an-range-btn" onclick="anSetRange('30d')" id="anr-30d">30d</button>
+                <button class="an-range-btn" onclick="anSetRange('90d')" id="anr-90d">90d</button>
             </div>
             <button class="btn-sm" onclick="anLoadRange()">🔄 Refresh</button>
             <div class="an-compare-wrap" id="an-compare-wrap">
@@ -845,10 +852,12 @@
                 <div class="an-stat-val an-stat-warn" id="ans-curtail">—</div>
             </div>
         </div>
-        <div class="an-carousel-nav">
+        <div class="an-carousel-nav" style="justify-content:space-between">
             <button class="an-carousel-btn" onclick="anCarousel(-1)">◀</button>
-            <div class="an-carousel-dots" id="an-carousel-dots"></div>
-            <span class="an-carousel-label" id="an-carousel-label"></span>
+            <div style="display:flex;align-items:center;gap:8px;flex:1;justify-content:center">
+                <div class="an-carousel-dots" id="an-carousel-dots"></div>
+                <span class="an-carousel-label" id="an-carousel-label" style="min-width:160px;text-align:left"></span>
+            </div>
             <button class="an-carousel-btn" onclick="anCarousel(1)">▶</button>
             <div class="an-mode-legend">
                 <span class="an-mode-chip" style="background:rgba(79,143,255,0.25);color:#4f8fff;border:1px solid rgba(79,143,255,0.4)">TOU</span>
@@ -871,6 +880,10 @@
                 <div class="an-carousel-slide card an-chart-card" data-label="Solar Curtailment">
                     <div class="card-label">Solar Curtailment — Enphase Inverter vs Franklin Meter</div>
                     <div id="an-curtail-chart" style="width:100%;height:100%"></div>
+                </div>
+                <div class="an-carousel-slide card an-chart-card" data-label="Solar Utilization">
+                    <div class="card-label">Solar Utilization — Where the Power Went</div>
+                    <div id="an-solar-util-chart" style="width:100%;height:100%"></div>
                 </div>
                 <div class="an-carousel-slide card an-chart-card" data-label="Decision Log">
                     <div class="card-label">Decision Log</div>
@@ -2643,7 +2656,7 @@ function anGoSlide(i) {
     document.querySelectorAll('.an-carousel-dot').forEach((d, j) => d.classList.toggle('active', j === anSlideIdx));
     anUpdateSlideLabel();
     // Trigger Plotly relayout so chart fills the visible slide
-    const chartIds = ['an-power-chart','an-battery-chart','an-curtail-chart'];
+    const chartIds = ['an-power-chart','an-battery-chart','an-curtail-chart','an-solar-util-chart'];
     if (anSlideIdx < chartIds.length) {
         const el = document.getElementById(chartIds[anSlideIdx]);
         if (el && el.data) Plotly.Plots.resize(el);
@@ -2665,7 +2678,7 @@ function anToggleFS() {
     btn.textContent = vp.classList.contains('an-fullscreen') ? '✕' : '⛶';
     // Resize the current chart
     setTimeout(() => {
-        const chartIds = ['an-power-chart','an-battery-chart','an-curtail-chart'];
+        const chartIds = ['an-power-chart','an-battery-chart','an-curtail-chart','an-solar-util-chart'];
         chartIds.forEach(id => { const el = document.getElementById(id); if (el && el.data) Plotly.Plots.resize(el); });
     }, 400);
 }
@@ -2783,7 +2796,7 @@ function anSetRange(r) {
     document.querySelectorAll('.an-range-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('anr-' + r).classList.add('active');
     // Show/hide compare based on range
-    document.getElementById('an-compare-wrap').style.display = (r === '24h') ? 'flex' : 'none';
+    document.getElementById('an-compare-wrap').style.display = (r === '24h' || r === '48h') ? 'flex' : 'none';
     anLoadRange();
 }
 
@@ -2798,7 +2811,7 @@ function anNavDay(delta) {
 
 function anDateRange() {
     const base = document.getElementById('an-date-pick').value;
-    const rangeDays = { '24h': 0, '48h': 1, '5d': 4, '7d': 6 };
+    const rangeDays = { '24h': 0, '48h': 1, '5d': 4, '7d': 6, '30d': 29, '90d': 89 };
     const days = rangeDays[anRange] || 0;
     if (days === 0) return { start: base, end: base, single: true };
     const s = new Date(base + 'T12:00:00');
@@ -2849,7 +2862,7 @@ async function anLoadRange() {
         if (!anData.system_readings || anData.system_readings.length === 0) {
             document.getElementById('an-summary').style.display = 'none';
             document.getElementById('an-balance').style.display = 'none';
-            ['an-power-chart','an-battery-chart','an-curtail-chart'].forEach(id =>
+            ['an-power-chart','an-battery-chart','an-curtail-chart','an-solar-util-chart'].forEach(id =>
                 document.getElementById(id).innerHTML = '<div class="an-no-data">No system readings for this period</div>');
             document.getElementById('an-decision-list').innerHTML = '<div class="an-no-data">No data</div>';
             status.textContent = 'No data';
@@ -2857,10 +2870,14 @@ async function anLoadRange() {
         }
 
         anRenderSummary(anData);
-        anRenderPowerChart(anData, anCompareDataList);
-        anRenderBatteryChart(anData, anCompareDataList);
-        anRenderCurtailChart(anData, anCompareDataList);
-        anRenderDecisions(anDecData.decisions || []);
+        // Defer chart rendering to keep UI responsive on large datasets
+        setTimeout(function() {
+            anRenderPowerChart(anData, anCompareDataList);
+            anRenderBatteryChart(anData, anCompareDataList);
+            anRenderCurtailChart(anData, anCompareDataList);
+            anRenderSolarUtilChart(anData, anCompareDataList);
+            anRenderDecisions(anDecData.decisions || []);
+        }, 0);
 
         status.textContent = anData.system_readings.length + ' readings, ' +
             (anData.enphase_readings ? anData.enphase_readings.length : 0) + ' enphase';
@@ -2911,6 +2928,7 @@ function anRenderSummary(data) {
         '<span class="an-eq-op"> = </span><span class="an-eq-val">' + homeSum.toFixed(1) + '</span>' +
         '<span class="an-eq-op"> vs </span><span class="an-eq-val">' + homeLoadKwh.toFixed(1) + '</span> load' +
         '<span class="an-eq-check ' + homeCheck + '"> ' + homeCheckIcon + '</span>';
+
 
     let invTotalWh = 0, meterTotalWh = 0, curtTotalWh = 0;
     for (let i = 1; i < en.length; i++) {
@@ -3041,10 +3059,93 @@ function anXaxisFormat() {
     };
 }
 
+
+// ── MULTI-DAY AGGREGATION HELPERS ──────────────────────────────
+function anIsMultiDay() {
+    return ['5d','7d','30d','90d'].indexOf(anRange) !== -1;
+}
+
+function anAggregateDays(systemReadings) {
+    // Group readings by date, compute daily totals
+    const byDate = {};
+    for (let i = 1; i < systemReadings.length; i++) {
+        const r = systemReadings[i], rp = systemReadings[i-1];
+        const dt = (new Date(r.timestamp) - new Date(rp.timestamp)) / 3600000;
+        if (dt <= 0 || dt > 1) continue;
+        const date = r.timestamp.slice(0, 10);
+        if (!byDate[date]) byDate[date] = {
+            date, solarKwh: 0, gridKwh: 0, homeKwh: 0,
+            battChargeKwh: 0, battDischargeKwh: 0,
+            socMin: 100, socMax: 0,
+            touHrs: 0, scHrs: 0, ebHrs: 0
+        };
+        const d = byDate[date];
+        const avg = (a, b) => ((a || 0) + (b || 0)) / 2;
+        d.solarKwh      += Math.max(0, avg(rp.solar_kw, r.solar_kw)) * dt;
+        d.gridKwh       += Math.max(0, avg(rp.grid_kw, r.grid_kw)) * dt;
+        d.homeKwh       += Math.max(0, avg(rp.home_load_kw, r.home_load_kw)) * dt;
+        d.battChargeKwh += Math.max(0, -avg(rp.battery_kw, r.battery_kw)) * dt;
+        d.battDischargeKwh += Math.max(0, avg(rp.battery_kw, r.battery_kw)) * dt;
+        if (r.soc_pct) { d.socMin = Math.min(d.socMin, r.soc_pct); d.socMax = Math.max(d.socMax, r.soc_pct); }
+        const mode = (r.mode || '').toLowerCase();
+        if (mode.includes('self')) d.scHrs += dt;
+        else if (mode.includes('backup') || mode.includes('tou-b')) d.ebHrs += dt;
+        else d.touHrs += dt;
+    }
+    return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1);
+}
+
+function anAggregateEnphase(enphaseReadings) {
+    const byDate = {};
+    for (let i = 1; i < enphaseReadings.length; i++) {
+        const r = enphaseReadings[i], rp = enphaseReadings[i-1];
+        const dt = (new Date(r.timestamp) - new Date(rp.timestamp)) / 3600000;
+        if (dt <= 0 || dt > 1) continue;
+        const date = r.timestamp.slice(0, 10);
+        if (!byDate[date]) byDate[date] = { date, invKwh: 0, meterKwh: 0, curtKwh: 0 };
+        const d = byDate[date];
+        const avg = (a, b) => ((a || 0) + (b || 0)) / 2;
+        d.invKwh   += Math.max(0, avg(rp.inverter_sum_w, r.inverter_sum_w)) / 1000 * dt;
+        d.meterKwh += Math.max(0, avg(rp.meter_w, r.meter_w)) / 1000 * dt;
+        d.curtKwh  += Math.max(0, avg(rp.curtailed_w, r.curtailed_w)) / 1000 * dt;
+    }
+    return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1);
+}
+
+function anShortDate(d) {
+    // '2026-03-07' -> 'Mar 7'
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const parts = d.split('-');
+    return months[parseInt(parts[1]) - 1] + ' ' + parseInt(parts[2]);
+}
+// ── END MULTI-DAY HELPERS ──────────────────────────────────────
+
 function anRenderPowerChart(data, compareList) {
     const sr = data.system_readings;
-    const ts = sr.map(r => r.timestamp);
 
+    if (anIsMultiDay()) {
+        const days = anAggregateDays(sr);
+        const labels = days.map(d => anShortDate(d.date));
+        const layout = {
+            ...AN_PLOTLY_LAYOUT,
+            barmode: 'stack',
+            xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, type: 'category', tickfont: { size: 11 }, tickmode: 'array', tickvals: labels, ticktext: labels },
+            yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kWh', font: { size: 11 } } },
+            legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
+        };
+        const traces = [
+            { name: 'Solar', x: labels, y: days.map(d => +d.solarKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(251,191,36,0.85)' }, hovertemplate: '%{y:.1f} kWh<extra>Solar</extra>' },
+            { name: 'Grid Import', x: labels, y: days.map(d => +d.gridKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(79,143,255,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Grid</extra>' },
+            { name: 'Battery Discharge', x: labels, y: days.map(d => +d.battDischargeKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(167,139,250,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Batt Discharge</extra>' },
+        ];
+        Plotly.newPlot('an-power-chart', traces, layout, AN_PLOTLY_CONFIG);
+        return;
+    }
+
+    const ts = sr.map(r => r.timestamp);
     const modeLabels = sr.map(r => {
         const m = { time_of_use: 'TOU', emergency_backup: 'EB', self_consumption: 'SC', 'TOU-B': 'EB' };
         return m[r.mode] || r.mode || '—';
@@ -3117,8 +3218,42 @@ function anRenderPowerChart(data, compareList) {
 
 function anRenderBatteryChart(data, compareList) {
     const sr = data.system_readings;
-    const ts = sr.map(r => r.timestamp);
 
+    if (anIsMultiDay()) {
+        const days = anAggregateDays(sr);
+        const labels = days.map(d => anShortDate(d.date));
+        const layout = {
+            ...AN_PLOTLY_LAYOUT,
+            barmode: 'group',
+            xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, type: 'category', tickfont: { size: 11 }, tickmode: 'array', tickvals: labels, ticktext: labels },
+            yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kWh / hrs', font: { size: 11 } } },
+            yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
+                range: [0, 105], tickformat: '.0f', showgrid: false },
+            legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
+        };
+        const traces = [
+            { name: 'Batt Charge', x: labels, y: days.map(d => +d.battChargeKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(167,139,250,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Charged</extra>' },
+            { name: 'Batt Discharge', x: labels, y: days.map(d => +d.battDischargeKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(167,139,250,0.4)' }, hovertemplate: '%{y:.1f} kWh<extra>Discharged</extra>' },
+            { name: 'SOC Min', x: labels, y: days.map(d => d.socMin === 100 ? null : d.socMin), type: 'scatter',
+              mode: 'markers', yaxis: 'y2', marker: { color: '#34d399', size: 6, symbol: 'triangle-down' },
+              hovertemplate: '%{y:.0f}%<extra>SOC Min</extra>' },
+            { name: 'SOC Max', x: labels, y: days.map(d => d.socMax === 0 ? null : d.socMax), type: 'scatter',
+              mode: 'markers', yaxis: 'y2', marker: { color: '#34d399', size: 6, symbol: 'triangle-up' },
+              hovertemplate: '%{y:.0f}%<extra>SOC Max</extra>' },
+            { name: 'TOU hrs', x: labels, y: days.map(d => +d.touHrs.toFixed(1)), type: 'bar',
+              marker: { color: 'rgba(79,143,255,0.5)' }, hovertemplate: '%{y:.1f}h<extra>TOU</extra>', visible: 'legendonly' },
+            { name: 'SC hrs', x: labels, y: days.map(d => +d.scHrs.toFixed(1)), type: 'bar',
+              marker: { color: 'rgba(34,211,238,0.5)' }, hovertemplate: '%{y:.1f}h<extra>SC</extra>', visible: 'legendonly' },
+            { name: 'EB hrs', x: labels, y: days.map(d => +d.ebHrs.toFixed(1)), type: 'bar',
+              marker: { color: 'rgba(248,113,113,0.5)' }, hovertemplate: '%{y:.1f}h<extra>EB</extra>', visible: 'legendonly' },
+        ];
+        Plotly.newPlot('an-battery-chart', traces, layout, AN_PLOTLY_CONFIG);
+        return;
+    }
+
+    const ts = sr.map(r => r.timestamp);
     // Build mode text for hover
     const modeLabels = sr.map(r => {
         const m = { time_of_use: 'TOU', emergency_backup: 'EB', self_consumption: 'SC', 'TOU-B': 'EB' };
@@ -3174,6 +3309,26 @@ function anRenderCurtailChart(data, compareList) {
     const en = data.enphase_readings || [];
     if (en.length === 0) {
         document.getElementById('an-curtail-chart').innerHTML = '<div class="an-no-data">No Enphase data for this period</div>';
+        return;
+    }
+
+    if (anIsMultiDay()) {
+        const days = anAggregateEnphase(en);
+        const labels = days.map(d => anShortDate(d.date));
+        const layout = {
+            ...AN_PLOTLY_LAYOUT,
+            barmode: 'stack',
+            xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, type: 'category', tickfont: { size: 11 }, tickmode: 'array', tickvals: labels, ticktext: labels },
+            yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kWh', font: { size: 11 } } },
+            legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
+        };
+        const traces = [
+            { name: 'To Franklin (Meter)', x: labels, y: days.map(d => +d.meterKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(52,211,153,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Meter</extra>' },
+            { name: 'Curtailed', x: labels, y: days.map(d => +d.curtKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(248,113,113,0.7)' }, hovertemplate: '%{y:.1f} kWh<extra>Curtailed</extra>' },
+        ];
+        Plotly.newPlot('an-curtail-chart', traces, layout, AN_PLOTLY_CONFIG);
         return;
     }
 
@@ -3239,6 +3394,88 @@ function anRenderCurtailChart(data, compareList) {
     Plotly.newPlot('an-curtail-chart', traces, layout, AN_PLOTLY_CONFIG);
 }
 
+
+function anRenderSolarUtilChart(data, compareList) {
+    const el = document.getElementById('an-solar-util-chart');
+    if (!el) return;
+
+    // Helper: integrate kW readings over time to get kWh for a period
+    function integrateKwh(readings, fn) {
+        let total = 0;
+        for (let i = 1; i < readings.length; i++) {
+            const dt = (new Date(readings[i].timestamp) - new Date(readings[i-1].timestamp)) / 3600000;
+            if (dt > 0 && dt < 1) total += ((fn(readings[i-1]) + fn(readings[i])) / 2) * dt;
+        }
+        return Math.max(0, total);
+    }
+
+    // Build datasets: per-day on multi-day, or single aggregate on single day / compare
+    const datasets = [];
+
+    if (anIsMultiDay()) {
+        // One bar per day from the primary data
+        const sr = data.system_readings || [];
+        const days = anAggregateDays(sr);
+        days.forEach(function(d) {
+            const solarToHome = Math.min(d.solarKwh, d.homeKwh);
+            const solarToBatt = Math.max(0, d.solarKwh - solarToHome);
+            const gridToHome = Math.max(0, d.homeKwh - solarToHome);
+            const gridToBatt = Math.max(0, d.battChargeKwh - solarToBatt);
+            datasets.push({ label: anShortDate(d.date), solarToHome, solarToBatt, gridToHome, gridToBatt, battDischargeKwh: d.battDischargeKwh });
+        });
+    } else {
+        const allData = [{ d: data, label: 'Selected' }];
+        (compareList || []).forEach((cd, i) => allData.push({ d: cd, label: cd._compareDate || ('Compare ' + (i+1)) }));
+        allData.forEach(function(item) {
+            const sr = item.d.system_readings || [];
+            if (!sr.length) return;
+            const dateLabel = sr[0].timestamp.slice(0, 10);
+            const solarKwh = integrateKwh(sr, r => Math.max(0, r.solar_kw || 0));
+            const homeKwh = integrateKwh(sr, r => Math.max(0, r.home_load_kw || 0));
+            const battChargeKwh = integrateKwh(sr, r => Math.max(0, -(r.battery_kw || 0)));
+            const battDischargeKwh = integrateKwh(sr, r => Math.max(0, r.battery_kw || 0));
+            const solarToHome = Math.min(solarKwh, homeKwh);
+            const solarToBatt = Math.max(0, solarKwh - solarToHome);
+            const gridToHome = Math.max(0, homeKwh - solarToHome);
+            const gridToBatt = Math.max(0, battChargeKwh - solarToBatt);
+            datasets.push({ label: dateLabel, solarToHome, solarToBatt, gridToHome, gridToBatt, battDischargeKwh });
+        });
+    }
+
+    if (!datasets.length) {
+        el.innerHTML = '<div class="an-no-data">No data for this period</div>';
+        return;
+    }
+
+    const labels = datasets.map(d => d.label);
+    const cfg = window.AN_PLOTLY_CONFIG || { displayModeBar: false, responsive: true };
+    const layout = {
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#94a3b8', family: 'DM Sans, sans-serif', size: 12 },
+        margin: { t: 20, r: 20, b: 60, l: 60 },
+        barmode: 'stack',
+        xaxis: { type: 'category', tickfont: { size: 12 }, gridcolor: 'rgba(255,255,255,0.04)', tickmode: 'array', tickvals: labels, ticktext: labels },
+        yaxis: { title: 'kWh', gridcolor: 'rgba(255,255,255,0.06)', tickfont: { size: 11 } },
+        legend: { orientation: 'h', y: -0.2, font: { size: 11 } },
+        hoverlabel: { bgcolor: '#1a2040', bordercolor: 'rgba(99,133,255,0.2)', font: { family: 'DM Sans', size: 12 } },
+    };
+
+    const traces = [
+        { name: 'Solar → Home', x: labels, y: datasets.map(d => +d.solarToHome.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(251,191,36,0.85)' }, hovertemplate: '%{y} kWh<extra>Solar → Home</extra>' },
+        { name: 'Solar → Battery', x: labels, y: datasets.map(d => +d.solarToBatt.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(251,191,36,0.4)' }, hovertemplate: '%{y} kWh<extra>Solar → Battery</extra>' },
+        { name: 'Grid → Home', x: labels, y: datasets.map(d => +d.gridToHome.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(96,165,250,0.7)' }, hovertemplate: '%{y} kWh<extra>Grid → Home</extra>' },
+        { name: 'Grid → Battery', x: labels, y: datasets.map(d => +d.gridToBatt.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(96,165,250,0.35)' }, hovertemplate: '%{y} kWh<extra>Grid → Battery</extra>' },
+        { name: 'Battery → Home', x: labels, y: datasets.map(d => +d.battDischargeKwh.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(52,211,153,0.7)' }, hovertemplate: '%{y} kWh<extra>Battery → Home</extra>' },
+    ];
+
+    Plotly.newPlot('an-solar-util-chart', traces, layout, cfg);
+}
+
 function anRenderDecisions(decisions) {
     const el = document.getElementById('an-decision-list');
     if (!decisions.length) {
@@ -3253,22 +3490,23 @@ function anRenderDecisions(decisions) {
         if (m) {
             const priority = m[1];
             const detail = m[2];
-            let modeClass = 'an-dec-tou', modeLabel = 'TOU';
-            if (/Self.Consumption|self_consumption/i.test(detail)) { modeClass = 'an-dec-sc'; modeLabel = 'SC'; }
-            else if (/BACKUP|Emergency|emergency_backup|TOU-B/i.test(detail)) { modeClass = 'an-dec-eb'; modeLabel = 'EB'; }
+            let modeClass = 'an-dec-tou', modeLabel = 'TOU', rowClass = 'an-dec-tou-row';
+            if (/Self.Consumption|self_consumption/i.test(detail)) { modeClass = 'an-dec-sc'; modeLabel = 'SC'; rowClass = 'an-dec-sc-row'; }
+            else if (/BACKUP|Emergency|emergency_backup|TOU-B/i.test(detail)) { modeClass = 'an-dec-eb'; modeLabel = 'EB'; rowClass = 'an-dec-eb-row'; }
             const isChange = modeLabel !== lastMode;
             lastMode = modeLabel;
-            rows.push({ time: d.timestamp.substring(5, 16).replace('T',' '), priority, detail: detail.substring(0, 120), modeClass, modeLabel, isChange });
+            rows.push({ time: d.timestamp.substring(5, 16).replace('T',' '), priority, detail, modeClass, modeLabel, rowClass, isChange });
         }
     });
 
-    el.innerHTML = rows.map(d =>
-        '<div class="an-dec-row"' + (d.isChange ? ' style="background:rgba(255,255,255,.03)"' : '') + '>' +
-        '<span class="an-dec-time">' + d.time + '</span>' +
-        '<span class="an-dec-mode ' + d.modeClass + '">' + d.priority + ' ' + d.modeLabel + '</span>' +
-        '<span class="an-dec-msg">' + d.detail + '</span>' +
-        '</div>'
-    ).join('');
+    el.innerHTML = rows.map(d => {
+        const changeClass = d.isChange ? 'an-dec-changed ' + d.rowClass : 'an-dec-nochange';
+        return '<div class="an-dec-row ' + changeClass + '">' +
+            '<span class="an-dec-time">' + d.time + '</span>' +
+            '<span class="an-dec-mode ' + d.modeClass + '">' + d.priority + ' ' + d.modeLabel + '</span>' +
+            '<span class="an-dec-msg">' + d.detail + '</span>' +
+            '</div>';
+    }).join('');
 }
 
 </script>
