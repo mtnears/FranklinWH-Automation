@@ -85,6 +85,17 @@ OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW = 0.3   # kW below which solar is considered 
 OVERNIGHT_DRAIN_CONFIRM_CYCLES = 2          # Consecutive low-solar cycles to confirm end-of-day
 OVERNIGHT_DRAIN_MIN_HOUR = 15              # Earliest hour to consider solar day complete (avoids AM cloud gaps)
 
+# Daytime solar headroom — proactive SC to prevent SOC from hitting ceiling
+# during active solar production. Uses last-responsible-moment timing:
+# calculates time until SOC reaches ceiling at current net charge rate,
+# and only switches to SC when that time is short enough to act.
+# On weekdays near peak, stays in SC to ride into peak (no flapping).
+DAYTIME_HEADROOM_MIN_SOLAR_KW = 0.3    # Minimum solar to consider "active production"
+DAYTIME_HEADROOM_CEILING_BUFFER = 3.0  # Start acting this many % below ceiling
+DAYTIME_HEADROOM_MIN_NET_CHARGE_KW = 0.2  # Minimum net charge rate to project ceiling hit
+DAYTIME_HEADROOM_LEAD_HOURS = 1.5      # Switch to SC this many hours before projected ceiling hit
+DAYTIME_HEADROOM_PEAK_RIDE_HOURS = 3.0 # If peak is within this many hours, stay in SC through peak
+
 # Taper-aware ceiling — hard cap on grid charging target SOC.
 # Above this SOC, battery charge rate tapers significantly on Franklin systems,
 # causing solar curtailment on non-export systems. Grid charging above the taper
@@ -625,11 +636,17 @@ class AdaptiveEngine:
         if decision:
             return decision
 
-        # --- Priority 8: Overnight Drain ---
-        # After solar ends for the day: burn unused solar energy and make
-        # headroom for tomorrow's forecast. TOU is the default; SC only fires
-        # at last-responsible-moment. Non-export systems only.
+        # --- Priority 8: Daytime Solar Headroom + Overnight Drain ---
+        # Non-export systems only. Two complementary checks:
+        #   A) Daytime: if solar is actively charging and SOC is approaching
+        #      the ceiling, switch to SC proactively (last-responsible-moment).
+        #      Near peak on weekdays, stay in SC to ride into peak.
+        #   B) Overnight: after solar ends, drain to make room for tomorrow.
         if not self.solar_export:
+            headroom_decision = self._evaluate_daytime_headroom(state)
+            if headroom_decision:
+                return headroom_decision
+
             drain_decision = self._evaluate_overnight_drain(state)
             if drain_decision:
                 return drain_decision
@@ -650,6 +667,123 @@ class AdaptiveEngine:
             "No peak approaching — TOU (preserve battery, grid powers home)",
             confidence=0.8, priority=8,
             action="switch_to_tou",
+        )
+
+    def _evaluate_daytime_headroom(self, state: SystemState) -> Optional[Decision]:
+        """Proactive daytime solar headroom — prevent SOC from hitting ceiling.
+
+        During active solar production, if SOC is climbing toward the taper
+        ceiling, switch to SC so the home draws from battery+solar instead
+        of grid. This keeps SOC from hitting 100% where Franklin suppresses
+        solar input entirely.
+
+        Uses last-responsible-moment timing: calculates hours until SOC
+        reaches the ceiling at the current net charge rate, and only acts
+        when that time is within DAYTIME_HEADROOM_LEAD_HOURS.
+
+        Near peak on weekdays: if SOC is high enough to survive peak and
+        we're within DAYTIME_HEADROOM_PEAK_RIDE_HOURS of peak, stay in SC
+        and ride straight into peak — no flapping back to TOU.
+        """
+        # Only during active solar
+        if state.solar_kw < DAYTIME_HEADROOM_MIN_SOLAR_KW:
+            return None
+
+        taper_ceiling = TAPER_CEILING_PCT
+        battery_kwh = self.config.get(
+            'battery_capacity_kwh',
+            getattr(getattr(self.profile, 'capacity', None),
+                    'total_capacity_kwh', 27.2)
+        )
+        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
+
+        # How much is the battery actually gaining right now?
+        # solar_to_battery_kw is the net solar going into the battery.
+        # If Franklin is in TOU, solar charges battery while grid powers home.
+        # The net charge rate determines how fast SOC is climbing.
+        net_charge_kw = state.solar_to_battery_kw
+        if net_charge_kw < DAYTIME_HEADROOM_MIN_NET_CHARGE_KW:
+            # Battery isn't actually gaining — solar is just covering home load
+            # or SOC is already high enough that Franklin is throttling.
+            # Check if we're already near the ceiling (Franklin may have throttled
+            # solar_to_battery to 0 but we're still at risk)
+            if state.soc_percent < taper_ceiling - DAYTIME_HEADROOM_CEILING_BUFFER:
+                return None
+
+        # --- How long until we hit the ceiling? ---
+        headroom_pct = max(0, taper_ceiling - state.soc_percent)
+        headroom_kwh = headroom_pct / 100.0 * battery_kwh
+
+        if headroom_pct <= DAYTIME_HEADROOM_CEILING_BUFFER:
+            # Already at or very near the ceiling — act now
+            hours_to_ceiling = 0.0
+        elif net_charge_kw > DAYTIME_HEADROOM_MIN_NET_CHARGE_KW:
+            hours_to_ceiling = headroom_kwh / net_charge_kw
+        else:
+            # Not charging meaningfully but near ceiling — be cautious
+            hours_to_ceiling = 2.0  # conservative estimate
+
+        # --- Weekday peak-ride logic ---
+        # If peak is coming soon and SOC is sufficient, stay in SC to ride
+        # straight into peak rather than flapping TOU→SC→TOU→SC.
+        peak_need_kwh = 0.0
+        peak_need_pct = 0.0
+        if state.hours_to_peak is not None and state.hours_to_peak > 0:
+            avg_load_kw = 2.0
+            if hasattr(self.profile, 'consumption') and hasattr(self.profile.consumption, 'avg_kwh_per_hour'):
+                avg_load_kw = max(self.profile.consumption.avg_kwh_per_hour, 0.5)
+            peak_duration = state.peak_duration_hours if state.peak_duration_hours > 0 else 3.0
+            peak_need_kwh = avg_load_kw * peak_duration
+            peak_need_pct = peak_need_kwh / battery_kwh * 100.0
+
+            # Close to peak with enough SOC to survive — ride in SC into peak
+            if (state.hours_to_peak <= DAYTIME_HEADROOM_PEAK_RIDE_HOURS
+                    and state.soc_percent >= backup_reserve + peak_need_pct):
+                metrics = {
+                    'daytime_headroom': True,
+                    'peak_ride': True,
+                    'soc': round(state.soc_percent, 1),
+                    'hours_to_peak': round(state.hours_to_peak, 1),
+                    'peak_need_pct': round(peak_need_pct, 1),
+                    'solar_kw': round(state.solar_kw, 2),
+                    'taper_ceiling': taper_ceiling,
+                }
+                return self._decide(
+                    state, "self_consumption",
+                    f"Daytime headroom: {state.hours_to_peak:.1f}h to peak, "
+                    f"SOC {state.soc_percent:.0f}% covers peak need "
+                    f"({peak_need_pct:.0f}%) — riding SC into peak",
+                    confidence=0.85, priority=8,
+                    action="switch_to_self_consumption",
+                    metrics=metrics,
+                )
+
+        # --- Last-responsible-moment check ---
+        # Don't switch to SC until we're within LEAD_HOURS of hitting ceiling
+        if hours_to_ceiling > DAYTIME_HEADROOM_LEAD_HOURS:
+            return None  # Plenty of room — stay in TOU, revisit next cycle
+
+        # --- Act: switch to SC ---
+        metrics = {
+            'daytime_headroom': True,
+            'peak_ride': False,
+            'soc': round(state.soc_percent, 1),
+            'taper_ceiling': taper_ceiling,
+            'headroom_pct': round(headroom_pct, 1),
+            'net_charge_kw': round(net_charge_kw, 2),
+            'hours_to_ceiling': round(hours_to_ceiling, 2),
+            'solar_kw': round(state.solar_kw, 2),
+            'hours_to_peak': round(state.hours_to_peak, 1) if state.hours_to_peak else None,
+        }
+
+        return self._decide(
+            state, "self_consumption",
+            f"Daytime headroom: SOC {state.soc_percent:.0f}% approaching "
+            f"ceiling {taper_ceiling:.0f}% ({hours_to_ceiling:.1f}h at "
+            f"{net_charge_kw:.1f}kW net charge) — SC to prevent curtailment",
+            confidence=0.8, priority=8,
+            action="switch_to_self_consumption",
+            metrics=metrics,
         )
 
     def _evaluate_overnight_drain(self, state: SystemState) -> Optional[Decision]:

@@ -654,6 +654,28 @@ def read_override() -> dict:
     return {'active': False}
 
 
+def _read_latest_soc() -> float:
+    """Read latest SOC from system_readings for override SOC checks.
+
+    Returns SOC percentage or None if unavailable.
+    """
+    try:
+        import sqlite3
+        db_path = SCRIPT_DIR.parent / 'data' / 'franklin.db'
+        if not db_path.exists():
+            return None
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        row = conn.execute(
+            "SELECT soc_pct FROM system_readings ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return float(row[0])
+    except Exception:
+        pass
+    return None
+
+
 class APIHandler(BaseHTTPRequestHandler):
     """Handles dashboard save and override operations."""
 
@@ -729,12 +751,28 @@ class APIHandler(BaseHTTPRequestHandler):
     def _get_override(self):
         """Return current override status."""
         ov = read_override()
-        # Check if expired
+        # Check if expired by time
         if ov.get('active') and ov.get('expires_at'):
             expires = datetime.fromisoformat(ov['expires_at'])
             if datetime.now() >= expires:
                 ov = {'active': False}
                 write_override(ov)
+        # Check if SOC exit condition met
+        if ov.get('active') and ov.get('exit_soc_pct'):
+            soc = _read_latest_soc()
+            if soc is not None:
+                exit_soc = ov['exit_soc_pct']
+                mode = ov.get('mode', '')
+                # EB charges up → exit when SOC reaches target
+                # SC discharges down → exit when SOC drops to target
+                if mode == 'emergency_backup' and soc >= exit_soc:
+                    log(f"  Override SOC target reached: {soc:.1f}% >= {exit_soc:.0f}%")
+                    ov = {'active': False}
+                    write_override(ov)
+                elif mode in ('self_consumption', 'time_of_use') and soc <= exit_soc:
+                    log(f"  Override SOC target reached: {soc:.1f}% <= {exit_soc:.0f}%")
+                    ov = {'active': False}
+                    write_override(ov)
         self._json_response(200, ov)
 
     def _set_override(self):
@@ -746,13 +784,14 @@ class APIHandler(BaseHTTPRequestHandler):
 
             mode = payload.get('mode')
             duration = payload.get('duration', '1h')
+            exit_soc_pct = payload.get('exit_soc_pct')
 
             if mode not in ('emergency_backup', 'self_consumption', 'time_of_use'):
                 self._json_response(400, {'error': f'Invalid mode: {mode}'})
                 return
 
             # Calculate expiry
-            dur_map = {'1h': 60, '2h': 120, '4h': 240, '8h': 480, 'until_cancel': None}
+            dur_map = {'1h': 60, '2h': 120, '4h': 240, '8h': 480, 'until_cancel': None, 'until_soc': None}
             minutes = dur_map.get(duration)
             expires_at = None
             if minutes:
@@ -766,8 +805,21 @@ class APIHandler(BaseHTTPRequestHandler):
                 'started_at': datetime.now().isoformat(),
                 'expires_at': expires_at,
             }
+
+            # SOC-based exit condition
+            if exit_soc_pct is not None:
+                try:
+                    exit_soc_pct = float(exit_soc_pct)
+                    if 0 < exit_soc_pct <= 100:
+                        ov['exit_soc_pct'] = exit_soc_pct
+                except (ValueError, TypeError):
+                    pass
+
             write_override(ov)
-            log(f"  Override activated: {mode} for {duration}")
+            label = f"{mode} for {duration}"
+            if ov.get('exit_soc_pct'):
+                label += f" or until SOC {'≥' if mode == 'emergency_backup' else '≤'} {ov['exit_soc_pct']:.0f}%"
+            log(f"  Override activated: {label}")
 
             # Switch mode immediately in background
             def do_switch():
