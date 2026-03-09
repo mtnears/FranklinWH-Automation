@@ -1007,8 +1007,23 @@ class AdaptiveEngine:
             'hours_to_peak': round(state.hours_to_peak, 1),
         }
 
-        # Solar surplus — skip grid charging entirely, hold in TOU
+        # Solar surplus — skip grid charging entirely
         if gap_kwh <= 0:
+            # If SOC is already above taper ceiling and solar is producing,
+            # use SC so home draws from battery+solar instead of grid.
+            # Prevents curtailment on non-export systems where solar has
+            # pushed SOC past the ceiling on its own.
+            if (not self.solar_export
+                    and state.soc_percent >= TAPER_CEILING_PCT
+                    and state.solar_kw >= MIN_SOLAR_PRODUCING_KW):
+                return self._decide(
+                    state, "self_consumption",
+                    f"Solar surplus but SOC {state.soc_percent:.0f}% >= taper ceiling "
+                    f"{TAPER_CEILING_PCT:.0f}% — SC to prevent curtailment. "
+                    f"{plan.recommendation}",
+                    confidence=0.85, priority=7,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
             return self._decide(
                 state, "time_of_use",
                 f"Solar surplus: {plan.recommendation}",
@@ -1016,16 +1031,36 @@ class AdaptiveEngine:
                 priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Tiny gap — not worth a mode switch, hold in TOU
+        # Tiny gap — not worth a mode switch
         if gap_kwh < 1.0:
+            # Same ceiling check — if above taper ceiling with solar, use SC
+            if (not self.solar_export
+                    and state.soc_percent >= TAPER_CEILING_PCT
+                    and state.solar_kw >= MIN_SOLAR_PRODUCING_KW):
+                return self._decide(
+                    state, "self_consumption",
+                    f"Tiny gap ({gap_kwh:.1f} kWh) but SOC {state.soc_percent:.0f}% >= "
+                    f"taper ceiling {TAPER_CEILING_PCT:.0f}% — SC to prevent curtailment",
+                    confidence=0.8, priority=7,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
             return self._decide(
                 state, "time_of_use",
                 f"Tiny gap ({gap_kwh:.1f} kWh) — solar/natural will cover. {plan.recommendation}",
                 confidence=0.8, priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Small gap with active solar and plenty of time, hold in TOU
+        # Small gap with active solar and plenty of time
         if gap_kwh < 2.0 and state.solar_kw > 0.3 and state.hours_to_peak > 4:
+            # Same ceiling check
+            if state.soc_percent >= TAPER_CEILING_PCT and not self.solar_export:
+                return self._decide(
+                    state, "self_consumption",
+                    f"Small gap ({gap_kwh:.1f} kWh) but SOC {state.soc_percent:.0f}% >= "
+                    f"taper ceiling {TAPER_CEILING_PCT:.0f}% — SC to prevent curtailment",
+                    confidence=0.8, priority=7,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
             return self._decide(
                 state, "time_of_use",
                 f"Small gap ({gap_kwh:.1f} kWh) with solar producing ({state.solar_kw:.1f} kW) "
