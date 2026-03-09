@@ -539,6 +539,25 @@ async def check_grid_connected() -> bool:
         return True  # Error reading, fail-open — don't block mode switches
 
 
+def _read_latest_soc() -> float:
+    """Read latest SOC from system_readings for override SOC checks."""
+    try:
+        import sqlite3 as _sqlite3
+        db_path = config.DATA_DIR / 'franklin.db'
+        if not db_path.exists():
+            return None
+        conn = _sqlite3.connect(str(db_path), timeout=5)
+        row = conn.execute(
+            "SELECT soc_pct FROM system_readings ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return float(row[0])
+    except Exception:
+        pass
+    return None
+
+
 def check_manual_override() -> dict:
     """Check if manual override is active."""
     try:
@@ -549,7 +568,7 @@ def check_manual_override() -> dict:
                 override = json.load(f)
                 
                 if override.get('active'):
-                    # Check if expired
+                    # Check if expired by time
                     if override.get('expires_at'):
                         from datetime import datetime
                         expires = datetime.fromisoformat(override['expires_at'])
@@ -557,7 +576,31 @@ def check_manual_override() -> dict:
                             override['active'] = False
                             with open(override_file, 'w') as f:
                                 json.dump(override, f, indent=2)
+                            log_intelligence(f"Override expired by time — resuming automation")
                             return override
+
+                    # Check if SOC exit condition met
+                    if override.get('exit_soc_pct'):
+                        soc = _read_latest_soc()
+                        if soc is not None:
+                            exit_soc = override['exit_soc_pct']
+                            mode = override.get('mode', '')
+                            if mode == 'emergency_backup' and soc >= exit_soc:
+                                log_intelligence(
+                                    f"Override SOC target reached: {soc:.1f}% >= {exit_soc:.0f}% — resuming automation"
+                                )
+                                override['active'] = False
+                                with open(override_file, 'w') as f:
+                                    json.dump(override, f, indent=2)
+                                return override
+                            elif mode in ('self_consumption', 'time_of_use') and soc <= exit_soc:
+                                log_intelligence(
+                                    f"Override SOC target reached: {soc:.1f}% <= {exit_soc:.0f}% — resuming automation"
+                                )
+                                override['active'] = False
+                                with open(override_file, 'w') as f:
+                                    json.dump(override, f, indent=2)
+                                return override
                 
                 return override
     except Exception:
@@ -580,7 +623,9 @@ async def main() -> int:
         if override.get('active'):
             mode = override.get('mode', 'unknown')
             expires = override.get('expires_at', 'indefinite')
-            log_intelligence(f"Manual override active: {mode} (expires: {expires})")
+            exit_soc = override.get('exit_soc_pct')
+            soc_info = f", exit SOC {'≥' if mode == 'emergency_backup' else '≤'} {exit_soc:.0f}%" if exit_soc else ""
+            log_intelligence(f"Manual override active: {mode} (expires: {expires}{soc_info})")
             print(f"Manual override active: {mode}")
             return 0
         
