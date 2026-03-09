@@ -299,14 +299,86 @@ def _parse_time(s: str) -> dtime:
     return dtime(int(parts[0]), int(parts[1]))
 
 
+def _load_rates_from_db(db_path: str, today: str) -> Optional[dict]:
+    """Query rate_history for the most recent row effective on or before today.
+
+    Returns a dict with 'peak' and 'off_peak' rate_cents, or None if the DB
+    is unavailable, empty, or the relevant row has no rate data.
+
+    Rate selection priority:
+      1. care_peak_rate / care_off_peak_rate  (CARE discount users)
+      2. peak_rate / off_peak_rate            (standard users)
+
+    This allows any user who has populated rate_history to get automatic
+    seasonal switching — just insert rows with the correct effective_date
+    and the right rates will be picked up automatically on the flip date.
+    """
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT peak_rate, off_peak_rate, care_peak_rate, care_off_peak_rate,
+                   rate_name, effective_date
+            FROM rate_history
+            WHERE effective_date <= ?
+            ORDER BY effective_date DESC
+            LIMIT 1
+            """,
+            (today,)
+        ).fetchone()
+        conn.close()
+
+        if row is None:
+            logger.debug("rate_history: no rows found for date %s — using JSON rates", today)
+            return None
+
+        # Prefer CARE rates if present, fall back to standard rates
+        if row['care_peak_rate'] is not None and row['care_off_peak_rate'] is not None:
+            peak = row['care_peak_rate'] * 100      # dollars → cents
+            off_peak = row['care_off_peak_rate'] * 100
+            rate_type = 'CARE'
+        elif row['peak_rate'] is not None and row['off_peak_rate'] is not None:
+            peak = row['peak_rate'] * 100
+            off_peak = row['off_peak_rate'] * 100
+            rate_type = 'standard'
+        else:
+            logger.warning(
+                "rate_history row '%s' (effective %s) has no usable rates — using JSON rates",
+                row['rate_name'], row['effective_date']
+            )
+            return None
+
+        logger.info(
+            "Rates from DB: %s (%s, effective %s) — peak=%.3f¢  off_peak=%.3f¢",
+            row['rate_name'], rate_type, row['effective_date'], peak, off_peak
+        )
+        return {'peak': peak, 'off_peak': off_peak}
+
+    except Exception as e:
+        logger.warning("rate_history DB lookup failed (%s) — using JSON rates", e)
+        return None
+
+
 def load_rate_schedule(json_path: str) -> RateSchedule:
-    """Load rate schedule from JSON config file."""
+    """Load rate schedule from JSON config file, with rates overridden from DB if available.
+
+    Structure (windows, holidays, export config) always comes from the JSON file.
+    Rates (peak / off_peak cents/kWh) are pulled from the rate_history DB table
+    so that seasonal changes and CARE adjustments take effect automatically on
+    their effective_date without any manual file edits.
+
+    Fallback chain:
+      1. DB rate_history (most recent row with effective_date <= today)
+      2. JSON tiers (original behaviour — used if DB unavailable or empty)
+    """
     with open(json_path, 'r') as f:
         data = json.load(f)
 
     rs = data.get('rate_schedule', data)  # Allow nested or flat
 
-    # Parse tiers
+    # Parse tiers from JSON (fallback baseline)
     tiers = rs.get('tiers', {})
     tier_rates = {}
     for tier_name, tier_info in tiers.items():
@@ -315,7 +387,18 @@ def load_rate_schedule(json_path: str) -> RateSchedule:
         else:
             tier_rates[tier_name] = float(tier_info)
 
-    # Parse windows
+    # Attempt to override rates from DB
+    db_path = os.path.join(os.path.dirname(json_path), 'franklin.db')
+    today = datetime.now().strftime('%Y-%m-%d')
+    db_rates = _load_rates_from_db(db_path, today)
+    if db_rates:
+        tier_rates['peak'] = db_rates['peak']
+        tier_rates['off_peak'] = db_rates['off_peak']
+    else:
+        logger.info("Using JSON rates: peak=%.3f¢  off_peak=%.3f¢",
+                    tier_rates.get('peak', 0), tier_rates.get('off_peak', 0))
+
+    # Parse windows (rates updated to match resolved tier_rates)
     windows = []
     for w in rs.get('windows', []):
         tier = w['tier']
