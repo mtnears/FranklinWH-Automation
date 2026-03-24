@@ -1,0 +1,34 @@
+{
+  "rate_schedule": {
+    "name": "PG&E E-TOU-D with CARE",
+    "export": {
+      "capable": false,
+      "net_metering": "NEM 2.0",
+      "export_rates": null
+    },
+    "tiers": {
+      "peak": {"rate_cents": 25.186},
+      "off_peak": {"rate_cents": 22.676}
+    },
+    "windows": [
+      {
+        "tier": "peak",
+        "days": ["mon", "tue", "wed", "thu", "fri"],
+        "start": "17:00",
+        "end": "20:00"
+      }
+    ],
+    "default_tier": "off_peak",
+    "holidays": [
+      "2026-01-01",
+      "2026-02-16",
+      "2026-05-25",
+      "2026-07-04",
+      "2026-09-07",
+      "2026-11-11",
+      "2026-11-26",
+      "2026-12-25"
+    ],
+    "holiday_tier": "off_peak"
+  }
+}

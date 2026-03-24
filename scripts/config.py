@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-Configuration Management for FranklinWH Battery Automation - v3.5.1
+Configuration Management for FranklinWH Battery Automation
 
 Loads settings from environment variables (.env file) with sensible defaults.
 Provides a centralized configuration object used by all scripts.
-
-v3.5.0 Changes:
-- Added Modbus TCP integration options
-- Added conditional polling frequency based on dynamic pricing
-- Added anonymous telemetry options
-- Fixed midnight-crossing peak period validation
+Version is read from the VERSION file in the repo root.
 
 Usage:
     from config import config
@@ -40,6 +35,24 @@ try:
             break
 except ImportError:
     pass  # dotenv not installed, rely on environment variables
+
+
+def get_version() -> str:
+    """Read version from VERSION file in repo root."""
+    for candidate in [
+        Path(__file__).parent.parent / 'VERSION',
+        Path(__file__).parent / 'VERSION',
+    ]:
+        try:
+            if candidate.exists():
+                return candidate.read_text().strip()
+        except Exception:
+            pass
+    return '0.0.0'
+
+
+# Module-level version constant
+VERSION = get_version()
 
 
 def get_bool(key: str, default: bool = False) -> bool:
@@ -152,6 +165,23 @@ class Config:
     TELEMETRY_ENABLED: bool = field(default_factory=lambda: get_bool('TELEMETRY_ENABLED', False))
     TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
     TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
+    ENGINE_VERSION: str = field(default_factory=lambda: os.getenv('ENGINE_VERSION', VERSION))
+    MULTI_METER: bool = field(default_factory=lambda: get_bool('MULTI_METER', False))
+    FORECAST_ENABLED: bool = field(default_factory=lambda: get_bool('FORECAST_ENABLED', False))
+
+    # ===== NEW: V4.0 Adaptive Decision Engine =====
+    # When enabled, smart_decision.py delegates to adaptive_engine.py
+    # which uses forecast-aware charging, learned system profiles, and
+    # full rate schedule awareness. Falls back to v3.5 logic on error.
+    ADAPTIVE_ENGINE_ENABLED: bool = field(default_factory=lambda: get_bool('ADAPTIVE_ENGINE_ENABLED', False))
+    DECISION_INTERVAL_MINUTES: int = field(default_factory=lambda: get_int('DECISION_INTERVAL_MINUTES', 15))
+    BATTERY_COUNT: int = field(default_factory=lambda: get_int('BATTERY_COUNT', 2))
+    BACKUP_RESERVE_PCT: float = field(default_factory=lambda: get_float('BACKUP_RESERVE_PCT', 20.0))
+
+    # Solar export: does the system export surplus solar to the grid?
+    # false = non-export (surplus is curtailed when battery full — engine drains to create headroom)
+    # true  = net-metered export (surplus earns credits — headroom management skipped)
+    SOLAR_EXPORT: bool = field(default_factory=lambda: get_bool('SOLAR_EXPORT', False))
 
     # ===== NEW: SolarEdge Panel-Level Monitoring =====
     # Optional: Scrapes SolarEdge portal for real per-optimizer energy data
@@ -199,6 +229,16 @@ class Config:
     WEATHER_STATION_ID: str = field(default_factory=lambda: os.getenv('WEATHER_STATION_ID', ''))
     WEATHER_API_KEY: str = field(default_factory=lambda: os.getenv('WEATHER_API_KEY', ''))
     CLOUDY_THRESHOLD_PERCENT: int = field(default_factory=lambda: get_int('CLOUDY_THRESHOLD_PERCENT', 50))
+    
+    # ===== Solar Forecast Settings (v4.0 forecast-aware charging) =====
+    # Array parameters for Forecast.Solar API — house array only (battery-connected)
+    # Defaults are Ken's Georgetown setup; override in .env for other installations
+    FORECAST_LATITUDE: float = field(default_factory=lambda: get_float('FORECAST_LATITUDE', 38.91))
+    FORECAST_LONGITUDE: float = field(default_factory=lambda: get_float('FORECAST_LONGITUDE', -120.84))
+    FORECAST_HOUSE_TILT: int = field(default_factory=lambda: get_int('FORECAST_HOUSE_TILT', 22))
+    FORECAST_HOUSE_AZIMUTH: int = field(default_factory=lambda: get_int('FORECAST_HOUSE_AZIMUTH', -65))
+    FORECAST_HOUSE_KWP: float = field(default_factory=lambda: get_float('FORECAST_HOUSE_KWP', 6.96))
+    FORECAST_SOLAR_API_KEY: str = field(default_factory=lambda: os.getenv('FORECAST_SOLAR_API_KEY', ''))
     
     # ===== PVOutput Settings =====
     PVOUTPUT_API_KEY: str = field(default_factory=lambda: os.getenv('PVOUTPUT_API_KEY', ''))
@@ -251,11 +291,8 @@ class Config:
             directory.mkdir(parents=True, exist_ok=True)
         
         # Set up derived file paths
-        self.LOG_FILE = self.LOG_DIR / "continuous_monitoring.csv"
-        self.INTELLIGENCE_LOG = self.LOG_DIR / "solar_intelligence.log"
         self.STATE_FILE = self.LOG_DIR / "battery_mode.txt"
         self.PEAK_STATE_FILE = self.LOG_DIR / "peak_state.txt"
-        self.WEATHER_LOG = self.LOG_DIR / "weather_data.csv"
 
     def _calculate_polling_interval(self):
         """Calculate optimal polling interval based on features and data source."""
@@ -418,12 +455,16 @@ class Config:
             features.append(f"Modbus TCP ({self.MODBUS_HOST}:{self.MODBUS_PORT})")
         if self.WEATHER_ENABLED:
             features.append(f"Weather ({self.WEATHER_STATION_ID})")
+        if self.FORECAST_HOUSE_KWP > 0:
+            features.append(f"Solar Forecast ({self.FORECAST_HOUSE_KWP} kWp, tilt={self.FORECAST_HOUSE_TILT}°)")
         if self.PVOUTPUT_ENABLED:
             features.append("PVOutput")
         if self.TELEMETRY_ENABLED:
             features.append("Anonymous Telemetry")
         if self.SOLAREDGE_PANEL_MONITORING:
             features.append(f"SolarEdge Panel Monitoring (site {self.SOLAREDGE_SITE_ID})")
+        if self.ADAPTIVE_ENGINE_ENABLED:
+            features.append("V4.0 Adaptive Engine")
         if self.SOLAR_ARRAYS:
             arrays = [a.strip() for a in self.SOLAR_ARRAYS.split(',') if a.strip()]
             features.append(f"Solar Arrays ({', '.join(arrays)})")
@@ -448,6 +489,8 @@ class Config:
             features.append("PVOutput")
         if not self.TELEMETRY_ENABLED:
             features.append("Telemetry")
+        if not self.ADAPTIVE_ENGINE_ENABLED:
+            features.append("V4.0 Adaptive Engine")
         if not self.SOLAREDGE_PANEL_MONITORING:
             features.append("SolarEdge Panel Monitoring")
         return features
@@ -456,7 +499,7 @@ class Config:
         """Return a formatted summary of current configuration."""
         lines = [
             "=" * 60,
-            "CONFIGURATION SUMMARY - v3.5.1",
+            f"CONFIGURATION SUMMARY - v{VERSION}",
             "=" * 60,
             "",
             "ENABLED FEATURES:",
@@ -528,7 +571,7 @@ class Config:
     def to_dict(self) -> dict:
         """Export configuration as dictionary (excludes sensitive data)."""
         return {
-            'version': '3.5.1',
+            'version': VERSION,
             'battery_capacity_kwh': self.BATTERY_CAPACITY_KWH,
             'charge_rate_per_hour': self.CHARGE_RATE_PER_HOUR,
             'target_soc': self.TARGET_SOC,
@@ -541,6 +584,7 @@ class Config:
                 'weather_enabled': self.WEATHER_ENABLED,
                 'pvoutput_enabled': self.PVOUTPUT_ENABLED,
                 'telemetry_enabled': self.TELEMETRY_ENABLED,
+                'adaptive_engine_enabled': self.ADAPTIVE_ENGINE_ENABLED,
                 'solaredge_panel_monitoring': self.SOLAREDGE_PANEL_MONITORING,
                 'solar_arrays': self.SOLAR_ARRAYS,
             },
@@ -576,6 +620,43 @@ class Config:
 
 # Global configuration instance
 config = Config()
+
+
+def configure_logging(log_file=None):
+    """Configure root logger based on DEBUG_MODE setting.
+
+    Centralises logging setup so every script gets the same format,
+    level, and (optionally) file handler.  Reads ``config.DEBUG_MODE``
+    to choose between DEBUG and INFO.
+
+    Args:
+        log_file: Optional path to a log file.  When provided a
+                  ``FileHandler`` is added alongside the default
+                  ``StreamHandler`` (console).
+
+    Note:
+        ``logging.basicConfig`` is a no-op once the root logger already
+        has handlers.  We clear any existing handlers first so that the
+        function is safe to call from ``__main__`` blocks even when an
+        importing module already configured logging.
+    """
+    import logging
+
+    root = logging.getLogger()
+    # Remove pre-existing handlers so this call always takes effect
+    root.handlers.clear()
+
+    level = logging.DEBUG if config.DEBUG_MODE else logging.INFO
+    handlers = [logging.StreamHandler()]
+    if log_file is not None:
+        handlers.append(logging.FileHandler(log_file))
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers,
+    )
 
 
 if __name__ == "__main__":

@@ -6,7 +6,8 @@
     <title>FranklinWH Power Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
     <style>
         :root {
             --bg-primary: #080c1a; --bg-card: #0f1429; --bg-elevated: #1a2040; --bg-input: #0a0f22;
@@ -18,7 +19,7 @@
             --home-color: #f97316; --generator-color: #a78bfa;
             --header-h: 56px; --tab-bar-h: 48px; --card-radius: 14px; --card-padding: 18px; --gap: 12px;
             --font-body: 'DM Sans', -apple-system, sans-serif;
-            --font-mono: 'JetBrains Mono', monospace;
+            --font-mono: 'DM Sans', sans-serif;
         }
         *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
         html { font-size: 15px; -webkit-font-smoothing: antialiased; }
@@ -64,7 +65,7 @@
         .tab-content.active { display: block; }
         .card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--card-radius); padding: var(--card-padding); transition: border-color .2s; }
         .card:hover { border-color: var(--border-active); }
-        .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: var(--text-muted); margin-bottom: 10px; }
+        .card-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .8px; color: #ffffff; margin-bottom: 10px; }
 
         /* ===== SCRIPT STATUS ===== */
         .scripts-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--gap); flex-wrap: wrap; gap: 10px; }
@@ -83,8 +84,8 @@
         .script-table tr.script-err td { background: rgba(248,113,113,.03); }
         .script-table tr.script-err:hover td { background: rgba(248,113,113,.06); }
         .script-name { color: var(--text-primary); font-weight: 500; font-family: var(--font-mono); font-size: 12px; }
-        .script-desc { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
-        .script-file { color: var(--text-muted); font-size: 10px; font-family: var(--font-mono); margin-top: 2px; opacity: 0.6; }
+        .script-desc { color: var(--text-secondary); font-size: 11px; margin-top: 2px; }
+        .script-file { color: var(--text-secondary); font-size: 10px; font-family: var(--font-mono); margin-top: 2px; opacity: 0.6; }
         .script-sched { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
         .script-time { font-family: var(--font-mono); font-size: 12px; }
         .script-counts { display: flex; gap: 10px; font-family: var(--font-mono); font-size: 12px; }
@@ -106,10 +107,11 @@
         .script-detail-box .err-ts { color: var(--text-muted); margin-right: 8px; }
 
         /* ===== LIVE DASHBOARD ===== */
-        .live-grid { display: grid; grid-template-columns: 300px 1fr 300px; grid-template-rows: auto auto; gap: var(--gap); }
+        .live-grid { display: grid; grid-template-columns: 300px 1fr 300px; grid-template-rows: 1fr; gap: var(--gap); height: calc(100vh - var(--header-h) - var(--tab-bar-h) - var(--gap) * 2); }
 
         /* Battery card */
-        .battery-card { grid-row: 1 / 3; }
+        .battery-card { grid-row: 1; overflow-y: auto; }
+        .left-stack { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow-y: auto; }
         .battery-soc-display { text-align: center; padding: 8px 0; }
         .soc-ring-container { position: relative; width: 150px; height: 150px; margin: 0 auto 8px; }
         .soc-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
@@ -119,7 +121,7 @@
         .soc-value { font-family: var(--font-mono); font-size: 36px; font-weight: 600; line-height: 1; letter-spacing: -2px; }
         .soc-unit { font-size: 15px; font-weight: 300; color: var(--text-secondary); }
         .soc-kwh { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-        .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 11px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: 20px; font-size: 14px; font-weight: 600; }
         .badge-tou { background: rgba(79,143,255,.12); color: var(--accent-blue); border: 1px solid rgba(79,143,255,.2); }
         .badge-backup { background: rgba(248,113,113,.12); color: var(--accent-red); border: 1px solid rgba(248,113,113,.2); }
         .badge-selfcon { background: rgba(34,211,238,.12); color: var(--accent-cyan); border: 1px solid rgba(34,211,238,.2); }
@@ -132,56 +134,55 @@
         .bstat-v { font-family: var(--font-mono); font-weight: 500; }
         .per-battery { margin-top: 10px; }
         .per-batt-item { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 12px; }
-        .per-batt-label { width: 64px; color: var(--text-muted); font-weight: 500; }
+        .per-batt-label { width: 64px; color: var(--text-secondary); font-weight: 500; }
         .per-batt-bar { flex: 1; height: 7px; background: rgba(255,255,255,.05); border-radius: 4px; overflow: hidden; }
         .per-batt-fill { height: 100%; background: var(--battery-color); border-radius: 4px; transition: width 1s; }
         .per-batt-pct { width: 42px; text-align: right; font-family: var(--font-mono); font-weight: 500; }
 
         /* ===== FLOW VISUALIZATION - Icons over house image ===== */
-        .flow-card { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; }
+        .flow-card { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-height: 0; }
 
-        /* Fixed aspect ratio container matching image 1376:768 */
+        /* Flexible container that fills available space */
         .flow-scene-wrap { position: relative; flex: 1; min-height: 0; }
-        .flow-scene { position: relative; width: 100%; height: 0; padding-bottom: 55.8%; /* 768/1376 = 55.8% */ border-radius: 12px; overflow: hidden; background: #dce8f5; }
-        .flow-scene img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+        .flow-scene { position: relative; width: 100%; height: 100%; border-radius: 12px; overflow: hidden; background: linear-gradient(180deg, #c8ddf0 0%, #dce8f5 40%, #e8eff8 100%); }
+        .flow-scene img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; object-position: center center; display: block; }
 
-        /* Floating icon nodes - absolutely positioned over image */
-        .flow-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
-        .fn { position: absolute; pointer-events: auto; transform: translate(-50%, -50%); }
+        /* Floating icon nodes - now inside SVG foreignObject, positions set in viewBox coords */
+        .fn { pointer-events: auto; }
         /* Unified background rectangle behind entire node */
-        .fn-bg { background: rgba(15,20,41,.45); padding: 8px 14px 7px; border-radius: 14px; backdrop-filter: blur(5px); display: flex; flex-direction: column; align-items: center; border: 1px solid rgba(255,255,255,.08); }
-        .fn-icon { width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 22px; border: 2.5px solid; box-shadow: 0 2px 12px rgba(0,0,0,.25); transition: box-shadow .4s, transform .4s; }
+        .fn-bg { background: rgba(15,20,41,.45); padding: 10px 16px 9px; border-radius: 16px; backdrop-filter: blur(5px); display: flex; flex-direction: column; align-items: center; border: 1px solid rgba(255,255,255,.08); }
+        .fn-icon { width: 66px; height: 66px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 29px; border: 3px solid; box-shadow: 0 2px 12px rgba(0,0,0,.25); transition: box-shadow .4s, transform .4s; }
         .fn-icon.glow { transform: scale(1.1); }
-        .fn-val { font-family: var(--font-mono); font-size: 15px; font-weight: 700; line-height: 1; margin-top: 4px; white-space: nowrap; }
-        .fn-lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; margin-top: 1px; }
+        .fn-val { font-family: var(--font-mono); font-size: 32px; font-weight: 700; line-height: 1; margin-top: 6px; white-space: nowrap; }
+        .fn-lbl { font-size: 22px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; white-space: nowrap; margin-top: 2px; }
 
-        /* Solar: above the roof ridge over panels */
-        .fn-solar { left: 61%; top: 9%; color: var(--solar-color); }
+        /* Solar */
+        .fn-solar { color: var(--solar-color); }
         .fn-solar .fn-icon { background: rgba(251,191,36,.25); border-color: var(--solar-color); }
         .fn-solar .fn-icon.glow { box-shadow: 0 0 20px rgba(251,191,36,.6); }
 
-        /* Grid: clear sky upper-right past the power pole */
-        .fn-grid { left: 95%; top: 8%; color: #6aafff; }
+        /* Grid */
+        .fn-grid { color: #6aafff; }
         .fn-grid .fn-icon { background: rgba(79,143,255,.25); border-color: var(--grid-color); }
         .fn-grid .fn-icon.glow { box-shadow: 0 0 20px rgba(79,143,255,.6); }
 
-        /* Battery: just above the white FranklinWH units */
-        .fn-batt { left: 70%; top: 44%; color: var(--battery-color); }
+        /* Battery */
+        .fn-batt { color: var(--battery-color); }
         .fn-batt .fn-icon { background: rgba(52,211,153,.25); border-color: var(--battery-color); }
         .fn-batt .fn-icon.glow { box-shadow: 0 0 20px rgba(52,211,153,.6); }
 
-        /* Generator: in front of the Honeywell, ground area */
-        .fn-gen { left: 60%; top: 92%; color: #c4a8ff; }
+        /* Generator */
+        .fn-gen { color: #c4a8ff; }
         .fn-gen .fn-icon { background: rgba(167,139,250,.25); border-color: var(--generator-color); }
         .fn-gen .fn-icon.glow { box-shadow: 0 0 20px rgba(167,139,250,.6); }
 
-        /* Home: garage door / deck area */
-        .fn-home { left: 45%; top: 70%; color: var(--home-color); }
-        .fn-home .fn-icon { background: rgba(249,115,22,.25); border-color: var(--home-color); width: 56px; height: 56px; font-size: 24px; }
+        /* Home */
+        .fn-home { color: var(--home-color); }
+        .fn-home .fn-icon { background: rgba(249,115,22,.25); border-color: var(--home-color); width: 72px; height: 72px; font-size: 32px; }
         .fn-home .fn-icon.glow { box-shadow: 0 0 20px rgba(249,115,22,.6); }
-        .fn-home .fn-val { font-size: 16px; }
+        .fn-home .fn-val { font-size: 34px; }
 
-        /* Animated flow lines - all connect through battery as hub */
+        /* SVG overlay - matches image position via same object-fit behavior */
         .flow-lines-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
         .flow-line { fill: none; stroke-width: 4; stroke-dasharray: 12 8; opacity: .25; transition: opacity .4s; }
         .flow-line.active { opacity: .7; animation: flowDash 2.5s linear infinite; }
@@ -192,15 +193,15 @@
         /* Flow totals below scene */
         .flow-totals { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-top: 8px; }
         .flow-total-item { padding: 8px; background: var(--bg-elevated); border-radius: 8px; text-align: center; border: 1px solid var(--border-subtle); }
-        .flow-total-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+        .flow-total-label { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
         .flow-total-value { font-family: var(--font-mono); font-size: 15px; font-weight: 600; margin-top: 2px; }
         .flow-summary-text { font-size: 11px; color: var(--text-secondary); margin-top: 6px; padding: 6px 10px; background: var(--bg-elevated); border-radius: 8px; text-align: center; }
 
         /* ===== RIGHT COLUMN ===== */
-        .right-stack { grid-column: 3; grid-row: 1 / 3; display: flex; flex-direction: column; gap: var(--gap); }
+        .right-stack { grid-column: 3; grid-row: 1; display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow-y: auto; }
         .savings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .sav-item { padding: 10px; background: var(--bg-elevated); border-radius: 10px; border: 1px solid var(--border-subtle); }
-        .sav-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
+        .sav-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
         .sav-value { font-family: var(--font-mono); font-size: 19px; font-weight: 600; color: var(--accent-green); }
         .sav-detail { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
         .peak-bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-elevated); border-radius: 10px; margin-top: 8px; border: 1px solid var(--border-subtle); }
@@ -229,9 +230,28 @@
         .report-controls { display: flex; align-items: center; gap: 12px; margin-bottom: var(--gap); }
         .sel-input { padding: 8px 14px; background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; cursor: pointer; }
         .sel-input option { background: var(--bg-card); }
-        .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
-        .chart-grid .card img { width: 100%; border-radius: 8px; }
-        .chart-full { grid-column: 1 / -1; }
+        .chart-grid { position: relative; overflow: hidden; border-radius: var(--card-radius); }
+        .chart-carousel { display: flex; transition: transform 0.35s ease; touch-action: pan-y; }
+        .chart-slide { min-width: 100%; box-sizing: border-box; padding: 0 2px; }
+        .chart-slide .card { margin: 0; }
+        .chart-grid .card img { width: 100%; border-radius: 8px; cursor: pointer; }
+        .chart-nav { display: flex; justify-content: center; align-items: center; gap: 12px; padding: 14px 0 4px; }
+        .chart-nav-btn { background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-secondary); width: 36px; height: 36px; border-radius: 50%; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all .2s; }
+        .chart-nav-btn:hover { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
+        .chart-dots { display: flex; gap: 8px; }
+        .chart-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-subtle); cursor: pointer; transition: all .2s; }
+        .chart-dot.active { background: var(--accent-blue); transform: scale(1.3); }
+        .chart-counter { font-size: 12px; color: var(--text-muted); min-width: 50px; text-align: center; }
+        .chart-lightbox { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.92); z-index: 9999; justify-content: center; align-items: center; cursor: pointer; flex-direction: column; }
+        .chart-lightbox.active { display: flex; }
+        .chart-lightbox img { max-width: 95vw; max-height: 88vh; object-fit: contain; border-radius: 8px; }
+        .chart-lightbox-label { color: #fff; font-size: 16px; padding: 12px; opacity: 0.8; }
+        .chart-lightbox-close { position: absolute; top: 16px; right: 24px; color: #fff; font-size: 32px; cursor: pointer; opacity: 0.7; transition: opacity .2s; z-index: 10000; }
+        .chart-lightbox-close:hover { opacity: 1; }
+        .chart-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); color: #fff; font-size: 36px; cursor: pointer; opacity: 0.5; transition: opacity .2s; padding: 20px; z-index: 10000; }
+        .chart-lightbox-nav:hover { opacity: 1; }
+        .chart-lightbox-nav.prev { left: 8px; }
+        .chart-lightbox-nav.next { right: 8px; }
         .log-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: var(--gap); flex-wrap: wrap; }
         .log-viewer { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; overflow-y: auto; max-height: calc(100vh - 240px); }
         .log-line { padding: 2px 0; border-left: 3px solid transparent; padding-left: 10px; }
@@ -268,12 +288,49 @@
 
         .btn-sm { padding: 6px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; font-family: var(--font-body); cursor: pointer; background: var(--bg-elevated); border: 1px solid var(--border-subtle); color: var(--text-secondary); transition: all .15s; }
         .btn-sm:hover { border-color: var(--border-active); color: var(--text-primary); }
+        .btn-report { background: rgba(167,139,250,.08); border-color: rgba(167,139,250,.25); color: var(--accent-purple); }
+        .btn-report:hover { background: rgba(167,139,250,.15); border-color: rgba(167,139,250,.4); }
+
+        /* Report Issue Modal */
+        .report-modal { max-width: 560px; }
+        /* Telemetry Consent Modal */
+        .consent-modal { max-width: 460px; }
+        .consent-what { margin: 12px 0 16px 0; padding: 12px 14px; background: var(--bg-elevated); border-radius: 8px; font-size: 12.5px; line-height: 1.7; color: var(--text-secondary); }
+        .consent-what-item { display: flex; align-items: baseline; gap: 6px; }
+        .consent-what-item::before { content: '•'; color: var(--accent-blue); font-weight: 700; flex-shrink: 0; }
+        .consent-env-note { font-size: 11.5px; color: var(--text-muted); margin-bottom: 18px; line-height: 1.5; }
+        .consent-actions { display: flex; gap: 10px; justify-content: flex-end; }
+        .consent-region { margin-bottom: 16px; }
+        .consent-region label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-primary); }
+        .consent-region select { width: 100%; padding: 8px 12px; background: var(--bg-input, var(--bg-elevated)); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; cursor: pointer; }
+        .consent-region select:focus { outline: none; border-color: var(--accent-blue); }
+        .consent-region-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .telemetry-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); padding: 2px 8px; border-radius: 10px; background: var(--bg-elevated); margin-left: 8px; opacity: 0; transition: opacity .3s; }
+        .telemetry-badge.visible { opacity: 1; }
+        .report-textarea { width: 100%; min-height: 80px; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); font-family: var(--font-body); font-size: 13px; resize: vertical; line-height: 1.5; }
+        .report-textarea:focus { outline: none; border-color: var(--accent-blue); }
+        .report-textarea::placeholder { color: var(--text-muted); }
+        .report-progress { display: none; align-items: center; gap: 10px; padding: 12px 14px; background: var(--bg-elevated); border-radius: 8px; margin: 12px 0; font-size: 13px; color: var(--text-secondary); }
+        .report-progress.active { display: flex; }
+        .report-spinner { width: 18px; height: 18px; border: 2px solid var(--border-subtle); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin .8s linear infinite; flex-shrink: 0; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .report-preview { max-height: 200px; overflow-y: auto; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 8px; font-family: var(--font-mono); font-size: 11px; line-height: 1.6; color: var(--text-secondary); margin: 10px 0; display: none; white-space: pre-wrap; word-break: break-all; }
+        .report-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+        .report-step { margin-bottom: 14px; }
+        .report-step-num { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-blue); color: #fff; font-size: 11px; font-weight: 700; margin-right: 8px; }
+        .report-step-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+        .report-step-desc { font-size: 12px; color: var(--text-muted); margin-top: 4px; margin-left: 30px; }
+        .report-done { color: var(--accent-green); }
+        .btn-github { background: rgba(167,139,250,.12); border-color: rgba(167,139,250,.3); color: var(--accent-purple); font-weight: 600; }
+        .btn-github:hover { background: rgba(167,139,250,.2); }
+        .btn-download { background: rgba(52,211,153,.08); border-color: rgba(52,211,153,.25); color: var(--accent-green); }
+        .btn-download:hover { background: rgba(52,211,153,.15); }
         .csv-table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--font-mono); }
         .csv-table th { background: var(--bg-elevated); padding: 8px 6px; text-align: left; font-weight: 600; color: var(--text-secondary); position: sticky; top: 0; border-bottom: 2px solid var(--accent-blue); }
         .csv-table td { padding: 6px; border-bottom: 1px solid var(--border-subtle); }
 
         @media(max-width:1600px) { html { font-size: 14px; } .live-grid { grid-template-columns: 270px 1fr 270px; } }
-        @media(max-width:1200px) { .live-grid { grid-template-columns: 1fr 1fr; } .battery-card { grid-row: auto; } .sysinfo-grid { grid-template-columns: 1fr 1fr; } }
+        @media(max-width:1200px) { .live-grid { grid-template-columns: 1fr 1fr; height: auto; } .battery-card { grid-row: auto; } .sysinfo-grid { grid-template-columns: 1fr 1fr; } }
         @media(max-width:800px) { .live-grid, .sysinfo-grid, .settings-columns, .chart-grid { grid-template-columns: 1fr; } .tab-bar-right { display: none; } }
 
         /* ===== SOLAR ARRAY TAB ===== */
@@ -409,6 +466,76 @@
         .se-save-status { font-size: 12px; color: var(--accent-green); margin-left: auto; }
         @media(max-width:1200px) { .solar-summary { grid-template-columns: repeat(2,1fr); } .solar-info-strip { grid-template-columns: 1fr 1fr; } }
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 3px; }
+
+        /* ===== ANALYTICS TAB ===== */
+        .analytics-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: var(--gap); flex-wrap: wrap; }
+        .an-date-input { font-family: var(--font-mono); font-size: 13px; background: var(--bg-input); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 7px; padding: 6px 12px; outline: none; }
+        .an-date-input:focus { border-color: var(--accent-blue); }
+        .an-nav-btn { background: var(--bg-elevated); border: 1px solid var(--border-subtle); color: var(--text-secondary); width: 32px; height: 32px; border-radius: 7px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all .15s; }
+        .an-nav-btn:hover { border-color: var(--accent-blue); color: var(--text-primary); }
+        .an-btn-sm { width: 24px; height: 24px; font-size: 11px; border-radius: 5px; }
+        .an-range-btns { display: flex; gap: 2px; background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 7px; padding: 2px; }
+        .an-range-btn { background: transparent; border: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 5px; cursor: pointer; transition: all .15s; }
+        .an-range-btn:hover { color: var(--text-secondary); }
+        .an-range-btn.active { background: var(--accent-blue); color: #fff; }
+        .an-compare-wrap { display: flex; align-items: center; gap: 6px; }
+        .an-date-sm { width: 130px; font-size: 11px; padding: 4px 8px; }
+        .an-cmp-dropdown { position: relative; }
+        .an-cmp-panel { display: none; position: absolute; top: 100%; left: 0; z-index: 100; background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 6px 0; min-width: 200px; max-height: 240px; overflow-y: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+        .an-cmp-panel.open { display: block; }
+        .an-cmp-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 12px; color: var(--text-secondary); cursor: pointer; transition: background .1s; }
+        .an-cmp-item:hover { background: rgba(255,255,255,0.04); }
+        .an-cmp-item input[type="checkbox"] { accent-color: var(--accent-blue); }
+        .an-cmp-item.disabled { opacity: 0.4; pointer-events: none; }
+        .an-cmp-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+        .an-cmp-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-family: var(--font-mono); padding: 2px 8px; border-radius: 12px; cursor: pointer; }
+        .an-cmp-tag:hover { opacity: 0.7; }
+        .an-summary-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--gap); margin-bottom: var(--gap); }
+        .an-stat-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 12px 14px; text-align: center; }
+        .an-stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .7px; color: var(--text-muted); margin-bottom: 4px; }
+        .an-stat-val { font-family: var(--font-mono); font-size: 15px; font-weight: 500; color: var(--text-primary); }
+        .an-stat-warn { color: var(--accent-amber); }
+        .an-chart-card { margin-bottom: var(--gap); }
+        .an-decision-list { overflow-y: auto; }
+        .an-dec-row { display: flex; align-items: baseline; gap: 12px; padding: 6px 8px; border-bottom: 1px solid rgba(99,133,255,.04); font-size: 14px; border-left: 3px solid transparent; }
+        .an-dec-row.an-dec-changed { border-left-color: var(--accent-blue); background: rgba(255,255,255,.025); }
+        .an-dec-row.an-dec-changed.an-dec-sc-row { border-left-color: var(--accent-cyan); }
+        .an-dec-row.an-dec-changed.an-dec-eb-row { border-left-color: var(--accent-red); }
+        .an-dec-row.an-dec-nochange { opacity: 0.5; }
+        .an-dec-time { color: var(--text-muted); white-space: nowrap; min-width: 70px; flex-shrink: 0; }
+        .an-dec-msg { color: var(--text-secondary); line-height: 1.4; flex: 1; }
+        .an-dec-row.an-dec-changed .an-dec-msg { color: var(--text-primary); }
+        .an-dec-mode { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+        .an-dec-tou { background: rgba(79,143,255,.15); color: var(--accent-blue); }
+        .an-dec-sc { background: rgba(34,211,238,.15); color: var(--accent-cyan); }
+        .an-dec-eb { background: rgba(248,113,113,.2); color: var(--accent-red); }
+        .an-no-data { text-align: center; padding: 60px; color: var(--text-muted); font-size: 14px; }
+        .an-balance-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--gap); margin-bottom: var(--gap); }
+        .an-balance-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 10px 14px; }
+        .an-balance-eq { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.6; }
+        .an-balance-eq .an-eq-val { color: var(--text-primary); font-weight: 500; }
+        .an-balance-eq .an-eq-op { color: var(--text-muted); margin: 0 3px; }
+        .an-balance-eq .an-eq-check { margin-left: 6px; }
+        .an-balance-eq .an-eq-ok { color: var(--accent-green); }
+        .an-balance-eq .an-eq-warn { color: var(--accent-amber); }
+        .an-balance-highlight { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 140px; }
+        .an-carousel-nav { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .an-carousel-btn { background: var(--bg-elevated); border: 1px solid var(--border-subtle); color: var(--text-secondary); width: 30px; height: 30px; border-radius: 7px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: all .15s; }
+        .an-carousel-btn:hover { border-color: var(--accent-blue); color: var(--text-primary); }
+        .an-carousel-dots { display: flex; gap: 6px; }
+        .an-carousel-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); opacity: 0.4; cursor: pointer; transition: all .2s; }
+        .an-carousel-dot.active { opacity: 1; background: var(--accent-blue); transform: scale(1.2); }
+        .an-carousel-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; margin-left: 4px; }
+        .an-fs-btn { margin-left: auto; font-size: 16px; }
+        .an-mode-legend { display: flex; gap: 4px; margin-left: 12px; }
+        .an-mode-chip { font-size: 10px; font-family: var(--font-mono); font-weight: 600; padding: 2px 8px; border-radius: 4px; letter-spacing: 0.5px; }
+        .an-carousel-viewport { overflow: hidden; border-radius: var(--card-radius); }
+        .an-carousel-track { display: flex; transition: transform .35s ease; }
+        .an-carousel-slide { min-width: 100%; flex-shrink: 0; height: calc(100vh - 340px); min-height: 380px; }
+        .an-carousel-viewport.an-fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 9999; background: var(--bg-primary); border-radius: 0; padding: 12px; }
+        .an-carousel-viewport.an-fullscreen .an-carousel-slide { height: calc(100vh - 24px); min-height: auto; }
+        @media(max-width:1200px) { .an-summary-row { grid-template-columns: repeat(3, 1fr); } }
+        @media(max-width:768px) { .an-summary-row { grid-template-columns: repeat(2, 1fr); } }
     </style>
 </head>
 <body>
@@ -430,7 +557,7 @@
             <button class="tab-btn active" onclick="switchTab('live')" id="tb-live"><span class="tab-icon">📊</span> Live Dashboard</button>
             <button class="tab-btn" onclick="switchTab('sysinfo')" id="tb-sysinfo"><span class="tab-icon">🔧</span> System Info</button>
             <button class="tab-btn" onclick="switchTab('scripts')" id="tb-scripts"><span class="tab-icon">🩺</span> Script Status</button>
-            <button class="tab-btn" onclick="switchTab('weekly')" id="tb-weekly"><span class="tab-icon">📈</span> Weekly Reports</button>
+            <button class="tab-btn" onclick="switchTab('analytics')" id="tb-analytics"><span class="tab-icon">🔬</span> Analytics</button>
             <button class="tab-btn" onclick="switchTab('logs')" id="tb-logs"><span class="tab-icon">📋</span> System Logs</button>
             <button class="tab-btn" onclick="switchTab('solar')" id="tb-solar" style="display:none"><span class="tab-icon">☀️</span> Solar Array</button>
             <button class="tab-btn" onclick="switchTab('settings')" id="tb-settings"><span class="tab-icon">⚙️</span> Settings</button>
@@ -444,8 +571,9 @@
 
     <!-- ========== LIVE DASHBOARD ========== -->
     <div class="tab-content active" id="tab-live"><div class="live-grid">
-        <!-- LEFT: Battery -->
-        <div class="card battery-card">
+        <!-- LEFT: Battery + Solar -->
+        <div class="left-stack">
+        <div class="card">
             <div class="card-label">Battery Status</div>
             <div class="battery-soc-display">
                 <div class="soc-ring-container">
@@ -467,6 +595,16 @@
             </div>
         </div>
 
+        <!-- LEFT: Solar Status -->
+        <div class="card">
+            <div class="card-label">Solar Status</div>
+            <div class="bstat-row"><span class="bstat-k">Now Producing</span><span class="bstat-v" style="color:var(--solar-color)" id="solar-live-power">-- kW</span></div>
+            <div class="bstat-row"><span class="bstat-k">Today Generated</span><span class="bstat-v" style="color:var(--solar-color)" id="solar-live-today">-- kWh</span></div>
+            <div class="bstat-row"><span class="bstat-k">Self-Powered</span><span class="bstat-v" id="solar-self-pct">--%</span></div>
+            <div class="bstat-row"><span class="bstat-k">Net Status</span><span class="bstat-v" id="solar-net-status">--</span></div>
+        </div>
+        </div><!-- /left-stack -->
+
         <!-- CENTER: Flow visualization with icons over house image -->
         <div class="card flow-card" style="padding:14px 14px 10px">
             <div class="card-label">Real-Time Energy Flow</div>
@@ -475,72 +613,80 @@
                 <div class="flow-scene" id="flow-scene">
                     <img src="House_Power_Graphic.png" alt="Home Energy System">
 
-                    <!-- SVG flow lines - battery is the hub, all lines connect to/from it -->
+                    <!-- Unified SVG: flow lines + icon overlays, all in viewBox coordinates -->
                     <svg class="flow-lines-svg" viewBox="0 0 1376 768" preserveAspectRatio="xMidYMid meet">
-                        <!-- Solar → Battery: amber from solar(61%,9%) to battery(70%,44%) -->
-                        <line id="ln-solar" class="flow-line" stroke="#fbbf24" x1="839" y1="100" x2="963" y2="290"/>
-                        <!-- Grid → Battery: blue from grid(95%,8%) to battery(70%,44%) -->
-                        <line id="ln-grid-in" class="flow-line" stroke="#6aafff" x1="1307" y1="90" x2="990" y2="290"/>
-                        <!-- Battery → Grid (export): cyan reverse -->
-                        <line id="ln-grid-out" class="flow-line flow-line-hidden" stroke="#22d3ee" x1="990" y1="290" x2="1307" y2="90"/>
-                        <!-- Battery → Home: orange from battery(70%,44%) to home(45%,70%) -->
-                        <line id="ln-batt-home" class="flow-line" stroke="#f97316" x1="935" y1="370" x2="660" y2="500"/>
-                        <!-- Generator → Battery: purple from generator(60%,92%) to battery(70%,44%) -->
-                        <line id="ln-gen" class="flow-line" stroke="#c4a8ff" x1="825" y1="660" x2="949" y2="395"/>
-                    </svg>
+                        <!-- Flow lines - battery is the hub, endpoints match node centers -->
+                        <line id="ln-solar" class="flow-line" stroke="#fbbf24" x1="839" y1="-9" x2="1034" y2="303"/>
+                        <line id="ln-grid-in" class="flow-line" stroke="#6aafff" x1="1288" y1="-60" x2="1034" y2="303"/>
+                        <line id="ln-grid-out" class="flow-line flow-line-hidden" stroke="#22d3ee" x1="1034" y1="303" x2="1288" y2="-60"/>
+                        <line id="ln-batt-home" class="flow-line" stroke="#f97316" x1="1034" y1="303" x2="622" y2="585"/>
+                        <line id="ln-gen" class="flow-line" stroke="#c4a8ff" x1="910" y1="825" x2="1034" y2="303"/>
 
-                    <div class="flow-overlay">
-                        <!-- Solar: above the roof panels -->
-                        <div class="fn fn-solar">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-solar">☀️</div>
-                                <div class="fn-val" id="fv-solar">-- kW</div>
-                                <div class="fn-lbl">Producing</div>
+                        <!-- Solar node: above roof panels -->
+                        <foreignObject x="759" y="-104" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-solar" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-solar">☀️</div>
+                                    <div class="fn-val" id="fv-solar">-- kW</div>
+                                    <div class="fn-lbl">Producing</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Grid: near the power pole -->
-                        <div class="fn fn-grid">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-grid">⚡</div>
-                                <div class="fn-val" id="fv-grid">-- kW</div>
-                                <div class="fn-lbl" id="fl-grid">Grid</div>
+                        </foreignObject>
+
+                        <!-- Grid node: near power pole upper-right -->
+                        <foreignObject x="1208" y="-155" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-grid" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-grid">⚡</div>
+                                    <div class="fn-val" id="fv-grid">-- kW</div>
+                                    <div class="fn-lbl" id="fl-grid">Grid</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Battery: above the FranklinWH wall units -->
-                        <div class="fn fn-batt">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-batt">🔋</div>
-                                <div class="fn-val" id="fv-batt">-- kW</div>
-                                <div class="fn-lbl" id="fl-batt">Battery</div>
+                        </foreignObject>
+
+                        <!-- Battery node: above FranklinWH units (moved right) -->
+                        <foreignObject x="954" y="208" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-batt" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-batt">🔋</div>
+                                    <div class="fn-val" id="fv-batt">-- kW</div>
+                                    <div class="fn-lbl" id="fl-batt">Battery</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Generator: in front of the Honeywell unit -->
-                        <div class="fn fn-gen">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-gen">⚙️</div>
-                                <div class="fn-val" id="fv-gen">-- kW</div>
-                                <div class="fn-lbl">Generator</div>
+                        </foreignObject>
+
+                        <!-- Generator node: in front of Honeywell (moved right) -->
+                        <foreignObject x="830" y="730" width="160" height="190">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-gen" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-gen">⚙️</div>
+                                    <div class="fn-val" id="fv-gen">-- kW</div>
+                                    <div class="fn-lbl">Generator</div>
+                                </div>
                             </div>
-                        </div>
-                        <!-- Home: on the garage door / deck area -->
-                        <div class="fn fn-home">
-                            <div class="fn-bg">
-                                <div class="fn-icon" id="ico-home">🏠</div>
-                                <div class="fn-val" id="fv-home">-- kW</div>
-                                <div class="fn-lbl">Consuming</div>
+                        </foreignObject>
+
+                        <!-- Home node: garage/deck area (original position) -->
+                        <foreignObject x="537" y="488" width="170" height="195">
+                            <div xmlns="http://www.w3.org/1999/xhtml" class="fn fn-home" style="position:relative;left:50%;top:50%;transform:translate(-50%,-50%)">
+                                <div class="fn-bg">
+                                    <div class="fn-icon" id="ico-home">🏠</div>
+                                    <div class="fn-val" id="fv-home">-- kW</div>
+                                    <div class="fn-lbl">Consuming</div>
+                                </div>
                             </div>
-                        </div>
-                    </div>
+                        </foreignObject>
+                    </svg>
                 </div>
             </div>
 
+            <div class="card-label" style="margin-top:8px; margin-bottom:4px;">Today's Totals</div>
             <div class="flow-totals">
-                <div class="flow-total-item"><div class="flow-total-label">Solar Today</div><div class="flow-total-value" style="color:var(--solar-color)" id="solar-today">-- kWh</div></div>
-                <div class="flow-total-item"><div class="flow-total-label">Grid Import</div><div class="flow-total-value" style="color:var(--grid-color)" id="grid-import-today">-- kWh</div></div>
-                <div class="flow-total-item"><div class="flow-total-label">Grid Export</div><div class="flow-total-value" style="color:var(--accent-cyan)" id="grid-export-today">-- kWh</div></div>
-                <div class="flow-total-item"><div class="flow-total-label">Home Used</div><div class="flow-total-value" style="color:var(--home-color)" id="home-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--solar-color)">Solar</div><div class="flow-total-value" style="color:var(--solar-color)" id="solar-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--grid-color)">Grid Import</div><div class="flow-total-value" style="color:var(--grid-color)" id="grid-import-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--accent-cyan)">Grid Export</div><div class="flow-total-value" style="color:var(--accent-cyan)" id="grid-export-today">-- kWh</div></div>
+                <div class="flow-total-item"><div class="flow-total-label" style="color:var(--home-color)">Home</div><div class="flow-total-value" style="color:var(--home-color)" id="home-today">-- kWh</div></div>
             </div>
-            <div class="flow-summary-text" id="flow-summary">Loading energy flow data...</div>
         </div>
 
         <!-- RIGHT: Savings + Health -->
@@ -657,24 +803,105 @@
         </div>
     </div>
 
-    <!-- ========== WEEKLY REPORTS ========== -->
-    <div class="tab-content" id="tab-weekly">
-        <div class="report-controls">
-            <select class="sel-input" id="report-select" onchange="loadReport()" style="min-width:280px"><option value="">Loading reports...</option></select>
-            <button class="btn-sm" onclick="scanForReports()">🔄 Refresh</button>
-            <span id="report-status" style="font-size:12px;color:var(--text-muted)"></span>
+    <!-- ========== ANALYTICS ========== -->
+    <div class="tab-content" id="tab-analytics">
+        <div class="analytics-toolbar">
+            <button class="an-nav-btn" onclick="anNavDay(-1)" title="Previous day">◀</button>
+            <input type="date" class="an-date-input" id="an-date-pick" onchange="anLoadRange()">
+            <button class="an-nav-btn" onclick="anNavDay(1)" title="Next day">▶</button>
+            <div class="an-range-btns">
+                <button class="an-range-btn active" onclick="anSetRange('24h')" id="anr-24h">24h</button>
+                <button class="an-range-btn" onclick="anSetRange('48h')" id="anr-48h">48h</button>
+                <button class="an-range-btn" onclick="anSetRange('5d')" id="anr-5d">5d</button>
+                <button class="an-range-btn" onclick="anSetRange('7d')" id="anr-7d">7d</button>
+                <button class="an-range-btn" onclick="anSetRange('30d')" id="anr-30d">30d</button>
+                <button class="an-range-btn" onclick="anSetRange('90d')" id="anr-90d">90d</button>
+            </div>
+            <button class="btn-sm" onclick="anLoadRange()">🔄 Refresh</button>
+            <div class="an-compare-wrap" id="an-compare-wrap">
+                <div class="an-cmp-dropdown">
+                    <button class="btn-sm" onclick="anToggleCmpPanel()" id="an-cmp-btn">+ Compare</button>
+                    <div class="an-cmp-panel" id="an-cmp-panel">
+                        <div class="an-cmp-list" id="an-cmp-list"></div>
+                    </div>
+                </div>
+                <div class="an-cmp-tags" id="an-cmp-tags"></div>
+            </div>
+            <span id="an-day-label" style="font-size:13px;font-weight:500;color:var(--text-primary);margin-left:8px"></span>
+            <span id="an-status" style="font-size:11px;color:var(--text-muted);margin-left:auto;font-family:var(--font-mono)"></span>
         </div>
-        <div class="chart-grid" id="chart-container"><div class="card chart-full" style="text-align:center;padding:60px"><p style="color:var(--text-muted)">Select a report from the dropdown above</p></div></div>
+        <div class="an-summary-row" id="an-summary" style="display:none">
+            <div class="an-stat-card"><div class="an-stat-label">SOC Range</div><div class="an-stat-val" id="ans-soc">—</div></div>
+            <div class="an-stat-card"><div class="an-stat-label">Home Load</div><div class="an-stat-val" id="ans-load">—</div></div>
+            <div class="an-stat-card"><div class="an-stat-label">Grid Import</div><div class="an-stat-val" id="ans-grid">—</div></div>
+            <div class="an-stat-card"><div class="an-stat-label">Solar (Meter)</div><div class="an-stat-val" id="ans-solar">—</div></div>
+            <div class="an-stat-card"><div class="an-stat-label">Battery Net</div><div class="an-stat-val" id="ans-battery">—</div></div>
+            <div class="an-stat-card"><div class="an-stat-label">Weather</div><div class="an-stat-val" id="ans-weather">—</div></div>
+        </div>
+        <div class="an-balance-row" id="an-balance" style="display:none">
+            <div class="an-balance-card">
+                <div class="an-stat-label">Home Energy Balance</div>
+                <div class="an-balance-eq" id="anb-home">—</div>
+            </div>
+            <div class="an-balance-card">
+                <div class="an-stat-label">Solar Balance</div>
+                <div class="an-balance-eq" id="anb-solar">—</div>
+            </div>
+            <div class="an-balance-card an-balance-highlight">
+                <div class="an-stat-label">Curtailment</div>
+                <div class="an-stat-val an-stat-warn" id="ans-curtail">—</div>
+            </div>
+        </div>
+        <div class="an-carousel-nav" style="justify-content:space-between">
+            <button class="an-carousel-btn" onclick="anCarousel(-1)">◀</button>
+            <div style="display:flex;align-items:center;gap:8px;flex:1;justify-content:center">
+                <div class="an-carousel-dots" id="an-carousel-dots"></div>
+                <span class="an-carousel-label" id="an-carousel-label" style="min-width:160px;text-align:left"></span>
+            </div>
+            <button class="an-carousel-btn" onclick="anCarousel(1)">▶</button>
+            <div class="an-mode-legend">
+                <span class="an-mode-chip" style="background:rgba(79,143,255,0.25);color:#4f8fff;border:1px solid rgba(79,143,255,0.4)">TOU</span>
+                <span class="an-mode-chip" style="background:rgba(248,113,113,0.30);color:#f87171;border:1px solid rgba(248,113,113,0.4)">EB</span>
+                <span class="an-mode-chip" style="background:rgba(34,211,238,0.25);color:#22d3ee;border:1px solid rgba(34,211,238,0.4)">SC</span>
+                <span class="an-mode-chip" style="background:rgba(251,191,36,0.12);color:#d4a017;border:1px solid rgba(251,191,36,0.3)">Peak 5-8pm</span>
+            </div>
+            <button class="an-carousel-btn an-fs-btn" onclick="anToggleFS()" id="an-fs-btn" title="Fullscreen">⛶</button>
+        </div>
+        <div class="an-carousel-viewport" id="an-carousel-vp">
+            <div class="an-carousel-track" id="an-carousel-track">
+                <div class="an-carousel-slide card an-chart-card" data-label="Power Flow & SOC">
+                    <div class="card-label">Power Flow & SOC <span style="font-size:9px;color:var(--text-muted);font-weight:400;text-transform:none;letter-spacing:0">click legend to toggle traces</span></div>
+                    <div id="an-power-chart" style="width:100%;height:100%"></div>
+                </div>
+                <div class="an-carousel-slide card an-chart-card" data-label="Battery State & Mode">
+                    <div class="card-label">Battery State & Mode Activity</div>
+                    <div id="an-battery-chart" style="width:100%;height:100%"></div>
+                </div>
+                <div class="an-carousel-slide card an-chart-card" data-label="Solar Curtailment">
+                    <div class="card-label">Solar Curtailment — Enphase Inverter vs Franklin Meter</div>
+                    <div id="an-curtail-chart" style="width:100%;height:100%"></div>
+                </div>
+                <div class="an-carousel-slide card an-chart-card" data-label="Solar Utilization">
+                    <div class="card-label">Solar Utilization — Where the Power Went</div>
+                    <div id="an-solar-util-chart" style="width:100%;height:100%"></div>
+                </div>
+                <div class="an-carousel-slide card an-chart-card" data-label="Decision Log">
+                    <div class="card-label">Decision Log</div>
+                    <div id="an-decision-list" class="an-decision-list" style="overflow-y:auto;height:calc(100% - 30px)"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- ========== SYSTEM LOGS ========== -->
     <div class="tab-content" id="tab-logs">
         <div class="log-toolbar">
-            <select class="sel-input" id="log-file-select" onchange="loadLogs()"><option value="intelligence">Intelligence Log</option><option value="scheduler">Scheduler Log</option><option value="monitoring">Monitoring CSV</option></select>
+            <select class="sel-input" id="log-file-select" onchange="loadLogs()"><option value="intelligence">Intelligence Log</option><option value="scheduler">Scheduler Log</option><option value="readings">System Readings</option></select>
             <select class="sel-input" id="log-lines" onchange="loadLogs()" style="min-width:100px"><option value="25">25 lines</option><option value="50" selected>50 lines</option><option value="100">100 lines</option><option value="200">200 lines</option></select>
             <button class="btn-sm" onclick="loadLogs()">🔄 Refresh</button>
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="log-auto" checked onchange="toggleLogAR()" style="accent-color:var(--accent-blue)"> Auto-refresh (30s)</label>
             <span id="log-status" style="font-size:11px;color:var(--text-muted);margin-left:auto"></span>
+            <button class="btn-sm btn-report" onclick="showReportModal()">🐛 Report Issue</button>
         </div>
         <div class="log-viewer" id="log-viewer"><div class="log-line info">Select a log file to begin.</div></div>
     </div>
@@ -687,7 +914,7 @@
                 <div class="setting-group"><label>Log Auto-Refresh</label><select class="setting-input" id="s-logref" onchange="saveSettings()"><option value="15">15s</option><option value="30" selected>30s</option><option value="60">60s</option><option value="0">Disabled</option></select></div>
                 <div class="setting-group"><label>Temperature Unit</label><select class="setting-input" id="s-temp" onchange="saveSettings()"><option value="f">Fahrenheit</option><option value="c">Celsius</option></select></div>
                 <div class="setting-group"><label>Battery Capacity (kWh)</label><input type="number" class="setting-input" id="s-cap" value="30" step="0.1" onchange="saveSettings()"><div class="setting-note">Total across all batteries</div></div>
-                <div class="setting-group"><label>Target Display</label><select class="setting-input" id="s-disp" onchange="saveSettings()"><option value="1920x1200">Fire HD 10 (1920×1200)</option><option value="1280x800">Fire HD 8</option><option value="1920x1080">1080p</option><option value="auto">Auto</option></select></div>
+                <div class="setting-group"><label>Target Display</label><select class="setting-input" id="s-disp" onchange="saveSettings()"><option value="1507x943">Fire HD 10 (1507×943)</option><option value="1280x800">Fire HD 8</option><option value="1920x1080">1080p</option><option value="auto">Auto</option></select></div>
                 <div class="setting-group"><label>Theme</label><select class="setting-input" id="s-theme" onchange="saveSettings()"><option value="dark">Dark</option><option value="oled">OLED Black</option></select></div>
             </div>
             <div class="card"><div class="card-label">Automation Thresholds</div>
@@ -699,8 +926,9 @@
             </div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">About</div>
-            <div class="info-row"><span class="info-key">Dashboard Version</span><span class="info-val">3.5.0</span></div>
+            <div class="info-row"><span class="info-key">Version</span><span class="info-val"><span id="about-version">--</span> <span id="update-badge" style="display:none;margin-left:8px;font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(79,143,255,.12);color:var(--accent-blue);cursor:pointer" onclick="window.open(this.dataset.url,'_blank')">Update Available</span></span></div>
             <div class="info-row"><span class="info-key">Last Data Update</span><span class="info-val" id="about-update">--</span></div>
+            <div class="info-row"><span class="info-key">Anonymous Analytics</span><span class="info-val"><span id="telemetry-badge" class="telemetry-badge">loading...</span></span></div>
             <div class="info-row"><span class="info-key">Project</span><span class="info-val"><a href="https://github.com/mtnears/FranklinWH-Automation" target="_blank" style="color:var(--accent-blue);text-decoration:none">GitHub ↗</a></span></div>
         </div>
     </div>
@@ -779,6 +1007,12 @@
             <div class="modal-opt" onclick="selDur(this,'4h')"><span class="modal-dot"></span><span>4 hours</span></div>
             <div class="modal-opt" onclick="selDur(this,'8h')"><span class="modal-dot"></span><span>8 hours</span></div>
             <div class="modal-opt" onclick="selDur(this,'until_cancel')"><span class="modal-dot"></span><span>Until cancelled</span></div>
+            <div class="modal-opt" onclick="selDur(this,'until_soc')"><span class="modal-dot"></span><span>Until SOC target</span></div>
+        </div>
+        <div id="soc-target-row" style="display:none; margin:10px 0; padding:8px 12px; background:rgba(255,255,255,.04); border-radius:8px; align-items:center; gap:10px;">
+            <label style="font-size:12px; color:var(--text-secondary); white-space:nowrap;" id="soc-target-label">Target SOC:</label>
+            <input type="range" id="soc-target-slider" min="20" max="100" value="80" step="5" style="flex:1; accent-color:var(--accent-cyan);" oninput="document.getElementById('soc-target-val').textContent=this.value+'%'">
+            <span id="soc-target-val" style="font-size:13px; font-weight:600; min-width:36px; text-align:right;">80%</span>
         </div>
         <div class="modal-actions">
             <button class="modal-btn mbtn-cancel" onclick="closeModal()">Cancel</button>
@@ -787,12 +1021,113 @@
     </div>
 </div>
 
+<!-- Report Issue Modal -->
+<div class="modal-overlay" id="report-modal">
+    <div class="modal report-modal">
+        <div class="modal-title">🐛 Report an Issue</div>
+        <div class="modal-body" style="margin-bottom:14px">Generate a sanitized diagnostic bundle and open a GitHub issue. Credentials and personal info are automatically stripped.</div>
+
+        <div id="report-step-1" class="report-step">
+            <span class="report-step-num">1</span><span class="report-step-label">Describe the issue</span>
+            <div class="report-step-desc">What happened? What did you expect to happen?</div>
+            <textarea class="report-textarea" id="report-desc" placeholder="e.g., Engine charged during peak hours, SOC dropped unexpectedly, mode didn't switch back after override expired..." style="margin-top:8px"></textarea>
+        </div>
+
+        <div id="report-step-2" class="report-step">
+            <span class="report-step-num">2</span><span class="report-step-label">Select time range</span>
+            <div style="display:flex;gap:6px;margin-top:8px;margin-left:30px">
+                <button class="btn-sm" onclick="selReportRange(this,'1')" style="font-size:11px">1h</button>
+                <button class="btn-sm" onclick="selReportRange(this,'6')" style="font-size:11px">6h</button>
+                <button class="btn-sm sel" onclick="selReportRange(this,'24')" style="font-size:11px;border-color:var(--accent-blue);color:var(--accent-blue)">24h</button>
+                <button class="btn-sm" onclick="selReportRange(this,'48')" style="font-size:11px">48h</button>
+            </div>
+        </div>
+
+        <div class="report-progress" id="report-progress">
+            <div class="report-spinner"></div>
+            <span id="report-progress-text">Generating diagnostic bundle...</span>
+        </div>
+
+        <div id="report-step-3" class="report-step" style="display:none">
+            <span class="report-step-num report-done">✓</span><span class="report-step-label">Review &amp; submit</span>
+            <div class="report-step-desc">Bundle generated. Review the preview below, then download and open the GitHub issue.</div>
+            <div class="report-preview" id="report-preview"></div>
+        </div>
+
+        <div class="report-actions" id="report-actions-initial">
+            <button class="modal-btn mbtn-cancel" onclick="closeReportModal()">Cancel</button>
+            <button class="modal-btn mbtn-confirm" id="report-generate-btn" onclick="generateReport()">Generate Bundle</button>
+        </div>
+
+        <div class="report-actions" id="report-actions-ready" style="display:none">
+            <button class="modal-btn mbtn-cancel" onclick="closeReportModal()">Close</button>
+            <a class="modal-btn btn-download" id="report-download-link" href="#" download style="text-decoration:none;text-align:center">⬇ Download Bundle</a>
+            <button class="modal-btn btn-github" id="report-github-btn" onclick="openGitHubIssue()">🐙 Open GitHub Issue</button>
+        </div>
+    </div>
+</div>
+
+<!-- Telemetry Consent Modal -->
+<div class="modal-overlay" id="consent-modal">
+    <div class="modal consent-modal">
+        <!-- Step 1: Consent -->
+        <div id="consent-step-1">
+            <div class="modal-title">📊 Help Improve FranklinWH Automation</div>
+            <div class="modal-body" style="margin-bottom:4px">This project can send anonymous usage stats to help guide development. No personal info, API keys, IPs, or identifiable data is ever collected.</div>
+            <div class="consent-what">
+                <div class="consent-what-item">System size (battery kWh, panel count)</div>
+                <div class="consent-what-item">Engine version &amp; config flags</div>
+                <div class="consent-what-item">Aggregate performance (peak protection %)</div>
+                <div class="consent-what-item">Country / region (you choose below)</div>
+            </div>
+            <div class="consent-env-note">You can change this anytime in your .env file with <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:11px">TELEMETRY_ENABLED=true</code> or <code style="background:var(--bg-elevated);padding:1px 5px;border-radius:3px;font-size:11px">false</code>.</div>
+            <div class="consent-actions">
+                <button class="modal-btn mbtn-cancel" onclick="setTelemetryConsent(false)">No Thanks</button>
+                <button class="modal-btn mbtn-confirm" onclick="showConsentStep2()">Enable Analytics</button>
+            </div>
+        </div>
+        <!-- Step 2: Region picker (shown after opt-in) -->
+        <div id="consent-step-2" style="display:none">
+            <div class="modal-title">📍 Select Your Region</div>
+            <div class="modal-body">Optional — helps us understand where the community is. Only country-level, never city or address.</div>
+            <div class="consent-region">
+                <label for="consent-region-select">Country</label>
+                <select id="consent-region-select">
+                    <option value="">— Prefer not to say —</option>
+                    <option value="US">United States</option>
+                    <option value="CA">Canada</option>
+                    <option value="AU">Australia</option>
+                    <option value="DE">Germany</option>
+                    <option value="UK">United Kingdom</option>
+                    <option value="FR">France</option>
+                    <option value="IT">Italy</option>
+                    <option value="ES">Spain</option>
+                    <option value="NL">Netherlands</option>
+                    <option value="JP">Japan</option>
+                    <option value="KR">South Korea</option>
+                    <option value="NZ">New Zealand</option>
+                    <option value="OTHER">Other</option>
+                </select>
+                <div class="consent-region-hint" id="consent-region-hint"></div>
+            </div>
+            <div class="consent-actions">
+                <button class="modal-btn mbtn-cancel" onclick="setTelemetryConsent(false)">Cancel</button>
+                <button class="modal-btn mbtn-confirm" onclick="submitTelemetryConsent()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+</div>
+
 <script>
+
 let D=null,S={},OV={active:false},ovMode=null,ovDur='1h',logTimer=null,dashTimer=null;
 
 document.addEventListener('DOMContentLoaded',()=>{
     loadSettings(); tick(); setInterval(tick,1000);
-    update(); startDash(); startLogAR(); scanForReports(); loadOV();
+    update(); startDash(); startLogAR(); loadOV();
+    checkTelemetryConsent();
+    fetchVersionAndCheckUpdate();
     // Show Solar Array tab if any solar data is available
     (async()=>{
         let found=false;
@@ -808,8 +1143,7 @@ document.addEventListener('DOMContentLoaded',()=>{
         try{const t=localStorage.getItem('fwh_tab');if(t&&document.getElementById('tab-'+t)){switchTab(t)}}catch(e){}
     })();
 });
-
-function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();if(t==='scripts'){loadScriptStatus();startScriptAR()}else{stopScriptAR()}try{localStorage.setItem('fwh_tab',t)}catch(e){}}
+function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();if(t==='analytics')initAnalytics();if(t==='scripts'){loadScriptStatus();startScriptAR()}else{stopScriptAR()}try{localStorage.setItem('fwh_tab',t)}catch(e){}}
 
 // ===== SOLAR ARRAY TAB (Multi-Array) =====
 let solArrays={}, solActive=null, solTimer=null;
@@ -1490,7 +1824,7 @@ function renderLive(d){
     document.getElementById('batt-power').textContent=bp.toFixed(2)+' kW';
     document.getElementById('batt-charged').textContent=(t.charged||0).toFixed(2)+' kWh';
     document.getElementById('batt-discharged').textContent=(t.discharged||0).toFixed(2)+' kWh';
-    document.getElementById('solar-ratio').textContent=(t.solar_ratio||0)+'%';
+    document.getElementById('solar-ratio').textContent=Math.min(100,(t.solar_ratio||0))+'%';
 
     // Per-battery
     const ps=x.per_battery_soc||b.per_battery_soc;
@@ -1532,13 +1866,28 @@ function renderLive(d){
     else if(gr<-0.05)fl.push('🔌 Exporting '+Math.abs(gr).toFixed(1)+' kW');
     if(ba<-0.1)fl.push('🔋 Charging at '+Math.abs(ba).toFixed(1)+' kW');
     else if(ba>0.1)fl.push('🔋 Discharging '+ba.toFixed(1)+' kW');
-    document.getElementById('flow-summary').textContent=fl.length?fl.join('  ·  '):'System idle';
+    const flowSumEl=document.getElementById('flow-summary');if(flowSumEl)flowSumEl.textContent=fl.length?fl.join('  ·  '):'System idle';
 
     // Totals
     document.getElementById('solar-today').textContent=(t.solar_generated||x.kwh_sun||0).toFixed(1)+' kWh';
     document.getElementById('grid-import-today').textContent=(x.kwh_uti_in||0).toFixed(1)+' kWh';
     document.getElementById('grid-export-today').textContent=(x.kwh_uti_out||0).toFixed(1)+' kWh';
     document.getElementById('home-today').textContent=(x.kwh_load||0).toFixed(1)+' kWh';
+
+    // Solar Status panel in battery card
+    const solarNow=f.solar||0, homeNow=f.home||0, gridNow=f.grid||0;
+    const solarToday=t.solar_generated||x.kwh_sun||0, homeToday=x.kwh_load||0;
+    document.getElementById('solar-live-power').textContent=Math.max(0,solarNow).toFixed(1)+' kW';
+    document.getElementById('solar-live-today').textContent=solarToday.toFixed(1)+' kWh';
+    const selfPct=homeToday>0?Math.min(100,Math.round((solarToday/homeToday)*100)):0;
+    const spEl=document.getElementById('solar-self-pct');
+    spEl.textContent=selfPct+'%';
+    spEl.style.color=selfPct>=100?'var(--accent-green)':selfPct>=50?'var(--solar-color)':'var(--accent-red)';
+    const netEl=document.getElementById('solar-net-status');
+    if(solarNow>homeNow+0.1){netEl.textContent='Surplus +'+((solarNow-homeNow).toFixed(1))+' kW';netEl.style.color='var(--accent-green)'}
+    else if(solarNow>0.1&&solarNow>=homeNow-0.1){netEl.textContent='Balanced';netEl.style.color='var(--solar-color)'}
+    else if(solarNow>0.1){netEl.textContent='Deficit -'+((homeNow-solarNow).toFixed(1))+' kW';netEl.style.color='var(--accent-amber)'}
+    else{netEl.textContent='No Solar';netEl.style.color='var(--text-muted)'}
 
     // Savings
     document.getElementById('savings-today').textContent='$'+(s.today||0).toFixed(2);
@@ -1550,7 +1899,8 @@ function renderLive(d){
 
     // Peak
     const mins=b.peak_countdown_minutes,pc=document.getElementById('peak-bar');
-    if(mins!=null){if(mins<=0){pc.classList.add('peak-active');document.getElementById('peak-text').textContent='🔴 PEAK ACTIVE';document.getElementById('peak-time').textContent=b.peak_time||''}
+    if(mins!=null){if(mins<0){pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='No peak today';document.getElementById('peak-time').textContent=b.peak_time||'Weekend/Holiday'}
+    else if(mins==0){pc.classList.add('peak-active');document.getElementById('peak-text').textContent='🔴 PEAK ACTIVE';document.getElementById('peak-time').textContent=b.peak_time||''}
     else{pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='Peak starts at '+(b.peak_time||'--:--');document.getElementById('peak-time').textContent=(Math.floor(mins/60)>0?Math.floor(mins/60)+'h ':'')+mins%60+'m'}}
 
     // Health
@@ -1630,10 +1980,11 @@ function toggleScriptAR() { document.getElementById('scripts-auto').checked ? st
 
 async function checkScriptHealth() {
     try {
-        const r = await fetch('logs/scheduler.log?t=' + Date.now());
+        const r = await fetch('/api/scheduler-logs?limit=500');
         if (!r.ok) { _scriptHealthClass = 'off'; return; }
-        const txt = await r.text();
-        const lines = txt.trim().split('\n');
+        const d = await r.json();
+        if (!d.entries || d.entries.length === 0) { _scriptHealthClass = 'off'; return; }
+        const lines = d.entries.map(e => '[' + e.timestamp + '] ' + e.message);
         // Find last Docker start
         let startIdx = 0;
         for (let i = lines.length - 1; i >= 0; i--) {
@@ -1661,73 +2012,56 @@ checkScriptHealth();
 setInterval(checkScriptHealth, 300000);
 
 const SCRIPT_META = {
-    'Smart Decision': { desc: 'Core battery automation — mode switching and charging decisions', sched: 'Every 30 min', file: 'smart_decision.py' },
+    'Smart Decision': { desc: 'Core battery automation — mode switching and charging decisions', sched: 'Every 30 min', file: 'smart_decision.py', ver: '4.0' },
     'Smart Decision [pre-peak]': { desc: 'Pre-peak protection check', sched: 'Daily before peak', file: 'smart_decision.py' },
     'Smart Decision [post-peak]': { desc: 'Post-peak mode restoration', sched: 'Daily after peak', file: 'smart_decision.py' },
     'Dashboard Data': { desc: 'Generates live dashboard JSON for the web UI', sched: 'Every 1 min', file: 'generate_dashboard_data.py' },
-    'Weather Collection': { desc: 'Collects temperature and conditions from weather station', sched: 'Every 15 min', file: 'collect_weather.py' },
-    'PVOutput Collection': { desc: 'Uploads solar production data to PVOutput.org', sched: 'Hourly at :05', file: 'collect_pvoutput.py' },
+    'PVOutput Collection': { desc: 'Uploads solar production data to PVOutput.org', sched: 'Hourly at :05', file: 'collect_pv_output.py' },
+    'PVOutput Daily Collection': { desc: 'Collects daily production totals from PVOutput.org API', sched: 'Daily at 00:15 AM', file: 'collect_pv_output.py' },
     'Weekly Charts': { desc: 'Generates SOC timeline and daily summary charts', sched: 'Sunday 2:00 AM', file: 'generate_weekly_charts.py' },
     'Daily Savings': { desc: 'Calculates and logs daily savings from battery optimization', sched: 'Daily 00:05 AM', file: 'calculate_daily_savings.py' },
-    'Daily Status Report': { desc: 'Sends daily email status report', sched: 'Daily 4:30 PM', file: 'daily_status_report.py' },
+    'Daily Energy Rollup': { desc: 'Aggregates 5-min readings into daily energy summaries', sched: 'Daily at 00:10 AM', file: 'rollup_daily_energy.py' },
+    'SolarEdge Panel Monitoring': { desc: 'Collects per-optimizer energy data from SolarEdge portal', sched: 'Every 15 min', file: 'collect_solaredge_panels.py' },
+    'Solar Health Monitor': { desc: 'Analyzes panel health across all solar arrays', sched: 'Daily at 8:30 PM', file: 'solar_health_monitor.py' },
+    'SQLite Modbus Collection': { desc: 'Collects system readings via Modbus TCP to SQLite', sched: 'Every 5 min', file: 'collect_modbus.py' },
+    'SQLite Enphase Collection': { desc: 'Collects per-panel production from house array to SQLite', sched: 'Every 5 min', file: 'collect_solar_enphase.py' },
+    'SQLite Weather Collection': { desc: 'Collects weather observations to SQLite', sched: 'Every 15 min', file: 'collect_weather_db.py' },
+    'Franklin Cloud Collection': { desc: 'Enriches readings with per-battery SOC and energy totals', sched: 'Every 15 min', file: 'collect_franklin_cloud.py' },
+    'Device Inventory Collection': { desc: 'Tracks serial numbers, firmware versions, and device models', sched: 'Daily at 3:00 AM', file: 'collect_device_inventory.py' },
+    'Log Pruning': { desc: 'Cleans scheduler and intelligence log entries older than 30 days', sched: 'Daily at 3:30 AM' },
+    'Telemetry': { desc: 'Anonymous opt-in telemetry submission', sched: 'Daily at 6:00 AM', file: 'telemetry_reporter.py' },
 };
 function getSolarMeta(name) {
     const m = name.match(/^Solar \[(.+)\]$/);
-    if (m) return { desc: 'Collects solar production from ' + m[1] + ' array', sched: 'Every 5 min', file: 'collect_enphase.py / collect_solaredge.py' };
+    if (m) return { desc: 'Collects solar production from ' + m[1] + ' array', sched: 'Every 5 min', file: 'collect_enphase.py / collect_solaredge_panels.py' };
     if (name === 'Enphase Solar Collection') return { desc: 'Collects solar production (legacy mode)', sched: 'Every 5 min', file: 'collect_enphase.py' };
     return null;
 }
 
 async function loadScriptStatus() {
     try {
-        const r = await fetch('logs/scheduler.log?t=' + Date.now());
-        if (!r.ok) throw new Error('Log not available');
-        const txt = await r.text();
-        const lines = txt.trim().split('\n');
+        // Fetch docker start time from dedicated endpoint (avoids log scanning)
+        try {
+            const ds = await fetch('/api/docker-start');
+            if (ds.ok) { const dsData = await ds.json(); if (dsData.docker_start) _scriptDockerStart = dsData.docker_start; }
+        } catch (e) { /* non-fatal */ }
 
-        // Find Docker start time (last occurrence of scheduler banner)
-        let dockerStart = null;
-        let startIdx = 0;
-        for (let i = lines.length - 1; i >= 0; i--) {
-            if (lines[i].includes('Automation Scheduler v')) {
-                const m = lines[i].match(/\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]/);
-                if (m) { dockerStart = m[1]; startIdx = i; break; }
-            }
-        }
-        _scriptDockerStart = dockerStart;
-
-        // Parse scheduled tasks from startup log lines
-        // Only parse between "Scheduling tasks:" and "Scheduler ready." to avoid config lines
+        // Fetch registered task list from dedicated endpoint (avoids startup log scanning)
         const registered = {};
-        const schedLineRe = /^\[.*\]\s+[•\-]\s+(.+?):\s+(.+)/;
-        let inScheduleBlock = false;
-        for (let i = startIdx; i < lines.length; i++) {
-            if (lines[i].includes('Scheduling tasks:')) { inScheduleBlock = true; continue; }
-            if (lines[i].includes('Scheduler ready.')) break;
-            if (!inScheduleBlock) continue;
-            // Skip separator lines
-            if (lines[i].match(/[-=]{10,}/)) continue;
-            const sm = lines[i].match(schedLineRe);
-            if (sm) {
-                const taskName = sm[1].trim();
-                const schedDesc = sm[2].trim();
-                const nameMap = {
-                    'Smart Decision': 'Smart Decision',
-                    'Pre-peak check': 'Smart Decision [pre-peak]',
-                    'Post-peak check': 'Smart Decision [post-peak]',
-                    'Dashboard Data': 'Dashboard Data',
-                    'Weather Collection': 'Weather Collection',
-                    'PVOutput Collection': 'PVOutput Collection',
-                    'Solar Array Collection': null,
-                    'Enphase Solar Collection': null,
-                    'Daily Status Report': 'Daily Status Report',
-                    'Daily Savings': 'Daily Savings',
-                    'Weekly Charts': 'Weekly Charts',
-                };
-                const mappedName = nameMap.hasOwnProperty(taskName) ? nameMap[taskName] : taskName;
-                if (mappedName) registered[mappedName] = { sched: schedDesc, schedRaw: schedDesc };
+        try {
+            const tr = await fetch('/api/scheduler-tasks');
+            if (tr.ok) {
+                const td = await tr.json();
+                (td.tasks || []).forEach(t => { registered[t.name] = { sched: t.schedule, schedRaw: t.schedule }; });
             }
-        }
+        } catch (e) { /* non-fatal */ }
+
+        const r = await fetch('/api/scheduler-logs?limit=5000');
+        if (!r.ok) throw new Error('API returned ' + r.status);
+        const d = await r.json();
+        if (!d.entries || d.entries.length === 0) throw new Error('No log entries');
+        const lines = d.entries.map(e => '[' + e.timestamp + '] ' + e.message);
+        const startIdx = 0;
 
         // Track per-script stats from run logs
         const scripts = {};
@@ -1894,10 +2228,11 @@ function renderScriptStatus() {
                 errHtml + '</div></td></tr>';
         }
 
+        const verTag = meta.ver ? ' <span style="color:var(--text-secondary);font-weight:400;font-size:11px">(v' + meta.ver + ')</span>' : '';
         const fileName = meta.file ? '<div class="script-file">' + meta.file + '</div>' : '';
 
         return '<tr class="' + rowClass + '">' +
-            '<td><div class="script-name">' + s.name + '</div><div class="script-desc">' + (meta.desc || '') + '</div>' + fileName + '</td>' +
+            '<td><div class="script-name">' + s.name + verTag + '</div><div class="script-desc">' + (meta.desc || '') + '</div>' + fileName + '</td>' +
             '<td><span class="script-sched">' + schedDisplay + '</span></td>' +
             '<td>' + badge + '</td>' +
             '<td><span class="script-time">' + lastRun + '</span></td>' +
@@ -2048,80 +2383,264 @@ function escHtml(s) {
 // ===== LOGS =====
 async function loadLogs(){
     const lt=document.getElementById('log-file-select').value,ln=parseInt(document.getElementById('log-lines').value),v=document.getElementById('log-viewer');
-    const files={scheduler:'logs/scheduler.log',intelligence:'logs/solar_intelligence.log',monitoring:'logs/continuous_monitoring.csv'};
-    try{const r=await fetch(files[lt]+'?t='+Date.now());if(!r.ok)throw new Error('not found');const txt=await r.text();
-    if(lt==='monitoring'){const ls=txt.trim().split('\n'),hdr=ls[0],rows=ls.slice(-ln);let h='<table class="csv-table"><thead><tr>'+hdr.split(',').map(c=>'<th>'+c.trim()+'</th>').join('')+'</tr></thead><tbody>';rows.reverse().forEach(r=>{h+='<tr>'+r.split(',').map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>'});v.innerHTML=h+'</tbody></table>'}
-    else{const all=txt.trim().split('\n').slice(-ln);v.innerHTML=all.map(l=>{let c='log-line info';if(l.includes('ERROR')||l.includes('✗')||l.includes('FAIL'))c='log-line error';else if(l.includes('WARNING')||l.includes('⚠'))c='log-line warning';else if(l.includes('SUCCESS')||l.includes('✓')||l.includes('✅'))c='log-line success';return'<div class="'+c+'">'+l.replace(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}|\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\])/,'<span class="log-timestamp">$1</span>')+'</div>'}).join('');v.scrollTop=v.scrollHeight}
-    document.getElementById('log-status').textContent='Updated '+new Date().toLocaleTimeString();
-    }catch(e){v.innerHTML='<div class="log-line error">Unable to load: '+e.message+'</div><div class="log-line info">Logs appear after the first automation run.</div>'}
-}
-
-// ===== REPORTS =====
-async function scanForReports(){
-    const sel=document.getElementById('report-select'),st=document.getElementById('report-status');
-    sel.innerHTML='<option value="">Scanning for reports...</option>';
-    const found=new Set();
-    // Parse actual directory listing from nginx autoindex
-    try{
-        const r=await fetch('logs/?t='+Date.now());
-        if(r.ok){
-            const html=await r.text();
-            // Match filenames like MM-DD-YYYY_chart_soc_timeline.png
-            const re=/(\d{2}-\d{2}-\d{4})_chart_soc_timeline\.png/g;
-            let m;while((m=re.exec(html))!==null)found.add(m[1]);
-        }
-    }catch(e){console.log('Directory scan failed:',e)}
-    // Also try index file as fallback
-    try{
-        const r=await fetch('weekly_reports_index.json?t='+Date.now());
-        if(r.ok){
-            const d=await r.json();
-            if(d.reports&&d.reports.length>0){
-                d.reports.forEach(rp=>{if(rp.date)found.add(rp.date)});
-            }
-        }
-    }catch(e){}
-    // Sort by date descending and populate
-    const sorted=[...found].sort((a,b)=>{
-        const pa=a.split('-'),pb=b.split('-');
-        const da=new Date(pa[2],pa[0]-1,pa[1]),db=new Date(pb[2],pb[0]-1,pb[1]);
-        return db-da;
-    });
-    sel.innerHTML='<option value="">Select a report...</option>';
-    sorted.forEach(d=>{
-        const p=d.split('-');
-        const dt=new Date(p[2],p[0]-1,p[1]);
-        const label=dt.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-        sel.innerHTML+='<option value="'+d+'">'+label+'</option>';
-    });
-    st.textContent=sorted.length+' report'+(sorted.length!==1?'s':'')+' found';
-    if(sorted.length>0){sel.value=sorted[0];loadReport()}
-}
-
-function loadReport(){
-    const d=document.getElementById('report-select').value,c=document.getElementById('chart-container');
-    if(!d){c.innerHTML='<div class="card chart-full" style="text-align:center;padding:60px"><p style="color:var(--text-muted)">Select a report</p></div>';return}
-    c.innerHTML=[
-        {f:'logs/'+d+'_chart_soc_timeline.png',l:'📈 SOC Timeline - 7 Day History'},
-        {f:'logs/'+d+'_chart_daily_summary.png',l:'📊 Daily Summary'},
-        {f:'logs/'+d+'_chart_power_flow.png',l:'⚡ Power Flow - 48 Hours',full:1}
-    ].map(ch=>'<div class="card'+(ch.full?' chart-full':'')+'"><div class="card-label">'+ch.l+'</div><img src="'+ch.f+'?t='+Date.now()+'" alt="'+ch.l+'" onerror="this.parentElement.innerHTML=\'<p style=\\\'color:var(--text-muted);padding:40px;text-align:center\\\'>Chart not available</p>\'"></div>').join('');
+    if(lt==='readings'){
+        try{const r=await fetch('/api/system-readings?limit='+ln);if(!r.ok)throw new Error('API error');const d=await r.json();
+        if(d.readings&&d.readings.length>0){const cols=['timestamp','soc_pct','solar_kw','grid_kw','battery_kw','home_load_kw','mode','mode_detail','grid_voltage_v','grid_frequency_hz','ambient_temp_c'];let h='<table class="csv-table"><thead><tr>'+cols.map(c=>'<th>'+c+'</th>').join('')+'</tr></thead><tbody>';d.readings.slice().reverse().forEach(row=>{h+='<tr>'+cols.map(c=>{let val=row[c];if(val===null||val===undefined)return'<td>—</td>';if(typeof val==='number')val=c.includes('kw')?val.toFixed(3):c.includes('pct')?val.toFixed(1):c.includes('voltage')?val.toFixed(1):c.includes('frequency')?val.toFixed(2):c.includes('temp')?val.toFixed(1):val;return'<td>'+val+'</td>'}).join('')+'</tr>'});v.innerHTML=h+'</tbody></table>'}
+        else{v.innerHTML='<div class="log-line info">No readings yet. Data appears after the first Modbus collection cycle.</div>'}
+        document.getElementById('log-status').textContent='Updated '+new Date().toLocaleTimeString()+' ('+d.count+' rows)';
+        }catch(e){v.innerHTML='<div class="log-line error">Unable to load: '+e.message+'</div><div class="log-line info">System readings require the database and Modbus collector to be running.</div>'}
+        return;
+    }
+    const apiMap={scheduler:'/api/scheduler-logs',intelligence:'/api/intelligence-logs'};
+    const apiUrl=apiMap[lt];
+    if(apiUrl){
+        try{const r=await fetch(apiUrl+'?limit='+ln);if(!r.ok)throw new Error('API returned '+r.status);const d=await r.json();
+        if(d.entries&&d.entries.length>0){
+            v.innerHTML=d.entries.map(e=>{
+                const ts=e.timestamp||'';const msg=e.message||'';const lvl=(e.level||'').toUpperCase();const lgr=e.logger?'['+e.logger+'] ':'';
+                let c='log-line info';if(lvl==='ERROR'||msg.includes('ERROR')||msg.includes('FAIL'))c='log-line error';else if(lvl==='WARNING'||msg.includes('WARNING'))c='log-line warning';else if(msg.includes('SUCCESS')||msg.includes('OK ')||msg.includes('✓'))c='log-line success';
+                return'<div class="'+c+'"><span class="log-timestamp">['+ts+']</span> '+lgr+msg+'</div>';
+            }).join('');
+            v.scrollTop=v.scrollHeight;
+        }else{v.innerHTML='<div class="log-line info">No log entries yet. Entries appear after the first automation run.</div>'}
+        document.getElementById('log-status').textContent='Updated '+new Date().toLocaleTimeString()+' ('+d.count+' entries)';
+        }catch(e){v.innerHTML='<div class="log-line error">Unable to load '+lt+' logs: '+e.message+'</div><div class="log-line info">Log API requires database to be running.</div>'}
+        return;
+    }
+    // Unknown log type
+    v.innerHTML='<div class="log-line error">Unknown log type: '+lt+'</div>';
 }
 
 // ===== OVERRIDE =====
-function showOverrideModal(m){ovMode=m;const t=document.getElementById('m-title'),b=document.getElementById('m-body'),btn=document.getElementById('m-confirm');if(m==='self_consumption'){t.textContent='🔄 Force Self Consumption';b.textContent='Switch to Self Consumption. No grid charging. Schedule paused.';btn.className='modal-btn mbtn-confirm';btn.textContent='Activate'}else{t.textContent='🛡️ Force Emergency Backup';b.textContent='Charge from grid ASAP. Schedule paused.';btn.className='modal-btn mbtn-confirm danger';btn.textContent='Activate'}selDur(document.querySelector('.modal-opt'),'1h');document.getElementById('ov-modal').classList.add('active')}
+function showOverrideModal(m){ovMode=m;const t=document.getElementById('m-title'),b=document.getElementById('m-body'),btn=document.getElementById('m-confirm');if(m==='self_consumption'){t.textContent='🔄 Force Self Consumption';b.textContent='Switch to Self Consumption. No grid charging. Schedule paused.';btn.className='modal-btn mbtn-confirm';btn.textContent='Activate'}else{t.textContent='🛡️ Force Emergency Backup';b.textContent='Charge from grid ASAP. Schedule paused.';btn.className='modal-btn mbtn-confirm danger';btn.textContent='Activate'}document.getElementById('soc-target-row').style.display='none';document.getElementById('soc-target-slider').value=m==='emergency_backup'?95:40;document.getElementById('soc-target-val').textContent=(m==='emergency_backup'?'95':'40')+'%';selDur(document.querySelector('.modal-opt'),'1h');document.getElementById('ov-modal').classList.add('active')}
 function closeModal(){document.getElementById('ov-modal').classList.remove('active')}
-function selDur(el,d){ovDur=d;document.querySelectorAll('.modal-opt').forEach(o=>o.classList.remove('sel'));el.classList.add('sel')}
-function confirmOverride(){const dm={'1h':60,'2h':120,'4h':240,'8h':480,'until_cancel':null},mins=dm[ovDur];OV={active:true,mode:ovMode,dur:ovDur,start:Date.now(),exp:mins?Date.now()+mins*60000:null};saveOV();updateOVBanner();closeModal();document.getElementById('cancel-ov-btn').style.display='block';fetch('/api/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:ovMode,duration:ovDur})}).then(r=>r.json()).then(d=>{if(d.status==='ok')console.log('Override activated:',d.override);else console.error('Override failed:',d)}).catch(e=>console.error('Override API error:',e))}
+function selDur(el,d){ovDur=d;document.querySelectorAll('.modal-opt').forEach(o=>o.classList.remove('sel'));el.classList.add('sel');const sr=document.getElementById('soc-target-row');if(d==='until_soc'){sr.style.display='flex';const lbl=document.getElementById('soc-target-label');lbl.textContent=ovMode==='emergency_backup'?'Charge to:':'Drain to:'}else{sr.style.display='none'}}
+function confirmOverride(){const dm={'1h':60,'2h':120,'4h':240,'8h':480,'until_cancel':null,'until_soc':null},mins=dm[ovDur];const socTarget=ovDur==='until_soc'?parseInt(document.getElementById('soc-target-slider').value):null;OV={active:true,mode:ovMode,dur:ovDur,start:Date.now(),exp:mins?Date.now()+mins*60000:null,exitSoc:socTarget};saveOV();updateOVBanner();closeModal();document.getElementById('cancel-ov-btn').style.display='block';const payload={mode:ovMode,duration:ovDur};if(socTarget)payload.exit_soc_pct=socTarget;fetch('/api/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{if(d.status==='ok')console.log('Override activated:',d.override);else console.error('Override failed:',d)}).catch(e=>console.error('Override API error:',e))}
 function cancelOverride(){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none';fetch('/api/override/cancel',{method:'POST'}).then(r=>r.json()).then(d=>console.log('Override cancelled:',d)).catch(e=>console.error('Cancel API error:',e))}
-function updateOVBanner(){const bn=document.getElementById('override-banner');if(!OV.active){bn.classList.remove('active');return}if(OV.exp&&Date.now()>OV.exp){cancelOverride();return}bn.classList.add('active');const nm=OV.mode==='self_consumption'?'Self Consumption':'Emergency Backup';if(OV.exp){const r=Math.max(0,OV.exp-Date.now());document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — '+Math.floor(r/3600000)+'h '+Math.floor(r%3600000/60000)+'m remaining'}else document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — until cancelled'}
+function updateOVBanner(){const bn=document.getElementById('override-banner');if(!OV.active){bn.classList.remove('active');return}if(OV.exp&&Date.now()>OV.exp){cancelOverride();return}bn.classList.add('active');const nm=OV.mode==='self_consumption'?'Self Consumption':'Emergency Backup';if(OV.exitSoc){const dir=OV.mode==='emergency_backup'?'≥':'≤';document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — until SOC '+dir+' '+OV.exitSoc+'%'}else if(OV.exp){const r=Math.max(0,OV.exp-Date.now());document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — '+Math.floor(r/3600000)+'h '+Math.floor(r%3600000/60000)+'m remaining'}else document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — until cancelled'}
 setInterval(updateOVBanner,60000);
 function saveOV(){try{localStorage.setItem('fwh_ov',JSON.stringify(OV))}catch(e){}}
-function loadOV(){try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}fetch('/api/override').then(r=>r.json()).then(srv=>{if(srv.active&&!OV.active){OV={active:true,mode:srv.mode,dur:srv.duration,start:new Date(srv.started_at).getTime(),exp:srv.expires_at?new Date(srv.expires_at).getTime():null};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='block'}else if(!srv.active&&OV.active){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'}}).catch(()=>{})}
+function loadOV(){try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}fetch('/api/override').then(r=>r.json()).then(srv=>{if(srv.active&&!OV.active){OV={active:true,mode:srv.mode,dur:srv.duration,start:new Date(srv.started_at).getTime(),exp:srv.expires_at?new Date(srv.expires_at).getTime():null,exitSoc:srv.exit_soc_pct||null};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='block'}else if(!srv.active&&OV.active){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'}}).catch(()=>{})}
+
+// ===== REPORT ISSUE =====
+let reportRange='24', reportBundleUrl=null, reportSummary='';
+
+function showReportModal(){
+    document.getElementById('report-modal').classList.add('active');
+    document.getElementById('report-desc').value='';
+    document.getElementById('report-step-3').style.display='none';
+    document.getElementById('report-actions-initial').style.display='flex';
+    document.getElementById('report-actions-ready').style.display='none';
+    document.getElementById('report-progress').classList.remove('active');
+    document.getElementById('report-preview').style.display='none';
+    document.getElementById('report-generate-btn').disabled=false;
+    reportBundleUrl=null;
+}
+function closeReportModal(){
+    document.getElementById('report-modal').classList.remove('active');
+    if(reportBundleUrl){URL.revokeObjectURL(reportBundleUrl);reportBundleUrl=null}
+}
+function selReportRange(el,h){
+    reportRange=h;
+    el.parentElement.querySelectorAll('.btn-sm').forEach(b=>{b.style.borderColor='';b.style.color=''});
+    el.style.borderColor='var(--accent-blue)';el.style.color='var(--accent-blue)';
+}
+
+async function generateReport(){
+    const desc=document.getElementById('report-desc').value.trim();
+    const prog=document.getElementById('report-progress');
+    const progText=document.getElementById('report-progress-text');
+    const genBtn=document.getElementById('report-generate-btn');
+
+    genBtn.disabled=true;
+    prog.classList.add('active');
+    progText.textContent='Generating diagnostic bundle...';
+
+    try{
+        const r=await fetch('/api/diagnostic-bundle',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({hours:parseInt(reportRange),description:desc})
+        });
+
+        if(!r.ok) throw new Error('Server returned '+r.status);
+
+        const data=await r.json();
+
+        if(data.status!=='ok') throw new Error(data.error||'Bundle generation failed');
+
+        // Download the zip file
+        progText.textContent='Downloading bundle...';
+        const zipR=await fetch(data.download_url+'?t='+Date.now());
+        if(!zipR.ok) throw new Error('Could not download bundle');
+        const blob=await zipR.blob();
+        reportBundleUrl=URL.createObjectURL(blob);
+
+        // Store summary and github URL
+        reportSummary=data.summary||'';
+        const ghUrl=data.github_url||'';
+
+        // Update UI — show step 3
+        prog.classList.remove('active');
+        document.getElementById('report-step-3').style.display='block';
+        document.getElementById('report-actions-initial').style.display='none';
+        document.getElementById('report-actions-ready').style.display='flex';
+
+        // Set download link
+        const dlLink=document.getElementById('report-download-link');
+        dlLink.href=reportBundleUrl;
+        dlLink.download=data.filename||'diagnostic_bundle.zip';
+
+        // Set github URL
+        if(ghUrl){
+            document.getElementById('report-github-btn').onclick=function(){window.open(ghUrl,'_blank')};
+        }
+
+        // Show preview
+        const preview=document.getElementById('report-preview');
+        preview.style.display='block';
+        preview.textContent=reportSummary;
+
+    }catch(e){
+        prog.classList.remove('active');
+        genBtn.disabled=false;
+        // Show error inline
+        const preview=document.getElementById('report-preview');
+        preview.style.display='block';
+        preview.textContent='Error: '+e.message+'\n\nYou can still manually report issues at:\nhttps://github.com/mtnears/FranklinWH-Automation/issues/new';
+        preview.style.color='var(--accent-red)';
+    }
+}
+
+function openGitHubIssue(){
+    // Fallback if button onclick wasn't set
+    window.open('https://github.com/mtnears/FranklinWH-Automation/issues/new?labels=bug,v4-beta','_blank');
+}
+
+// ===== VERSION & UPDATE CHECK =====
+async function fetchVersionAndCheckUpdate(){
+    // Fetch current version from scheduler API
+    let currentVersion='--';
+    try{
+        const r=await fetch('/api/version');
+        if(r.ok){const d=await r.json();currentVersion=d.version||'--'}
+    }catch(e){}
+    document.getElementById('about-version').textContent=currentVersion;
+    if(currentVersion==='--')return;
+
+    // Check GitHub for latest release — once per day, cached in localStorage
+    const cacheKey='fwh_update_check';
+    const now=Date.now();
+    try{
+        const cached=JSON.parse(localStorage.getItem(cacheKey)||'{}');
+        if(cached.ts && (now-cached.ts)<86400000){
+            if(cached.tag && cached.tag!==currentVersion && cached.url){
+                const b=document.getElementById('update-badge');
+                b.textContent=cached.tag+' Available';
+                b.dataset.url=cached.url;
+                b.style.display='inline';
+            }
+            return;
+        }
+    }catch(e){}
+
+    try{
+        const r=await fetch('https://api.github.com/repos/mtnears/FranklinWH-Automation/releases/latest');
+        if(!r.ok)return;
+        const d=await r.json();
+        const tag=(d.tag_name||'').replace(/^v/,'');
+        const url=d.html_url||'https://github.com/mtnears/FranklinWH-Automation/releases';
+        localStorage.setItem(cacheKey,JSON.stringify({ts:now,tag:tag,url:url}));
+        if(tag && tag!==currentVersion){
+            const b=document.getElementById('update-badge');
+            b.textContent=tag+' Available';
+            b.dataset.url=url;
+            b.style.display='inline';
+        }
+    }catch(e){}
+}
+
+// ===== TELEMETRY CONSENT =====
+let _consentGridRegion=null; // Stashed from GET response for pre-selection
+
+async function checkTelemetryConsent(){
+    try{
+        const r=await fetch('/api/telemetry-consent');
+        if(!r.ok)return;
+        const data=await r.json();
+        if(data.status==='unknown'){
+            // Stash grid_region from Modbus (if available) for pre-selecting dropdown
+            _consentGridRegion=data.grid_region||null;
+            document.getElementById('consent-modal').classList.add('active');
+        }
+        updateTelemetryBadge(data);
+    }catch(e){}
+}
+
+function showConsentStep2(){
+    // User clicked "Enable Analytics" — show region picker
+    document.getElementById('consent-step-1').style.display='none';
+    document.getElementById('consent-step-2').style.display='block';
+
+    // Pre-select country based on Modbus grid detection
+    const sel=document.getElementById('consent-region-select');
+    const hint=document.getElementById('consent-region-hint');
+    if(_consentGridRegion==='north_america'){
+        sel.value='US'; // Best guess for North America — user can change to CA
+        hint.textContent='Auto-detected from grid frequency (60 Hz). Change if needed.';
+    }else if(_consentGridRegion==='europe_asia_50hz'){
+        sel.value=''; // Too broad to guess — let them pick
+        hint.textContent='50 Hz grid detected — please select your country.';
+    }else{
+        hint.textContent='';
+    }
+}
+
+async function setTelemetryConsent(consent){
+    // "No Thanks" or "Cancel" — opt out immediately
+    document.getElementById('consent-modal').classList.remove('active');
+    try{
+        await fetch('/api/telemetry-consent',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({consent:false})
+        });
+        updateTelemetryBadge({status:'opted_out',consented:false});
+    }catch(e){}
+}
+
+async function submitTelemetryConsent(){
+    // "Confirm" on step 2 — opt in with region
+    const region=document.getElementById('consent-region-select').value||null;
+    document.getElementById('consent-modal').classList.remove('active');
+    try{
+        const r=await fetch('/api/telemetry-consent',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({consent:true,region:region})
+        });
+        if(r.ok){
+            updateTelemetryBadge({status:'opted_in',consented:true});
+        }
+    }catch(e){}
+}
+
+function updateTelemetryBadge(data){
+    const badge=document.getElementById('telemetry-badge');
+    if(!badge)return;
+    if(data.status==='opted_in'||(data.status==='env_override'&&data.consented)){
+        badge.textContent='📊 Analytics: on';
+        badge.classList.add('visible');
+    }else if(data.status==='opted_out'||(data.status==='env_override'&&!data.consented)){
+        badge.textContent='📊 Analytics: off';
+        badge.classList.add('visible');
+    }
+}
 
 // ===== SETTINGS =====
 function loadSettings(){try{const s=localStorage.getItem('fwh_s');if(s)S=JSON.parse(s)}catch(e){}
-S.ri=S.ri||'15';S.lr=S.lr||'30';S.tu=S.tu||'f';S.cap=S.cap||'30';S.disp=S.disp||'1920x1200';S.theme=S.theme||'dark';
+S.ri=S.ri||'15';S.lr=S.lr||'30';S.tu=S.tu||'f';S.cap=S.cap||'30';S.disp=S.disp||'1507x943';S.theme=S.theme||'dark';
+if(S.disp==='1920x1200')S.disp='1507x943';
 document.getElementById('s-refresh').value=S.ri;document.getElementById('s-logref').value=S.lr;document.getElementById('s-temp').value=S.tu;
 document.getElementById('s-cap').value=S.cap;document.getElementById('s-disp').value=S.disp;document.getElementById('s-theme').value=S.theme;applyDisp()}
 function saveSettings(){S.ri=document.getElementById('s-refresh').value;S.lr=document.getElementById('s-logref').value;S.tu=document.getElementById('s-temp').value;
@@ -2131,6 +2650,915 @@ function applyDisp(){if(S.theme==='oled'){document.documentElement.style.setProp
 else{document.documentElement.style.setProperty('--bg-primary','#080c1a');document.documentElement.style.setProperty('--bg-card','#0f1429');document.documentElement.style.setProperty('--bg-elevated','#1a2040')}
 if(S.disp==='auto')document.querySelector('meta[name="viewport"]').content='width=device-width, initial-scale=1.0';
 else document.querySelector('meta[name="viewport"]').content='width='+S.disp.split('x')[0]+', initial-scale=1.0, user-scalable=no'}
+
+
+
+// ===== ANALYTICS TAB =====
+let anDatePick, anInitialized = false, anRange = '24h', anData = null, anDecData = null;
+let anCompareDataList = [];
+let anSlideIdx = 0, anSlideCount = 4, anAvailDates = [];
+
+const AN_COMPARE_COLORS = [
+    { line: '#ff6b9d', dash: 'dot' },
+    { line: '#00e5ff', dash: 'dash' },
+    { line: '#ffd740', dash: 'dashdot' },
+];
+
+const AN_MODE_COLORS = {
+    time_of_use: 'rgba(79,143,255,0.25)', emergency_backup: 'rgba(248,113,113,0.30)',
+    self_consumption: 'rgba(34,211,238,0.25)', 'TOU-B': 'rgba(248,113,113,0.30)'
+};
+const AN_MODE_LEGEND = {
+    time_of_use: { label: 'TOU', color: '#4f8fff' },
+    emergency_backup: { label: 'EB (Grid Charge)', color: '#f87171' },
+    self_consumption: { label: 'SC (Discharge)', color: '#22d3ee' },
+};
+
+function initAnalytics() {
+    anDatePick = document.getElementById('an-date-pick');
+    if (!anInitialized) {
+        const yest = new Date(); yest.setDate(yest.getDate() - 1);
+        anDatePick.value = yest.toISOString().split('T')[0];
+        anInitialized = true;
+        anBuildDots();
+        anLoadAvailableDates();
+    }
+    anLoadRange();
+}
+
+function anBuildDots() {
+    const dots = document.getElementById('an-carousel-dots');
+    const labels = document.querySelectorAll('.an-carousel-slide');
+    anSlideCount = labels.length;
+    dots.innerHTML = '';
+    for (let i = 0; i < anSlideCount; i++) {
+        const d = document.createElement('div');
+        d.className = 'an-carousel-dot' + (i === 0 ? ' active' : '');
+        d.onclick = () => anGoSlide(i);
+        dots.appendChild(d);
+    }
+    anUpdateSlideLabel();
+}
+
+function anGoSlide(i) {
+    anSlideIdx = Math.max(0, Math.min(i, anSlideCount - 1));
+    document.getElementById('an-carousel-track').style.transform = 'translateX(-' + (anSlideIdx * 100) + '%)';
+    document.querySelectorAll('.an-carousel-dot').forEach((d, j) => d.classList.toggle('active', j === anSlideIdx));
+    anUpdateSlideLabel();
+    // Trigger Plotly relayout so chart fills the visible slide
+    const chartIds = ['an-power-chart','an-battery-chart','an-curtail-chart','an-solar-util-chart'];
+    if (anSlideIdx < chartIds.length) {
+        const el = document.getElementById(chartIds[anSlideIdx]);
+        if (el && el.data) Plotly.Plots.resize(el);
+    }
+}
+
+function anCarousel(dir) { anGoSlide(anSlideIdx + dir); }
+
+function anUpdateSlideLabel() {
+    const slides = document.querySelectorAll('.an-carousel-slide');
+    const label = slides[anSlideIdx] ? slides[anSlideIdx].dataset.label : '';
+    document.getElementById('an-carousel-label').textContent = (anSlideIdx + 1) + ' / ' + anSlideCount + '  ' + label;
+}
+
+function anToggleFS() {
+    const vp = document.getElementById('an-carousel-vp');
+    const btn = document.getElementById('an-fs-btn');
+    vp.classList.toggle('an-fullscreen');
+    btn.textContent = vp.classList.contains('an-fullscreen') ? '✕' : '⛶';
+    // Resize the current chart
+    setTimeout(() => {
+        const chartIds = ['an-power-chart','an-battery-chart','an-curtail-chart','an-solar-util-chart'];
+        chartIds.forEach(id => { const el = document.getElementById(id); if (el && el.data) Plotly.Plots.resize(el); });
+    }, 400);
+}
+
+// Touch swipe support for carousel
+(function() {
+    let sx = 0, sy = 0;
+    document.addEventListener('DOMContentLoaded', () => {
+        const vp = document.getElementById('an-carousel-vp');
+        if (!vp) return;
+        vp.addEventListener('touchstart', e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
+        vp.addEventListener('touchend', e => {
+            const dx = e.changedTouches[0].clientX - sx, dy = e.changedTouches[0].clientY - sy;
+            if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) anCarousel(dx < 0 ? 1 : -1);
+        }, { passive: true });
+    });
+    document.addEventListener('keydown', e => {
+        const vp = document.getElementById('an-carousel-vp');
+        if (!vp || !vp.classList.contains('an-fullscreen')) return;
+        if (e.key === 'Escape') anToggleFS();
+        else if (e.key === 'ArrowLeft') anCarousel(-1);
+        else if (e.key === 'ArrowRight') anCarousel(1);
+    });
+})();
+
+let anSelectedCompare = [];
+let anPeakConfig = null;
+
+async function anLoadAvailableDates() {
+    try {
+        const [datesRes, peakRes] = await Promise.all([
+            fetch('/api/chart-dates'),
+            fetch('/api/peak-config')
+        ]);
+        const d = await datesRes.json();
+        anAvailDates = (d.dates || []).map(x => x.date);
+        anPeakConfig = await peakRes.json();
+        anPopulateCompare();
+    } catch (e) { console.log('Failed to load chart dates/peak config:', e); }
+}
+
+function anPopulateCompare() {
+    const list = document.getElementById('an-cmp-list');
+    const current = document.getElementById('an-date-pick').value;
+    const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    list.innerHTML = '';
+    anAvailDates.filter(d => d !== current).slice(0, 30).forEach(d => {
+        const dt = new Date(d + 'T12:00:00');
+        const label = days[dt.getDay()] + ' ' + d;
+        const checked = anSelectedCompare.includes(d);
+        const atLimit = anSelectedCompare.length >= 3 && !checked;
+        const item = document.createElement('label');
+        item.className = 'an-cmp-item' + (atLimit ? ' disabled' : '');
+        item.innerHTML = '<input type="checkbox" value="' + d + '"' + (checked ? ' checked' : '') + (atLimit ? ' disabled' : '') + '> ' + label;
+        item.querySelector('input').addEventListener('change', function() { anToggleCompareDate(d, this.checked); });
+        list.appendChild(item);
+    });
+}
+
+function anToggleCmpPanel() {
+    const panel = document.getElementById('an-cmp-panel');
+    panel.classList.toggle('open');
+    if (panel.classList.contains('open')) {
+        anPopulateCompare();
+        setTimeout(() => document.addEventListener('click', anCloseCmpPanel, true), 0);
+    }
+}
+
+function anCloseCmpPanel(e) {
+    const panel = document.getElementById('an-cmp-panel');
+    const btn = document.getElementById('an-cmp-btn');
+    if (!panel.contains(e.target) && e.target !== btn) {
+        panel.classList.remove('open');
+        document.removeEventListener('click', anCloseCmpPanel, true);
+    }
+}
+
+function anToggleCompareDate(date, checked) {
+    if (checked && !anSelectedCompare.includes(date) && anSelectedCompare.length < 3) {
+        anSelectedCompare.push(date);
+    } else if (!checked) {
+        anSelectedCompare = anSelectedCompare.filter(d => d !== date);
+    }
+    anRenderCompareTags();
+    anPopulateCompare();
+    anLoadRange();
+}
+
+function anRenderCompareTags() {
+    const tags = document.getElementById('an-cmp-tags');
+    if (anSelectedCompare.length === 0) { tags.innerHTML = ''; return; }
+    tags.innerHTML = anSelectedCompare.map((d, i) => {
+        const style = AN_COMPARE_COLORS[i] || AN_COMPARE_COLORS[0];
+        return '<span class="an-cmp-tag" style="background:' + style.line + '22;color:' + style.line + ';border:1px solid ' + style.line + '44" onclick="anRemoveCompare(\'' + d + '\')">' + d + ' ✕</span>';
+    }).join('');
+}
+
+function anRemoveCompare(date) {
+    anSelectedCompare = anSelectedCompare.filter(d => d !== date);
+    anRenderCompareTags();
+    anPopulateCompare();
+    anLoadRange();
+}
+
+function anClearCompare() {
+    anSelectedCompare = [];
+    anRenderCompareTags();
+    anPopulateCompare();
+    anCompareDataList = [];
+    anLoadRange();
+}
+
+function anSetRange(r) {
+    anRange = r;
+    document.querySelectorAll('.an-range-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('anr-' + r).classList.add('active');
+    // Show/hide compare based on range
+    document.getElementById('an-compare-wrap').style.display = (r === '24h' || r === '48h') ? 'flex' : 'none';
+    anLoadRange();
+}
+
+function anNavDay(delta) {
+    anDatePick = document.getElementById('an-date-pick');
+    const d = new Date(anDatePick.value + 'T12:00:00');
+    d.setDate(d.getDate() + delta);
+    anDatePick.value = d.toISOString().split('T')[0];
+    anPopulateCompare();
+    anLoadRange();
+}
+
+function anDateRange() {
+    const base = document.getElementById('an-date-pick').value;
+    const rangeDays = { '24h': 0, '48h': 1, '5d': 4, '7d': 6, '30d': 29, '90d': 89 };
+    const days = rangeDays[anRange] || 0;
+    if (days === 0) return { start: base, end: base, single: true };
+    const s = new Date(base + 'T12:00:00');
+    s.setDate(s.getDate() - days);
+    return { start: s.toISOString().split('T')[0], end: base, single: false };
+}
+
+async function anLoadRange() {
+    const status = document.getElementById('an-status');
+    const dayLabel = document.getElementById('an-day-label');
+    status.textContent = 'Loading...';
+
+    const range = anDateRange();
+    const d = new Date(range.end + 'T12:00:00');
+    const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    if (range.single) {
+        dayLabel.textContent = days[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate();
+    } else {
+        dayLabel.textContent = range.start + ' → ' + range.end;
+    }
+
+    try {
+        const dateParam = range.single
+            ? 'date=' + range.start
+            : 'start=' + range.start + '&end=' + range.end;
+
+        const [chartRes, decRes] = await Promise.all([
+            fetch('/api/chart-data?' + dateParam),
+            fetch('/api/decision-log?' + dateParam)
+        ]);
+        anData = await chartRes.json();
+        anDecData = await decRes.json();
+
+        // Load compare days if selected (24h mode only)
+        anCompareDataList = [];
+        if (range.single && anSelectedCompare.length > 0) {
+            for (const cmpDate of anSelectedCompare.slice(0, 3)) {
+                try {
+                    const cmpRes = await fetch('/api/chart-data?date=' + cmpDate);
+                    const cmpData = await cmpRes.json();
+                    cmpData._compareDate = cmpDate;
+                    anCompareDataList.push(cmpData);
+                } catch (e) {}
+            }
+        }
+
+        if (!anData.system_readings || anData.system_readings.length === 0) {
+            document.getElementById('an-summary').style.display = 'none';
+            document.getElementById('an-balance').style.display = 'none';
+            ['an-power-chart','an-battery-chart','an-curtail-chart','an-solar-util-chart'].forEach(id =>
+                document.getElementById(id).innerHTML = '<div class="an-no-data">No system readings for this period</div>');
+            document.getElementById('an-decision-list').innerHTML = '<div class="an-no-data">No data</div>';
+            status.textContent = 'No data';
+            return;
+        }
+
+        anRenderSummary(anData);
+        // Defer chart rendering to keep UI responsive on large datasets
+        setTimeout(function() {
+            anRenderPowerChart(anData, anCompareDataList);
+            anRenderBatteryChart(anData, anCompareDataList);
+            anRenderCurtailChart(anData, anCompareDataList);
+            anRenderSolarUtilChart(anData, anCompareDataList);
+            anRenderDecisions(anDecData.decisions || []);
+        }, 0);
+
+        status.textContent = anData.system_readings.length + ' readings, ' +
+            (anData.enphase_readings ? anData.enphase_readings.length : 0) + ' enphase';
+    } catch (e) {
+        status.textContent = 'Error: ' + e.message;
+        console.error('Analytics load error:', e);
+    }
+}
+
+function anRenderSummary(data) {
+    const sr = data.system_readings;
+    const en = data.enphase_readings || [];
+    const wd = data.weather_daily || [];
+    document.getElementById('an-summary').style.display = 'grid';
+    document.getElementById('an-balance').style.display = 'grid';
+
+    const socs = sr.filter(r => r.soc_pct != null).map(r => r.soc_pct);
+    document.getElementById('ans-soc').textContent = socs.length ?
+        Math.min(...socs).toFixed(0) + '–' + Math.max(...socs).toFixed(0) + '%' : '—';
+
+    let gridImportKwh = 0, solarMeterKwh = 0, homeLoadKwh = 0, battNetKwh = 0;
+    for (let i = 1; i < sr.length; i++) {
+        const dt = (new Date(sr[i].timestamp) - new Date(sr[i-1].timestamp)) / 3600000;
+        if (dt > 0 && dt < 1) {
+            const avg = (v1, v2) => ((v1 || 0) + (v2 || 0)) / 2;
+            gridImportKwh += avg(sr[i-1].grid_kw, sr[i].grid_kw) * dt;
+            solarMeterKwh += avg(sr[i-1].solar_kw, sr[i].solar_kw) * dt;
+            homeLoadKwh += avg(sr[i-1].home_load_kw, sr[i].home_load_kw) * dt;
+            battNetKwh += avg(sr[i-1].battery_kw, sr[i].battery_kw) * dt;
+        }
+    }
+    const battDischargeKwh = Math.max(0, battNetKwh);
+
+    document.getElementById('ans-load').textContent = homeLoadKwh.toFixed(1) + ' kWh';
+    document.getElementById('ans-grid').textContent = gridImportKwh.toFixed(1) + ' kWh';
+    document.getElementById('ans-solar').textContent = solarMeterKwh.toFixed(1) + ' kWh';
+    document.getElementById('ans-battery').textContent = (battNetKwh > 0 ? '+' : '') + battNetKwh.toFixed(1) + ' kWh';
+
+    const battLabel = (battNetKwh >= 0 ? '+' : '') + battNetKwh.toFixed(1);
+    const homeSum = gridImportKwh + solarMeterKwh + battNetKwh;
+    const homeDiff = Math.abs(homeSum - homeLoadKwh);
+    const homeCheck = homeDiff < 3 ? 'an-eq-ok' : 'an-eq-warn';
+    const homeCheckIcon = homeDiff < 3 ? '✓' : '△ ' + homeDiff.toFixed(1);
+    document.getElementById('anb-home').innerHTML =
+        '<span class="an-eq-val">' + gridImportKwh.toFixed(1) + '</span> grid' +
+        '<span class="an-eq-op"> + </span><span class="an-eq-val">' + solarMeterKwh.toFixed(1) + '</span> solar' +
+        '<span class="an-eq-op"> + </span><span class="an-eq-val">' + battLabel + '</span> batt' +
+        '<span class="an-eq-op"> = </span><span class="an-eq-val">' + homeSum.toFixed(1) + '</span>' +
+        '<span class="an-eq-op"> vs </span><span class="an-eq-val">' + homeLoadKwh.toFixed(1) + '</span> load' +
+        '<span class="an-eq-check ' + homeCheck + '"> ' + homeCheckIcon + '</span>';
+
+
+    let invTotalWh = 0, meterTotalWh = 0, curtTotalWh = 0;
+    for (let i = 1; i < en.length; i++) {
+        const dt = (new Date(en[i].timestamp) - new Date(en[i-1].timestamp)) / 3600000;
+        if (dt > 0 && dt < 1) {
+            const avg = (v1, v2) => ((v1 || 0) + (v2 || 0)) / 2;
+            invTotalWh += avg(en[i-1].inverter_sum_w, en[i].inverter_sum_w) * dt;
+            meterTotalWh += avg(en[i-1].meter_w, en[i].meter_w) * dt;
+            curtTotalWh += avg(en[i-1].curtailed_w, en[i].curtailed_w) * dt;
+        }
+    }
+    const invKwh = invTotalWh / 1000, meterKwh = meterTotalWh / 1000, curtKwh = curtTotalWh / 1000;
+    const solarSum = meterKwh + curtKwh;
+    const solarDiff = Math.abs(solarSum - invKwh);
+    const solarCheck = solarDiff < 1 ? 'an-eq-ok' : 'an-eq-warn';
+    const solarCheckIcon = solarDiff < 1 ? '✓' : '△ ' + solarDiff.toFixed(1);
+
+    if (en.length > 0) {
+        document.getElementById('anb-solar').innerHTML =
+            '<span class="an-eq-val">' + meterKwh.toFixed(1) + '</span> meter' +
+            '<span class="an-eq-op"> + </span><span class="an-eq-val">' + curtKwh.toFixed(1) + '</span> curtailed' +
+            '<span class="an-eq-op"> = </span><span class="an-eq-val">' + solarSum.toFixed(1) + '</span>' +
+            '<span class="an-eq-op"> vs </span><span class="an-eq-val">' + invKwh.toFixed(1) + '</span> inverter' +
+            '<span class="an-eq-check ' + solarCheck + '"> ' + solarCheckIcon + '</span>';
+    } else {
+        document.getElementById('anb-solar').textContent = 'No Enphase data';
+    }
+
+    const curtailEl = document.getElementById('ans-curtail');
+    if (curtKwh > 0.01) {
+        const curtPct = invKwh > 0 ? (curtKwh / invKwh * 100) : 0;
+        curtailEl.innerHTML = curtKwh.toFixed(2) + ' kWh<br><span style="font-size:11px;color:var(--text-muted)">' + curtPct.toFixed(0) + '% of production</span>';
+        curtailEl.classList.add('an-stat-warn');
+    } else {
+        curtailEl.textContent = 'None';
+        curtailEl.classList.remove('an-stat-warn');
+    }
+
+    const ws = wd.length > 0 ? wd[wd.length - 1] : null;
+    document.getElementById('ans-weather').textContent = ws ?
+        (ws.temp_high != null ? ws.temp_high.toFixed(0) + '/' + (ws.temp_low || 0).toFixed(0) + 'F' : '—') +
+        (ws.humidity_avg != null ? '  ' + ws.humidity_avg.toFixed(0) + '%' : '') : '—';
+}
+
+const AN_PLOTLY_LAYOUT = {
+    paper_bgcolor: 'rgba(0,0,0,0)',
+    plot_bgcolor: 'rgba(0,0,0,0)',
+    font: { family: 'DM Sans, sans-serif', size: 11, color: '#8892b0' },
+    margin: { l: 55, r: 55, t: 10, b: 40 },
+    legend: { orientation: 'h', y: 1.12, x: 0.5, xanchor: 'center', font: { size: 11 } },
+    xaxis: { type: 'date', gridcolor: 'rgba(99,133,255,0.06)', tickformat: '%H:%M', dtick: 3600000 },
+    yaxis: { gridcolor: 'rgba(99,133,255,0.06)', zeroline: false },
+    hovermode: 'x unified',
+    hoverlabel: { bgcolor: '#1a2040', bordercolor: 'rgba(99,133,255,0.2)', font: { family: 'DM Sans', size: 12 } },
+};
+
+const AN_PLOTLY_CONFIG = {
+    displayModeBar: true,
+    modeBarButtonsToRemove: ['autoScale2d', 'lasso2d', 'select2d'],
+    displaylogo: false,
+    responsive: true
+};
+
+function anModeShapes(sr) {
+    const shapes = [];
+    if (!sr || sr.length === 0) return shapes;
+    let curMode = sr[0].mode, startTs = sr[0].timestamp;
+    for (let i = 1; i <= sr.length; i++) {
+        const mode = i < sr.length ? sr[i].mode : null;
+        if (mode !== curMode || i === sr.length) {
+            const endTs = i < sr.length ? sr[i].timestamp : sr[i-1].timestamp;
+            const fill = AN_MODE_COLORS[curMode] || 'rgba(120,144,156,0.06)';
+            shapes.push({ type: 'rect', xref: 'x', yref: 'paper', x0: startTs, x1: endTs, y0: 0, y1: 1, fillcolor: fill, line: { width: 0 }, layer: 'below' });
+            curMode = mode;
+            startTs = i < sr.length ? sr[i].timestamp : endTs;
+        }
+    }
+    return shapes;
+}
+
+function anPeakShapes(dateStr) {
+    if (!anPeakConfig || !anPeakConfig.tou_enabled) return [];
+
+    const startH = anPeakConfig.peak_start_hour || 17;
+    const endH = anPeakConfig.peak_end_hour || 20;
+    const peakDays = anPeakConfig.peak_days || 'weekdays';
+    const pad = n => String(n).padStart(2, '0');
+    const startTime = pad(startH) + ':00:00';
+    const endTime = pad(endH) + ':00:00';
+
+    function isPeakDay(ds) {
+        const dt = new Date(ds + 'T12:00:00');
+        const dow = dt.getDay();
+        if (peakDays === 'weekdays') return dow >= 1 && dow <= 5;
+        if (peakDays === 'all' || peakDays === 'everyday') return true;
+        if (peakDays === 'weekends') return dow === 0 || dow === 6;
+        return dow >= 1 && dow <= 5;
+    }
+
+    function makeShape(ds) {
+        return { type: 'rect', xref: 'x', yref: 'paper', x0: ds + ' ' + startTime, x1: ds + ' ' + endTime, y0: 0, y1: 1, fillcolor: 'rgba(251,191,36,0.08)', line: { width: 1.5, color: 'rgba(251,191,36,0.5)', dash: 'dot' }, layer: 'above' };
+    }
+
+    if (dateStr.includes('..')) {
+        const [start, end] = dateStr.split('..');
+        const shapes = [];
+        const s = new Date(start + 'T12:00:00'), e = new Date(end + 'T12:00:00');
+        for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+            const ds = d.toISOString().split('T')[0];
+            if (isPeakDay(ds)) shapes.push(makeShape(ds));
+        }
+        return shapes;
+    }
+    return isPeakDay(dateStr) ? [makeShape(dateStr)] : [];
+}
+
+function anXaxisFormat() {
+    const range = anDateRange();
+    if (range.single) {
+        return {
+            tickformat: '%H:%M', dtick: 3600000,
+            range: [range.start + ' 00:00:00', range.start + ' 23:59:59']
+        };
+    }
+    return {
+        tickformat: '%m/%d %H:%M', dtick: 3600000 * 6,
+        range: [range.start + ' 00:00:00', range.end + ' 23:59:59']
+    };
+}
+
+
+// ── MULTI-DAY AGGREGATION HELPERS ──────────────────────────────
+function anIsMultiDay() {
+    return ['5d','7d','30d','90d'].indexOf(anRange) !== -1;
+}
+
+function anAggregateDays(systemReadings) {
+    // Group readings by date, compute daily totals
+    const byDate = {};
+    for (let i = 1; i < systemReadings.length; i++) {
+        const r = systemReadings[i], rp = systemReadings[i-1];
+        const dt = (new Date(r.timestamp) - new Date(rp.timestamp)) / 3600000;
+        if (dt <= 0 || dt > 1) continue;
+        const date = r.timestamp.slice(0, 10);
+        if (!byDate[date]) byDate[date] = {
+            date, solarKwh: 0, gridKwh: 0, homeKwh: 0,
+            battChargeKwh: 0, battDischargeKwh: 0,
+            socMin: 100, socMax: 0,
+            touHrs: 0, scHrs: 0, ebHrs: 0
+        };
+        const d = byDate[date];
+        const avg = (a, b) => ((a || 0) + (b || 0)) / 2;
+        d.solarKwh      += Math.max(0, avg(rp.solar_kw, r.solar_kw)) * dt;
+        d.gridKwh       += Math.max(0, avg(rp.grid_kw, r.grid_kw)) * dt;
+        d.homeKwh       += Math.max(0, avg(rp.home_load_kw, r.home_load_kw)) * dt;
+        d.battChargeKwh += Math.max(0, -avg(rp.battery_kw, r.battery_kw)) * dt;
+        d.battDischargeKwh += Math.max(0, avg(rp.battery_kw, r.battery_kw)) * dt;
+        if (r.soc_pct) { d.socMin = Math.min(d.socMin, r.soc_pct); d.socMax = Math.max(d.socMax, r.soc_pct); }
+        const mode = (r.mode || '').toLowerCase();
+        if (mode.includes('self')) d.scHrs += dt;
+        else if (mode.includes('backup') || mode.includes('tou-b')) d.ebHrs += dt;
+        else d.touHrs += dt;
+    }
+    return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1);
+}
+
+function anAggregateEnphase(enphaseReadings) {
+    const byDate = {};
+    for (let i = 1; i < enphaseReadings.length; i++) {
+        const r = enphaseReadings[i], rp = enphaseReadings[i-1];
+        const dt = (new Date(r.timestamp) - new Date(rp.timestamp)) / 3600000;
+        if (dt <= 0 || dt > 1) continue;
+        const date = r.timestamp.slice(0, 10);
+        if (!byDate[date]) byDate[date] = { date, invKwh: 0, meterKwh: 0, curtKwh: 0 };
+        const d = byDate[date];
+        const avg = (a, b) => ((a || 0) + (b || 0)) / 2;
+        d.invKwh   += Math.max(0, avg(rp.inverter_sum_w, r.inverter_sum_w)) / 1000 * dt;
+        d.meterKwh += Math.max(0, avg(rp.meter_w, r.meter_w)) / 1000 * dt;
+        d.curtKwh  += Math.max(0, avg(rp.curtailed_w, r.curtailed_w)) / 1000 * dt;
+    }
+    return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1);
+}
+
+function anShortDate(d) {
+    // '2026-03-07' -> 'Mar 7'
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const parts = d.split('-');
+    return months[parseInt(parts[1]) - 1] + ' ' + parseInt(parts[2]);
+}
+// ── END MULTI-DAY HELPERS ──────────────────────────────────────
+
+function anRenderPowerChart(data, compareList) {
+    const sr = data.system_readings;
+
+    if (anIsMultiDay()) {
+        const days = anAggregateDays(sr);
+        const labels = days.map(d => anShortDate(d.date));
+        const layout = {
+            ...AN_PLOTLY_LAYOUT,
+            barmode: 'stack',
+            xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, type: 'category', tickfont: { size: 11 }, tickmode: 'array', tickvals: labels, ticktext: labels },
+            yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kWh', font: { size: 11 } } },
+            legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
+        };
+        const traces = [
+            { name: 'Solar', x: labels, y: days.map(d => +d.solarKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(251,191,36,0.85)' }, hovertemplate: '%{y:.1f} kWh<extra>Solar</extra>' },
+            { name: 'Grid Import', x: labels, y: days.map(d => +d.gridKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(79,143,255,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Grid</extra>' },
+            { name: 'Battery Discharge', x: labels, y: days.map(d => +d.battDischargeKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(167,139,250,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Batt Discharge</extra>' },
+        ];
+        Plotly.newPlot('an-power-chart', traces, layout, AN_PLOTLY_CONFIG);
+        return;
+    }
+
+    const ts = sr.map(r => r.timestamp);
+    const modeLabels = sr.map(r => {
+        const m = { time_of_use: 'TOU', emergency_backup: 'EB', self_consumption: 'SC', 'TOU-B': 'EB' };
+        return m[r.mode] || r.mode || '—';
+    });
+
+    const traces = [
+        { x: ts, y: sr.map(r => r.soc_pct), name: 'SOC %', yaxis: 'y2',
+          line: { color: '#34d399', width: 2 },
+          customdata: modeLabels, hovertemplate: '%{y:.0f}%  Mode: %{customdata}' },
+        { x: ts, y: sr.map(r => r.solar_kw), name: 'Solar (Franklin)',
+          line: { color: '#fbbf24', width: 1.5 }, fill: 'tozeroy',
+          fillcolor: 'rgba(251,191,36,0.08)', hovertemplate: '%{y:.2f} kW' },
+        { x: ts, y: sr.map(r => r.home_load_kw), name: 'Home Load',
+          line: { color: '#f97316', width: 1.5 }, hovertemplate: '%{y:.2f} kW' },
+        { x: ts, y: sr.map(r => r.grid_kw), name: 'Grid',
+          line: { color: '#4f8fff', width: 1.5 }, hovertemplate: '%{y:.2f} kW' },
+        { x: ts, y: sr.map(r => r.battery_kw), name: 'Battery',
+          line: { color: '#a78bfa', width: 1.5 }, hovertemplate: '%{y:.2f} kW' },
+    ];
+
+    // Compare day overlays
+    if (compareList && compareList.length > 0) {
+        const baseDate = data.date;
+        compareList.forEach((cmpData, ci) => {
+            if (!cmpData.system_readings || cmpData.system_readings.length === 0) return;
+            const style = AN_COMPARE_COLORS[ci] || AN_COMPARE_COLORS[0];
+            const cmpSr = cmpData.system_readings;
+            const cmpTs = cmpSr.map(r => baseDate + r.timestamp.substring(10));
+            const cmpLabel = cmpData._compareDate || 'compare';
+            const grp = 'cmp' + ci;
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.soc_pct), name: cmpLabel + ' SOC', yaxis: 'y2',
+                line: { color: style.line, width: 1.5, dash: style.dash },
+                hovertemplate: '%{y:.0f}%'
+            });
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.solar_kw), name: cmpLabel + ' Solar',
+                line: { color: style.line, width: 1, dash: style.dash },
+                hovertemplate: '%{y:.2f} kW'
+            });
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.home_load_kw), name: cmpLabel + ' Load',
+                line: { color: style.line, width: 1, dash: 'dot' },
+                hovertemplate: '%{y:.2f} kW'
+            });
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.grid_kw), name: cmpLabel + ' Grid',
+                line: { color: style.line, width: 1, dash: style.dash },
+                hovertemplate: '%{y:.2f} kW'
+            });
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.battery_kw), name: cmpLabel + ' Batt',
+                line: { color: style.line, width: 1, dash: style.dash },
+                hovertemplate: '%{y:.2f} kW'
+            });
+        });
+    }
+
+    const layout = {
+        ...AN_PLOTLY_LAYOUT,
+        xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, ...anXaxisFormat() },
+        yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kW', font: { size: 11 } } },
+        yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
+            range: [0, 105], gridcolor: 'rgba(52,211,153,0.06)', tickformat: '.0f', showgrid: false },
+        shapes: [...anPeakShapes(data.date), ...anModeShapes(sr)],
+    };
+
+    Plotly.newPlot('an-power-chart', traces, layout, AN_PLOTLY_CONFIG);
+}
+
+function anRenderBatteryChart(data, compareList) {
+    const sr = data.system_readings;
+
+    if (anIsMultiDay()) {
+        const days = anAggregateDays(sr);
+        const labels = days.map(d => anShortDate(d.date));
+        const layout = {
+            ...AN_PLOTLY_LAYOUT,
+            barmode: 'group',
+            xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, type: 'category', tickfont: { size: 11 }, tickmode: 'array', tickvals: labels, ticktext: labels },
+            yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kWh / hrs', font: { size: 11 } } },
+            yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
+                range: [0, 105], tickformat: '.0f', showgrid: false },
+            legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
+        };
+        const traces = [
+            { name: 'Batt Charge', x: labels, y: days.map(d => +d.battChargeKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(167,139,250,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Charged</extra>' },
+            { name: 'Batt Discharge', x: labels, y: days.map(d => +d.battDischargeKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(167,139,250,0.4)' }, hovertemplate: '%{y:.1f} kWh<extra>Discharged</extra>' },
+            { name: 'SOC Min', x: labels, y: days.map(d => d.socMin === 100 ? null : d.socMin), type: 'scatter',
+              mode: 'markers', yaxis: 'y2', marker: { color: '#34d399', size: 6, symbol: 'triangle-down' },
+              hovertemplate: '%{y:.0f}%<extra>SOC Min</extra>' },
+            { name: 'SOC Max', x: labels, y: days.map(d => d.socMax === 0 ? null : d.socMax), type: 'scatter',
+              mode: 'markers', yaxis: 'y2', marker: { color: '#34d399', size: 6, symbol: 'triangle-up' },
+              hovertemplate: '%{y:.0f}%<extra>SOC Max</extra>' },
+            { name: 'TOU hrs', x: labels, y: days.map(d => +d.touHrs.toFixed(1)), type: 'bar',
+              marker: { color: 'rgba(79,143,255,0.5)' }, hovertemplate: '%{y:.1f}h<extra>TOU</extra>', visible: 'legendonly' },
+            { name: 'SC hrs', x: labels, y: days.map(d => +d.scHrs.toFixed(1)), type: 'bar',
+              marker: { color: 'rgba(34,211,238,0.5)' }, hovertemplate: '%{y:.1f}h<extra>SC</extra>', visible: 'legendonly' },
+            { name: 'EB hrs', x: labels, y: days.map(d => +d.ebHrs.toFixed(1)), type: 'bar',
+              marker: { color: 'rgba(248,113,113,0.5)' }, hovertemplate: '%{y:.1f}h<extra>EB</extra>', visible: 'legendonly' },
+        ];
+        Plotly.newPlot('an-battery-chart', traces, layout, AN_PLOTLY_CONFIG);
+        return;
+    }
+
+    const ts = sr.map(r => r.timestamp);
+    // Build mode text for hover
+    const modeLabels = sr.map(r => {
+        const m = { time_of_use: 'TOU', emergency_backup: 'EB', self_consumption: 'SC', 'TOU-B': 'EB' };
+        return m[r.mode] || r.mode || '—';
+    });
+
+    const traces = [
+        { x: ts, y: sr.map(r => r.soc_pct), name: 'SOC %', yaxis: 'y2',
+          line: { color: '#34d399', width: 2.5 },
+          customdata: modeLabels, hovertemplate: '%{y:.0f}%  Mode: %{customdata}' },
+        { x: ts, y: sr.map(r => r.battery_kw), name: 'Battery kW',
+          fill: 'tozeroy', line: { color: '#a78bfa', width: 1.5 },
+          fillcolor: 'rgba(167,139,250,0.1)',
+          customdata: modeLabels, hovertemplate: '%{y:.2f} kW  Mode: %{customdata}' },
+    ];
+
+    // Compare overlays
+    if (compareList && compareList.length > 0) {
+        const baseDate = data.date;
+        compareList.forEach((cmpData, ci) => {
+            if (!cmpData.system_readings || cmpData.system_readings.length === 0) return;
+            const style = AN_COMPARE_COLORS[ci] || AN_COMPARE_COLORS[0];
+            const cmpSr = cmpData.system_readings;
+            const cmpTs = cmpSr.map(r => baseDate + r.timestamp.substring(10));
+            const cmpLabel = cmpData._compareDate || 'compare';
+            const grp = 'cmpb' + ci;
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.soc_pct), name: cmpLabel + ' SOC', yaxis: 'y2',
+                line: { color: style.line, width: 1.5, dash: style.dash },
+                hovertemplate: '%{y:.0f}%'
+            });
+            traces.push({
+                x: cmpTs, y: cmpSr.map(r => r.battery_kw), name: cmpLabel + ' Batt',
+                line: { color: style.line, width: 1, dash: style.dash },
+                hovertemplate: '%{y:.2f} kW'
+            });
+        });
+    }
+
+    const layout = {
+        ...AN_PLOTLY_LAYOUT,
+        xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, ...anXaxisFormat() },
+        yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'Battery kW', font: { size: 11 } }, zeroline: true, zerolinecolor: 'rgba(255,255,255,0.1)' },
+        yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
+            range: [0, 105], tickformat: '.0f', showgrid: false },
+        shapes: [...anPeakShapes(data.date), ...anModeShapes(sr)],
+    };
+
+    Plotly.newPlot('an-battery-chart', traces, layout, AN_PLOTLY_CONFIG);
+}
+
+function anRenderCurtailChart(data, compareList) {
+    const en = data.enphase_readings || [];
+    if (en.length === 0) {
+        document.getElementById('an-curtail-chart').innerHTML = '<div class="an-no-data">No Enphase data for this period</div>';
+        return;
+    }
+
+    if (anIsMultiDay()) {
+        const days = anAggregateEnphase(en);
+        const labels = days.map(d => anShortDate(d.date));
+        const layout = {
+            ...AN_PLOTLY_LAYOUT,
+            barmode: 'stack',
+            xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, type: 'category', tickfont: { size: 11 }, tickmode: 'array', tickvals: labels, ticktext: labels },
+            yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kWh', font: { size: 11 } } },
+            legend: { orientation: 'h', y: -0.18, font: { size: 11 } },
+        };
+        const traces = [
+            { name: 'To Franklin (Meter)', x: labels, y: days.map(d => +d.meterKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(52,211,153,0.8)' }, hovertemplate: '%{y:.1f} kWh<extra>Meter</extra>' },
+            { name: 'Curtailed', x: labels, y: days.map(d => +d.curtKwh.toFixed(2)), type: 'bar',
+              marker: { color: 'rgba(248,113,113,0.7)' }, hovertemplate: '%{y:.1f} kWh<extra>Curtailed</extra>' },
+        ];
+        Plotly.newPlot('an-curtail-chart', traces, layout, AN_PLOTLY_CONFIG);
+        return;
+    }
+
+    const ts = en.map(r => r.timestamp);
+    const invKw = en.map(r => (r.inverter_sum_w || 0) / 1000);
+    const meterKw = en.map(r => (r.meter_w || 0) / 1000);
+    const curtKw = en.map(r => (r.curtailed_w || 0) / 1000);
+
+    const sr = data.system_readings || [];
+    const socTs = sr.map(r => r.timestamp);
+    const socVals = sr.map(r => r.soc_pct);
+
+    const traces = [
+        { x: ts, y: invKw, name: 'Inverter Output',
+          line: { color: '#fbbf24', width: 2 }, hovertemplate: '%{y:.2f} kW' },
+        { x: ts, y: meterKw, name: 'Franklin Meter',
+          line: { color: '#34d399', width: 2 }, hovertemplate: '%{y:.2f} kW' },
+        { x: ts, y: curtKw, name: 'Curtailed',
+          fill: 'tozeroy', fillcolor: 'rgba(248,113,113,0.15)',
+          line: { color: '#f87171', width: 1 }, hovertemplate: '%{y:.2f} kW' },
+        { x: socTs, y: socVals, name: 'SOC %', yaxis: 'y2',
+          line: { color: '#34d399', width: 1.5, dash: 'dot' }, opacity: 0.6,
+          hovertemplate: '%{y:.0f}%' },
+    ];
+
+    // Compare overlays
+    if (compareList && compareList.length > 0) {
+        const baseDate = data.date;
+        compareList.forEach((cmpData, ci) => {
+            const cmpEn = cmpData.enphase_readings || [];
+            if (cmpEn.length === 0) return;
+            const style = AN_COMPARE_COLORS[ci] || AN_COMPARE_COLORS[0];
+            const cmpTs = cmpEn.map(r => baseDate + r.timestamp.substring(10));
+            const cmpLabel = cmpData._compareDate || 'compare';
+            const grp = 'cmpc' + ci;
+            traces.push({
+                x: cmpTs, y: cmpEn.map(r => (r.inverter_sum_w || 0) / 1000), name: cmpLabel + ' Inv',
+                line: { color: style.line, width: 1.5, dash: style.dash },
+                hovertemplate: '%{y:.2f} kW'
+            });
+            traces.push({
+                x: cmpTs, y: cmpEn.map(r => (r.meter_w || 0) / 1000), name: cmpLabel + ' Meter',
+                line: { color: style.line, width: 1, dash: style.dash },
+                hovertemplate: '%{y:.2f} kW'
+            });
+            traces.push({
+                x: cmpTs, y: cmpEn.map(r => (r.curtailed_w || 0) / 1000), name: cmpLabel + ' Curt',
+                line: { color: style.line, width: 1, dash: 'dot' },
+                hovertemplate: '%{y:.2f} kW'
+            });
+        });
+    }
+
+    const layout = {
+        ...AN_PLOTLY_LAYOUT,
+        xaxis: { ...AN_PLOTLY_LAYOUT.xaxis, ...anXaxisFormat() },
+        yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kW', font: { size: 11 } } },
+        yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
+            range: [0, 105], tickformat: '.0f', showgrid: false },
+        shapes: anPeakShapes(data.date),
+    };
+
+    Plotly.newPlot('an-curtail-chart', traces, layout, AN_PLOTLY_CONFIG);
+}
+
+
+function anRenderSolarUtilChart(data, compareList) {
+    const el = document.getElementById('an-solar-util-chart');
+    if (!el) return;
+
+    // Helper: integrate kW readings over time to get kWh for a period
+    function integrateKwh(readings, fn) {
+        let total = 0;
+        for (let i = 1; i < readings.length; i++) {
+            const dt = (new Date(readings[i].timestamp) - new Date(readings[i-1].timestamp)) / 3600000;
+            if (dt > 0 && dt < 1) total += ((fn(readings[i-1]) + fn(readings[i])) / 2) * dt;
+        }
+        return Math.max(0, total);
+    }
+
+    // Build datasets: per-day on multi-day, or single aggregate on single day / compare
+    const datasets = [];
+
+    if (anIsMultiDay()) {
+        // One bar per day from the primary data
+        const sr = data.system_readings || [];
+        const days = anAggregateDays(sr);
+        days.forEach(function(d) {
+            const solarToHome = Math.min(d.solarKwh, d.homeKwh);
+            const solarToBatt = Math.max(0, d.solarKwh - solarToHome);
+            const gridToHome = Math.max(0, d.homeKwh - solarToHome);
+            const gridToBatt = Math.max(0, d.battChargeKwh - solarToBatt);
+            datasets.push({ label: anShortDate(d.date), solarToHome, solarToBatt, gridToHome, gridToBatt, battDischargeKwh: d.battDischargeKwh });
+        });
+    } else {
+        const allData = [{ d: data, label: 'Selected' }];
+        (compareList || []).forEach((cd, i) => allData.push({ d: cd, label: cd._compareDate || ('Compare ' + (i+1)) }));
+        allData.forEach(function(item) {
+            const sr = item.d.system_readings || [];
+            if (!sr.length) return;
+            const dateLabel = sr[0].timestamp.slice(0, 10);
+            const solarKwh = integrateKwh(sr, r => Math.max(0, r.solar_kw || 0));
+            const homeKwh = integrateKwh(sr, r => Math.max(0, r.home_load_kw || 0));
+            const battChargeKwh = integrateKwh(sr, r => Math.max(0, -(r.battery_kw || 0)));
+            const battDischargeKwh = integrateKwh(sr, r => Math.max(0, r.battery_kw || 0));
+            const solarToHome = Math.min(solarKwh, homeKwh);
+            const solarToBatt = Math.max(0, solarKwh - solarToHome);
+            const gridToHome = Math.max(0, homeKwh - solarToHome);
+            const gridToBatt = Math.max(0, battChargeKwh - solarToBatt);
+            datasets.push({ label: dateLabel, solarToHome, solarToBatt, gridToHome, gridToBatt, battDischargeKwh });
+        });
+    }
+
+    if (!datasets.length) {
+        el.innerHTML = '<div class="an-no-data">No data for this period</div>';
+        return;
+    }
+
+    const labels = datasets.map(d => d.label);
+    const cfg = window.AN_PLOTLY_CONFIG || { displayModeBar: false, responsive: true };
+    const layout = {
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#94a3b8', family: 'DM Sans, sans-serif', size: 12 },
+        margin: { t: 20, r: 20, b: 60, l: 60 },
+        barmode: 'stack',
+        xaxis: { type: 'category', tickfont: { size: 12 }, gridcolor: 'rgba(255,255,255,0.04)', tickmode: 'array', tickvals: labels, ticktext: labels },
+        yaxis: { title: 'kWh', gridcolor: 'rgba(255,255,255,0.06)', tickfont: { size: 11 } },
+        legend: { orientation: 'h', y: -0.2, font: { size: 11 } },
+        hoverlabel: { bgcolor: '#1a2040', bordercolor: 'rgba(99,133,255,0.2)', font: { family: 'DM Sans', size: 12 } },
+    };
+
+    const traces = [
+        { name: 'Solar → Home', x: labels, y: datasets.map(d => +d.solarToHome.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(251,191,36,0.85)' }, hovertemplate: '%{y} kWh<extra>Solar → Home</extra>' },
+        { name: 'Solar → Battery', x: labels, y: datasets.map(d => +d.solarToBatt.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(251,191,36,0.4)' }, hovertemplate: '%{y} kWh<extra>Solar → Battery</extra>' },
+        { name: 'Grid → Home', x: labels, y: datasets.map(d => +d.gridToHome.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(96,165,250,0.7)' }, hovertemplate: '%{y} kWh<extra>Grid → Home</extra>' },
+        { name: 'Grid → Battery', x: labels, y: datasets.map(d => +d.gridToBatt.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(96,165,250,0.35)' }, hovertemplate: '%{y} kWh<extra>Grid → Battery</extra>' },
+        { name: 'Battery → Home', x: labels, y: datasets.map(d => +d.battDischargeKwh.toFixed(2)),
+          type: 'bar', marker: { color: 'rgba(52,211,153,0.7)' }, hovertemplate: '%{y} kWh<extra>Battery → Home</extra>' },
+    ];
+
+    Plotly.newPlot('an-solar-util-chart', traces, layout, cfg);
+}
+
+function anRenderDecisions(decisions) {
+    const el = document.getElementById('an-decision-list');
+    if (!decisions.length) {
+        el.innerHTML = '<div class="an-no-data">No decision entries for this period</div>';
+        return;
+    }
+
+    let lastMode = null;
+    const rows = [];
+    decisions.forEach(d => {
+        const m = d.message.match(/Decision:\s*\[v\d+\s+(P\d+)\]\s*(.*)/);
+        if (m) {
+            const priority = m[1];
+            const detail = m[2];
+            let modeClass = 'an-dec-tou', modeLabel = 'TOU', rowClass = 'an-dec-tou-row';
+            if (/Self.Consumption|self_consumption/i.test(detail)) { modeClass = 'an-dec-sc'; modeLabel = 'SC'; rowClass = 'an-dec-sc-row'; }
+            else if (/BACKUP|Emergency|emergency_backup|TOU-B/i.test(detail)) { modeClass = 'an-dec-eb'; modeLabel = 'EB'; rowClass = 'an-dec-eb-row'; }
+            const isChange = modeLabel !== lastMode;
+            lastMode = modeLabel;
+            rows.push({ time: d.timestamp.substring(5, 16).replace('T',' '), priority, detail, modeClass, modeLabel, rowClass, isChange });
+        }
+    });
+
+    el.innerHTML = rows.map(d => {
+        const changeClass = d.isChange ? 'an-dec-changed ' + d.rowClass : 'an-dec-nochange';
+        return '<div class="an-dec-row ' + changeClass + '">' +
+            '<span class="an-dec-time">' + d.time + '</span>' +
+            '<span class="an-dec-mode ' + d.modeClass + '">' + d.priority + ' ' + d.modeLabel + '</span>' +
+            '<span class="an-dec-msg">' + d.detail + '</span>' +
+            '</div>';
+    }).join('');
+}
+
 </script>
 </body>
 </html>

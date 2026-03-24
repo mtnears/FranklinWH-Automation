@@ -218,6 +218,7 @@ Thumbs.db
 *.bak
 web/solar_*.json
 web/enphase_*.json
+web/solaredge_*.json
 
 # Credentials and cookies (NEVER commit)
 scripts/solaredge_cookies.txt
@@ -229,7 +230,15 @@ scripts/probe_*.py
 scripts/local_telemetry_viewer.py
 solaredge_panel_test_results.json
 test_enphase_endpoints.sh
+test_endpoint.sh
+observe_power_routing.py
+web/screen-diagnostic.html
 
 # One-time patches and templates (redundant with .env.example)
 patch_modbus_syntax.sh
 scripts/env_template.txt
+data/system_profile.json
+
+# But track rate schedule configs (needed by other users)
+!data/rate_schedule.json
+!data/rate_schedule.example.json

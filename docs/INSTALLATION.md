@@ -28,25 +28,20 @@
 ssh admin@YOUR-NAS-IP
 sudo -i
 
-# Clone repository
 mkdir -p /volume1/docker/franklin-git
 cd /volume1/docker/franklin-git
 git clone https://github.com/mtnears/FranklinWH-Automation.git .
 
-# Create virtual environment
 python3 -m venv venv311
 source venv311/bin/activate
 pip install --upgrade pip
 pip install --break-system-packages -r requirements.txt
 
-# Make scripts executable
 chmod +x scripts/*.py
 
-# Configure
 cp .env.example .env
-nano .env   # Set your credentials and preferences
+nano .env
 
-# Create directories
 mkdir -p logs data web
 ```
 
@@ -57,20 +52,36 @@ source venv311/bin/activate
 python scripts/smart_decision.py
 ```
 
-You should see a successful decision with API mode detection and per-battery data.
+You should see a successful decision with the v4 adaptive engine priority level and data source in the output.
 
 ### 4. Schedule with Task Scheduler
 
-1. **Control Panel** → **Task Scheduler** → **Create** → **Scheduled Task** → **User-defined script**
-2. Name: `Smart Battery Decision`
-3. User: `root`
-4. Schedule: Daily, every 15 minutes (00:00 to 23:45)
-5. Script:
+The native install requires external scheduling since there is no built-in scheduler. Create tasks in Synology Task Scheduler for:
+
+**Smart Decision (every 30 minutes):**
+1. Control Panel → Task Scheduler → Create → Scheduled Task → User-defined script
+2. Schedule: Every 30 minutes
+3. Script:
    ```bash
-   #!/bin/bash
-   cd /volume1/docker/franklin-git
-   /volume1/docker/franklin-git/scripts/run_smart_decision.sh
+   cd /volume1/docker/franklin-git && ./venv311/bin/python scripts/smart_decision.py
    ```
+
+**Dashboard Data (every 1 minute):**
+   ```bash
+   cd /volume1/docker/franklin-git && ./venv311/bin/python scripts/generate_dashboard_data.py
+   ```
+
+**Daily Energy Rollup (daily at 11:55 PM):**
+   ```bash
+   cd /volume1/docker/franklin-git && ./venv311/bin/python scripts/rollup_daily_energy.py
+   ```
+
+**Daily Savings (daily at 11:58 PM):**
+   ```bash
+   cd /volume1/docker/franklin-git && ./venv311/bin/python scripts/calculate_daily_savings.py
+   ```
+
+Note: The Docker installation includes an internal scheduler that handles all of these automatically. Native installs miss some convenience features like automatic pre-peak/post-peak checks and the web API server.
 
 ---
 
@@ -96,7 +107,7 @@ pip install -r requirements.txt
 chmod +x scripts/*.py
 
 cp .env.example .env
-nano .env   # Configure
+nano .env
 
 mkdir -p logs data web
 ```
@@ -113,8 +124,17 @@ python scripts/smart_decision.py
 ```bash
 crontab -e
 
-# Add:
-*/15 * * * * cd /path/to/FranklinWH-Automation && /path/to/FranklinWH-Automation/scripts/run_smart_decision.sh >> logs/cron.log 2>&1
+# Smart decision every 30 minutes
+*/30 * * * * cd /path/to/FranklinWH-Automation && ./venv311/bin/python scripts/smart_decision.py >> logs/cron.log 2>&1
+
+# Dashboard data every minute
+* * * * * cd /path/to/FranklinWH-Automation && ./venv311/bin/python scripts/generate_dashboard_data.py >> logs/cron.log 2>&1
+
+# Daily energy rollup at 11:55 PM
+55 23 * * * cd /path/to/FranklinWH-Automation && ./venv311/bin/python scripts/rollup_daily_energy.py >> logs/cron.log 2>&1
+
+# Daily savings at 11:58 PM
+58 23 * * * cd /path/to/FranklinWH-Automation && ./venv311/bin/python scripts/calculate_daily_savings.py >> logs/cron.log 2>&1
 ```
 
 ---
@@ -128,10 +148,11 @@ All settings are in your `.env` file. See [CONFIGURATION_REFERENCE.md](CONFIGURA
 FRANKLIN_USERNAME=your_email@example.com
 FRANKLIN_PASSWORD=your_password
 FRANKLIN_GATEWAY_ID=your_gateway_id
-BATTERY_CAPACITY_KWH=30
-CHARGE_RATE_PER_HOUR=32
-CHECK_INTERVAL_MINUTES=15
-PEAK_TRANSITION_BUFFER_MINUTES=5
+BATTERY_CAPACITY_KWH=13.6
+ADAPTIVE_ENGINE_ENABLED=true
+PEAK_START_HOUR=17
+PEAK_END_HOUR=20
+PEAK_DAYS=weekdays
 HOME_MODE=tou
 ```
 
@@ -142,15 +163,13 @@ HOME_MODE=tou
 After 24 hours, check the system is working:
 
 ```bash
-# Count decisions (should be ~96 per day)
-grep "$(date +%Y-%m-%d)" logs/solar_intelligence.log | grep "======" | wc -l
+source venv311/bin/activate
 
-# Check for API mode detection (v3.3.0)
-grep "API Mode" logs/solar_intelligence.log | tail -3
+# Check recent decisions in the database
+python3 -c "import sqlite3; conn=sqlite3.connect('data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE 'Decision%' ORDER BY id DESC LIMIT 5\").fetchall(); [print(r) for r in rows]"
 
-# Verify no mode changes during peak
-grep "SWITCHING" logs/solar_intelligence.log | grep " 1[7-9]:\| 20:0[0-7]"
-# Should return nothing
+# Check daily energy data
+python3 -c "import sqlite3; conn=sqlite3.connect('data/franklin.db'); rows=conn.execute(\"SELECT date, solar_kwh, grid_import_kwh, home_load_kwh FROM daily_energy_summary ORDER BY date DESC LIMIT 3\").fetchall(); [print(r) for r in rows]"
 ```
 
 ---
@@ -170,9 +189,9 @@ source venv311/bin/activate
 pip install -r requirements.txt
 ```
 
-Check the [CHANGELOG.md](CHANGELOG.md) for any new `.env` settings to add.
+Check the [CHANGELOG.md](../CHANGELOG.md) for any new `.env` settings to add.
 
 ---
 
-**Last Updated:** February 2026
-**Version:** 3.3.0
+**Last Updated:** March 2026
+**Version:** 4.1.0

@@ -8,12 +8,12 @@
 
 The Docker setup provides a complete, self-contained package:
 
-- ✅ **Automated battery management** with API-native mode control
-- ✅ **Schedule-aware timing** with peak-pinned checks
-- ✅ **Per-battery monitoring** for multi-battery systems
-- ✅ **Built-in web dashboard** — no separate web server needed
+- ✅ **v4 Adaptive Decision Engine** with 8-phase priority system
+- ✅ **Solar forecast engine** with Open-Meteo integration
+- ✅ **Hybrid data collection** — Modbus TCP local + cloud API
+- ✅ **SQLite database** — all data stored locally, no CSV files
+- ✅ **Built-in web dashboard** with interactive Plotly.js analytics
 - ✅ **Internal scheduler** — no external cron or Task Scheduler needed
-- ✅ **Dashboard with 3 tabs** — Live view, Weekly Reports, System Logs
 - ✅ **Configurable everything** via `.env` file
 
 ---
@@ -47,14 +47,15 @@ nano .env   # or use: vi .env
 FRANKLIN_USERNAME=your_email@example.com
 FRANKLIN_PASSWORD=your_password
 FRANKLIN_GATEWAY_ID=your_gateway_id
-BATTERY_CAPACITY_KWH=30
-CHARGE_RATE_PER_HOUR=32
+BATTERY_CAPACITY_KWH=13.6
+ADAPTIVE_ENGINE_ENABLED=true
 ```
 
-**Set your scheduling preferences:**
+**Set your TOU schedule:**
 ```bash
-CHECK_INTERVAL_MINUTES=15
-PEAK_TRANSITION_BUFFER_MINUTES=5
+PEAK_START_HOUR=17
+PEAK_END_HOUR=20
+PEAK_DAYS=weekdays
 HOME_MODE=tou
 ```
 
@@ -69,7 +70,7 @@ mkdir -p logs data web
 ### 4. Build and Start
 
 ```bash
-docker compose build
+docker compose build --no-cache
 docker compose up -d
 ```
 
@@ -80,9 +81,9 @@ docker logs franklin-automation 2>&1 | head -25
 ```
 
 You should see:
-- `Scheduler v3.3.0` in the banner
+- `FranklinWH Automation Scheduler` with the version number
 - Your enabled features listed
-- `Pre-peak check: Daily at XX:XX` and `Post-peak check: Daily at XX:XX`
+- Scheduled tasks with their run times
 - Initial smart decision completing successfully
 
 ### 6. Access Dashboard
@@ -99,7 +100,7 @@ The Docker setup runs two containers:
 
 | Container | Purpose |
 |-----------|---------|
-| `franklin-automation` | Main automation + internal scheduler |
+| `franklin-automation` | Main automation + internal scheduler + API server |
 | `franklin-dashboard` | Nginx web server for dashboard |
 
 ### Scheduled Tasks (Automatic)
@@ -108,14 +109,21 @@ All tasks run automatically inside the container:
 
 | Task | Frequency | Description |
 |------|-----------|-------------|
-| Smart Decision | Every 15 min (configurable) | Core battery management |
+| Smart Decision | Every 10-30 min (auto) | Core battery management (v4 adaptive engine) |
 | Pre-peak Check | Daily (e.g., 16:55) | Guaranteed check before peak |
 | Post-peak Check | Daily (e.g., 20:01) | Resume normal mode after peak |
-| Dashboard Data | Every 1 minute | Updates live dashboard |
-| Weather Collection | Every 15 minutes (if enabled) | Weather data logging |
-| PVOutput Collection | Hourly (if enabled) | Solar production tracking |
-| Daily Savings | Daily at 11:55 PM | Savings calculation |
-| Weekly Charts | Sunday 2:00 AM | Performance visualization |
+| Modbus Collection | Every 5 min | Local hardware data (if Modbus enabled) |
+| Enphase Collection | Every 5 min | House solar production (if configured) |
+| Dashboard Data | Every 1 min | Updates live dashboard |
+| Weather Collection | Every 15 min | Weather data logging (if enabled) |
+| SolarEdge Panels | Every 15 min | Barn panel health (if enabled) |
+| PVOutput Upload | Hourly | Solar production tracking (if enabled) |
+| Daily Energy Rollup | Daily at 11:55 PM | Daily energy summary calculation |
+| Daily Savings | Daily at 11:58 PM | Savings calculation |
+| Device Inventory | Daily at 2:00 AM | Hardware serial/firmware tracking |
+| System Profile | Weekly (Sunday 3 AM) | Battery charge curve rebuild |
+| Panel Health Report | Daily at 8:30 PM | SolarEdge optimizer health (if enabled) |
+| Telemetry | Daily at 3:00 AM | Anonymous usage stats (if opted in) |
 
 ---
 
@@ -125,32 +133,35 @@ The built-in dashboard has five tabs:
 
 ### Live Dashboard
 - Real-time battery status and SOC
-- Energy flow visualization
+- Energy flow visualization (solar, grid, battery, home)
 - Battery states: Charging / Discharging / Standby
-- Savings tracker
 - Peak countdown timer
+- System health indicators
+
+### Analytics
+- Interactive Plotly.js charts with zoom, pan, hover tooltips
+- Date range selection and carousel navigation
+- SOC timeline, power flow, solar production, savings
+- Touch-optimized for tablet displays
+- All data sourced from SQLite
+
+### Script Status
+- Real-time health monitoring of all scheduled scripts
+- Success/fail counts, last run time, error history
+- At-a-glance system health
 
 ### System Info
 - Per-battery SOC and power output
-- Environment data (temperature, signal)
+- Environment data (temperature, signal strength)
 - Today's energy totals and lifetime totals
-- Hardware status (BMS, generator, V2L)
-- Mode override controls
-
-### Settings
-- Read-only display of automation configuration
-- Peak hours, SOC targets, feature toggles
-
-### Weekly Reports
-- 7-day SOC timeline charts
-- Daily summary graphs
-- Power flow analysis
-- Historical report archive
+- Hardware status
+- Mode override controls with auto-expiring timers
+- Version info with update-available badge
+- One-click diagnostic bundle for issue reporting
 
 ### System Logs
-- Intelligence log (decision making)
+- Intelligence log (engine decisions from SQLite)
 - Scheduler log (task execution)
-- Monitoring data (CSV table view)
 - Auto-refresh every 30 seconds
 
 ---
@@ -160,14 +171,15 @@ The built-in dashboard has five tabs:
 ### View Logs
 
 ```bash
-# Container scheduler logs
 docker logs franklin-automation -f
 
-# Intelligence log (decision details)
-docker exec franklin-automation tail -30 /app/logs/solar_intelligence.log
-
-# Last 100 lines of container logs
 docker logs --tail 100 franklin-automation
+```
+
+### Check Recent Engine Decisions
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log ORDER BY id DESC LIMIT 20\").fetchall(); [print(r) for r in rows]"
 ```
 
 ### Check Status
@@ -197,31 +209,32 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-**Important:** Since scripts are built into the Docker image (not volume-mounted), you must rebuild with `--no-cache` when updating to pick up script changes. A simple `docker restart` is not sufficient for code updates.
+**Important:** Scripts are built into the Docker image (not volume-mounted). You must rebuild with `--no-cache` when updating to pick up code changes. A simple `docker restart` is not sufficient for code updates.
 
 ---
 
 ## Configuration Options
 
-All settings are in your `.env` file. See `.env.example` for all available options.
+All settings are in your `.env` file. See [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md) for the full reference.
 
 ### Feature Toggles
 
 ```bash
-SOLAR_ENABLED=true
-TOU_ENABLED=true
-DYNAMIC_PRICING_ENABLED=false
-WEATHER_ENABLED=false
-PVOUTPUT_ENABLED=false
-EMAIL_ENABLED=false
+ADAPTIVE_ENGINE_ENABLED=true     # v4 adaptive engine (recommended)
+SOLAR_ENABLED=true               # Solar-first charging logic
+TOU_ENABLED=true                 # TOU peak protection
+MODBUS_ENABLED=false             # Local Modbus TCP (100x faster)
+DYNAMIC_PRICING_ENABLED=false    # Hourly pricing (ComEd, etc.)
+WEATHER_ENABLED=false            # Weather data collection
+PVOUTPUT_ENABLED=false           # PVOutput solar tracking
 ```
 
 ### Scheduling
 
 ```bash
-CHECK_INTERVAL_MINUTES=15           # Decision frequency (1-60 min)
-PEAK_TRANSITION_BUFFER_MINUTES=5    # Minutes before peak to check
-HOME_MODE=tou                       # Normal mode: tou or self_consumption
+CHECK_INTERVAL_MINUTES=0              # 0 = auto-calculate
+PEAK_TRANSITION_BUFFER_MINUTES=5      # Minutes before peak to check
+HOME_MODE=tou                         # Normal mode: tou or self_consumption
 ```
 
 ### TOU Peak Period
@@ -232,18 +245,29 @@ PEAK_END_HOUR=20
 PEAK_DAYS=weekdays
 ```
 
+### Solar Forecast
+
+```bash
+FORECAST_ENABLED=true
+FORECAST_LATITUDE=38.91
+FORECAST_LONGITUDE=-120.84
+FORECAST_HOUSE_TILT=22
+FORECAST_HOUSE_AZIMUTH=0            # 0=South, -90=East, 90=West
+FORECAST_HOUSE_KWP=6.96             # Total panel watts / 1000
+```
+
+### Modbus TCP
+
+```bash
+MODBUS_ENABLED=true
+MODBUS_HOST=192.168.x.x             # Your aGate's IP
+MODBUS_PORT=502
+```
+
 ### Dashboard Port
 
 ```bash
 DASHBOARD_PORT=8100   # Default, change if needed
-```
-
-### Dynamic Pricing (ComEd)
-
-```bash
-DYNAMIC_PRICING_ENABLED=true
-PRICING_PROVIDER=comed
-PRICE_THRESHOLD_CENTS=4.0
 ```
 
 ---
@@ -252,8 +276,8 @@ PRICE_THRESHOLD_CENTS=4.0
 
 | Host Path | Container Path | Contents |
 |-----------|---------------|----------|
-| `./logs/` | `/app/logs/` | Log files, charts, CSV data |
-| `./data/` | `/app/data/` | Savings data and projections |
+| `./logs/` | `/app/logs/` | Log files |
+| `./data/` | `/app/data/` | SQLite database (`franklin.db`), rate schedule, forecast cache |
 | `./web/` | `/app/web/` | Dashboard HTML and JSON data |
 | `./.env` | (loaded at build) | Configuration (not in git) |
 
@@ -266,10 +290,8 @@ PRICE_THRESHOLD_CENTS=4.0
 ### Container won't start
 
 ```bash
-# Check logs for errors
 docker logs franklin-automation
 
-# Verify .env file exists and has required values
 cat .env | grep FRANKLIN
 ```
 
@@ -286,41 +308,31 @@ docker compose up -d
 ### Dashboard shows "Loading..."
 
 ```bash
-# Check if data file exists
 docker exec franklin-automation ls -la /app/web/power_dashboard_data.json
 
-# Check automation logs
 docker logs --tail 50 franklin-automation | grep Dashboard
 ```
 
 ### Dashboard not accessible
 
 ```bash
-# Check both containers are running
 docker compose ps
 
-# Check dashboard container logs
 docker compose logs franklin-dashboard
 
-# Test health endpoint
 curl http://localhost:8100/health
-```
-
-### Logs tab shows "Unable to load log file"
-
-```bash
-# Check logs are being written
-docker exec franklin-automation ls -la /app/logs/
-
-# Check intelligence log exists
-docker exec franklin-automation tail -5 /app/logs/solar_intelligence.log
 ```
 
 ### API connection errors
 
 ```bash
-# Check recent decisions for retry patterns
-docker exec franklin-automation tail -20 /app/logs/solar_intelligence.log
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%error%' OR message LIKE '%failed%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
+```
+
+### Check data source health
+
+```bash
+docker exec franklin-automation cat /app/logs/data_source_health.json | python3 -m json.tool
 ```
 
 ### Permission errors
@@ -354,9 +366,9 @@ cd /volume1/docker
 git clone https://github.com/mtnears/FranklinWH-Automation.git franklin-git
 cd franklin-git
 cp .env.example .env
-nano .env  # Configure your settings
+nano .env
 mkdir -p logs data web
-docker compose build
+docker compose build --no-cache
 docker compose up -d
 ```
 
@@ -380,18 +392,17 @@ If you previously used native installation, disable those tasks:
 ```bash
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER
-# Log out and back in
 ```
 
-### Setup
+Log out and back in, then:
 
 ```bash
 git clone https://github.com/mtnears/FranklinWH-Automation.git
 cd FranklinWH-Automation
 cp .env.example .env
-nano .env  # Configure
+nano .env
 mkdir -p logs data web
-docker compose build
+docker compose build --no-cache
 docker compose up -d
 ```
 
@@ -403,16 +414,12 @@ Open: `http://YOUR-PI-IP:8100`
 
 ## Support
 
-- Check container logs first: `docker logs franklin-automation -f`
+- Check container logs: `docker logs franklin-automation -f`
 - Review [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 - Check the System Logs tab in the dashboard
-- Open GitHub issue with log excerpts
+- Open a [GitHub Issue](https://github.com/mtnears/FranklinWH-Automation/issues) with log excerpts
 
 ---
 
-**That's it!** Your Franklin WH battery is now automatically optimized. 🎉
-
----
-
-**Last Updated:** February 2026
-**Version:** 3.3.0
+**Last Updated:** March 2026
+**Version:** 4.1.0

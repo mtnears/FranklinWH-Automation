@@ -1,6 +1,6 @@
 # Web Dashboard Setup Guide
 
-The FranklinWH Automation includes a web-based dashboard for real-time monitoring of your battery system, energy flow, and savings tracking.
+The FranklinWH Automation includes a web-based dashboard for real-time monitoring of your battery system, energy flow, analytics, and system health.
 
 ## Features
 
@@ -11,35 +11,40 @@ The FranklinWH Automation includes a web-based dashboard for real-time monitorin
   - 🟢 **Charging** (green) — Battery receiving power (solar or grid)
   - 🟠 **Discharging** (orange) — Battery powering home
   - ⚪ **Standby** (gray) — Battery idle (±100W threshold)
+- **Peak Countdown**: Time remaining until peak period starts, or "PEAK ACTIVE" indicator
 - **Savings Tracker**: Daily, monthly, and projected annual savings
 - **Auto-Refresh**: Dashboard updates every 15 seconds
 
+### Analytics Tab
+- **Interactive Plotly.js Charts**: Zoom, pan, hover tooltips, and touch support
+- **Date Range Selection**: Pick any date range for analysis
+- **Carousel Navigation**: Swipe or click through chart types
+- **Chart Types**: SOC timeline, power flow, solar production, savings analysis
+- **Data Source**: All charts sourced directly from SQLite database
+- **Touch Optimized**: Works well on Fire HD 10 tablet and other touch devices
+
+### Script Status Tab
+- **Real-Time Health Monitoring**: All scheduled scripts with current status
+- **Success/Fail Counts**: Historical success and failure rates per script
+- **Error History**: Recent errors for quick diagnosis
+- **At-a-Glance**: System health overview
+
 ### System Info Tab
 - **Per-Battery SOC**: Individual state of charge for each battery in the system
-- **Environment**: Ambient temperature, cellular signal strength, WiFi signal
+- **Environment**: Ambient temperature, cabinet temperature, cellular signal, WiFi signal
 - **Energy Totals**: Today's solar generation, grid import/export, load, battery charge/discharge
 - **Lifetime Totals**: Cumulative energy by source (battery, grid, solar, generator)
 - **Charging Breakdown**: Grid-to-battery vs solar-to-battery rates
 - **Hardware Status**: BMS, power electronics, main switch, generator, V2L mode
 - **Mode Override Controls**: Manual Self Consumption / Emergency Backup with duration selection
-
-### Settings Tab
-- **Automation Config**: Read-only display of current `.env` settings
-- **Peak hours, SOC targets, charge rates, feature toggles**
-- **Dynamic pricing thresholds** (if enabled)
-
-### Weekly Reports Tab
-- **SOC Timeline**: 7-day battery state of charge history
-- **Daily Summary**: Charging/discharging patterns by day
-- **Power Flow**: 48-hour detailed power flow analysis
-- **Report Archive**: Access previous weekly reports from dropdown
+- **About Card**: Version display with "Update Available" badge (checks GitHub releases daily)
+- **Diagnostic Bundle**: One-click sanitized diagnostic report for issue reporting
 
 ### System Logs Tab
-- **Intelligence Log**: Decision-making logic and automation choices
+- **Intelligence Log**: Engine decisions from SQLite database
 - **Scheduler Log**: Task execution history and timing
-- **Monitoring Data**: CSV data viewer with table formatting
 - **Auto-Refresh**: Logs update every 30 seconds when tab is active
-- **Configurable**: Choose number of lines to display (10-500)
+- **Report Issue Button**: Generates sanitized diagnostic bundle with credentials stripped
 
 ---
 
@@ -75,19 +80,7 @@ cp web/power_dashboard.html /volume1/web/
 cp web/power_dashboard.html /var/www/html/
 ```
 
-### 2. Create Symlink for Logs
-
-The weekly charts and log files are stored in the logs folder. Create a symlink so the dashboard can access them:
-
-```bash
-# Synology
-ln -s /volume1/docker/franklin-git/logs /volume1/web/logs
-
-# Linux
-ln -s /path/to/FranklinWH-Automation/logs /var/www/html/logs
-```
-
-### 3. Schedule Data Generation
+### 2. Schedule Data Generation
 
 The dashboard reads from `power_dashboard_data.json`. For native installs, schedule the data generator to run every minute:
 
@@ -106,7 +99,7 @@ The dashboard reads from `power_dashboard_data.json`. For native installs, sched
 * * * * * cd /path/to/FranklinWH-Automation && ./venv311/bin/python scripts/generate_dashboard_data.py
 ```
 
-### 4. Access the Dashboard
+### 3. Access the Dashboard
 
 Open in your browser:
 - **Docker:** `http://YOUR-SERVER-IP:8100`
@@ -115,16 +108,16 @@ Open in your browser:
 
 ---
 
-## Dashboard Tabs
+## Dashboard Tabs Detail
 
 ### Live Dashboard
 
 | Section | Information |
 |---------|-------------|
-| Battery Status | SOC percentage, mode (TOU/Backup), charging state |
+| Battery Status | SOC percentage, mode (TOU/SC/Backup), charging state |
 | Current Power | Real-time charge/discharge rate in kW |
 | Available Energy | Usable kWh remaining |
-| Peak Countdown | Minutes until peak period starts (or "PEAK ACTIVE") |
+| Peak Countdown | Time until peak period starts (or "PEAK ACTIVE") |
 | Energy Flow | Visual diagram of power flow between components |
 | Savings Tracker | Financial impact of automation |
 
@@ -135,44 +128,54 @@ Open in your browser:
 - **Discharging** — Battery powering home load
 - **Standby** — Battery idle, neither charging nor discharging
 
+### Analytics
+
+Interactive Plotly.js charts sourced from the SQLite database. Select date ranges, zoom into specific time periods, and hover for exact values. Charts include SOC timeline with mode markers, power flow breakdown, solar production vs forecast, and savings analysis. Optimized for touch interaction on the Fire HD 10 tablet (1507×943 CSS pixels) in Fully Kiosk Browser.
+
+### Script Status
+
+Shows every scheduled task with its run frequency, last execution time, success/fail count, and any recent errors. Use this to quickly verify the system is healthy — all scripts should show recent successful runs.
+
 ### System Info
 
 | Section | Information |
 |---------|-------------|
 | Per-Battery SOC | Individual battery state of charge and power |
-| Environment | Ambient temperature, cell signal, WiFi signal |
+| Environment | Ambient temperature, cabinet temperature, cell signal, WiFi |
 | Today's Energy | Solar, grid in/out, load, battery charge/discharge, generator |
 | Lifetime Totals | Cumulative kWh by source |
 | Charging Source | Grid-to-battery vs solar-to-battery breakdown |
 | Hardware | BMS status, power electronics, main switch, generator, V2L |
 | Mode Overrides | Manual mode control with duration selection |
-
-### Settings
-
-Displays current automation configuration (read-only):
-- Peak SOC target, minimum reserve, charge rate
-- Peak period hours, TOU settings
-- Feature toggle status
-- Dynamic pricing thresholds (if enabled)
-
-### Weekly Reports
-
-Select a report date from the dropdown to view:
-- **SOC Timeline** — 7-day state of charge graph
-- **Daily Summary** — Bar chart of daily charge/discharge
-- **Power Flow** — Detailed 48-hour power analysis
-
-Reports are generated weekly (default: Sunday 2:00 AM).
+| About | Version, update available badge, system info |
+| Diagnostics | One-click sanitized diagnostic bundle |
 
 ### System Logs
 
 | Log Type | Contents |
 |----------|----------|
-| Intelligence Log | Decision logic, mode changes, API mode detection |
+| Intelligence Log | Engine decisions, mode changes, forecast data, errors |
 | Scheduler Log | Task execution times, success/failure status |
-| Monitoring Data | CSV data displayed as sortable table |
 
-Features: color-coded entries, configurable line count, auto-refresh, manual refresh button.
+Features: color-coded entries, auto-refresh, manual refresh button, Report Issue button.
+
+---
+
+## Override System
+
+Quick-access mode overrides from the dashboard or API:
+
+```bash
+# Emergency backup for 4 hours
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "emergency_backup", "duration": "4h"}'
+
+# Cancel override (engine resumes)
+curl -X DELETE http://your-server:8100/api/override
+```
+
+Overrides auto-expire after the configured duration. The override status is displayed as a banner on the dashboard. The engine resumes normal operation when the override expires or is cancelled.
 
 ---
 
@@ -183,12 +186,14 @@ Features: color-coded entries, configurable line count, auto-refresh, manual ref
 ./                               # Your clone location
 ├── web/
 │   ├── power_dashboard.html     # Dashboard interface
-│   └── power_dashboard_data.json # Auto-generated data
+│   ├── power_dashboard_data.json # Auto-generated data (every 1 min)
+│   └── House_Power_Graphic.png  # Energy flow diagram
+├── data/
+│   ├── franklin.db              # SQLite database (all system data)
+│   ├── rate_schedule.json       # Rate schedule configuration
+│   └── solar_forecast_cache.json # Forecast cache
 ├── logs/
-│   ├── solar_intelligence.log   # Decision log
-│   ├── scheduler.log            # Task execution log
-│   ├── continuous_monitoring.csv # Historical data
-│   └── *_chart_*.png            # Weekly chart images
+│   └── data_source_health.json  # Modbus/cloud/Enphase health stats
 └── docker-compose.yml           # Includes nginx dashboard server
 ```
 
@@ -196,43 +201,53 @@ Features: color-coded entries, configurable line count, auto-refresh, manual ref
 ```
 /volume1/web/                    # Web server root (Synology)
 ├── power_dashboard.html         # Main dashboard file
-├── power_dashboard_data.json    # Generated data
-└── logs/ → symlink              # Points to logs folder
+└── power_dashboard_data.json    # Generated data
 
 /volume1/docker/franklin-git/    # Automation directory
 ├── scripts/
-│   ├── generate_dashboard_data.py
-│   └── generate_weekly_charts.py
+│   └── generate_dashboard_data.py
+├── data/
+│   └── franklin.db              # SQLite database
 └── logs/
-    └── (log and chart files)
 ```
+
+---
+
+## Tablet Kiosk Setup (Fire HD 10)
+
+The dashboard is optimized for the Fire HD 10 tablet running Fully Kiosk Browser as a dedicated wall display.
+
+1. Install **Fully Kiosk Browser** from the Amazon Appstore
+2. Set the start URL to `http://YOUR-SERVER-IP:8100`
+3. Enable kiosk mode and auto-refresh
+4. The dashboard auto-detects the 1507×943 CSS pixel viewport
+
+The layout works in any modern browser but is specifically tuned for the Fire HD 10 form factor.
 
 ---
 
 ## Troubleshooting
 
 ### "Loading..." never updates
-1. Check that `power_dashboard_data.json` exists in the web directory
-2. Verify the data generator is running
+1. Check that `power_dashboard_data.json` exists: `docker exec franklin-automation ls -la /app/web/power_dashboard_data.json`
+2. Verify the data generator is running: `docker logs --tail 20 franklin-automation | grep Dashboard`
 3. Check browser console (F12) for errors
-4. For Docker: `docker exec franklin-automation ls -la /app/web/power_dashboard_data.json`
 
-### Charts not showing
-1. Verify logs folder is accessible (symlink for native, volume mount for Docker)
-2. Check that chart files exist: `ls logs/*chart*.png`
-3. Run the chart generator manually to test
+### Charts not showing in Analytics
+1. Verify the SQLite database has data: `docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); print(conn.execute('SELECT COUNT(*) FROM system_readings').fetchone())"`
+2. Check that `generate_dashboard_data.py` is running successfully in Script Status tab
 
 ### Status shows wrong state
-The battery state is determined by `current_power`:
-- Less than -0.1 kW = Charging
-- Greater than +0.1 kW = Discharging
-- Between -0.1 and +0.1 kW = Standby
+The battery state is determined by `battery_kw`:
+- Negative = Charging (power flowing into battery)
+- Positive = Discharging (power flowing out of battery)
+- Near zero (±0.1 kW) = Standby
 
 ### Docker dashboard not accessible
-1. Check container is running: `docker compose ps`
+1. Check containers are running: `docker compose ps`
 2. Verify port mapping: `docker compose logs franklin-dashboard`
 3. Check firewall allows the port (default 8100)
-4. Try: `curl http://localhost:8100/health`
+4. Test: `curl http://localhost:8100/health`
 
 ---
 
@@ -243,10 +258,11 @@ The dashboard displays energy data but contains no sensitive credentials. Howeve
 1. **Don't expose to public internet** without authentication
 2. **Use a reverse proxy** with authentication if remote access needed
 3. **The data JSON** contains only energy metrics, no credentials
+4. **Diagnostic bundles** automatically strip all credentials before export
 
 For remote access, consider: VPN, Tailscale, or a reverse proxy with authentication.
 
 ---
 
-**Last Updated:** February 2026
-**Version:** 3.3.0
+**Last Updated:** March 2026
+**Version:** 4.1.0

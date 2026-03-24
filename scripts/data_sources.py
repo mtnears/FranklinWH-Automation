@@ -43,7 +43,7 @@ except ImportError:
 from franklinwh import Client, TokenFetcher
 
 # Local config
-from config import config
+from config import config, configure_logging
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -87,6 +87,12 @@ class BatteryData:
     # Voltage/frequency (if available)
     grid_voltage_v: Optional[float] = None
     grid_frequency_hz: Optional[float] = None
+
+    # Cumulative energy totals (from cloud API stats.totals)
+    battery_charge_total_kwh: float = 0.0
+    battery_discharge_total_kwh: float = 0.0
+    grid_import_total_kwh: float = 0.0
+    solar_total_kwh: float = 0.0
 
 
 @dataclass
@@ -273,7 +279,7 @@ class ModeStateTracker:
     Periodically verify against cloud API to stay honest.
     """
 
-    def __init__(self, state_file: Path = None, verify_interval_minutes: int = 60):
+    def __init__(self, state_file: Path = None, verify_interval_minutes: int = 15):
         self.state_file = state_file or (config.LOG_DIR / "mode_state.json")
         self.verify_interval = timedelta(minutes=verify_interval_minutes)
         self.current_mode = "unknown"
@@ -383,12 +389,35 @@ class DataSource(ABC):
 # =============================================================================
 
 class ModbusDataSource(DataSource):
-    """Modbus TCP data source using SunSpec DER models."""
+    """Modbus TCP data source using SunSpec DER models + Franklin extensions."""
 
     MODELS = {
         "Model 701": {"addr": 72, "length": 153},   # AC Measurement
         "Model 713": {"addr": 1035, "length": 7},    # DER Status
         "Model 702": {"addr": 227, "length": 50},    # DC Measurement
+    }
+
+    # Franklin extension registers (15500+ range, proprietary)
+    EXT_BASE = 15500
+    EXT_READ_COUNT = 17          # 15500-15516
+    EXT_PV_OFFSET = 2            # 15502: PV output power (W)
+    EXT_HOME_LOAD_OFFSET = 6     # 15506: Home load power (W)
+    EXT_MODE_OFFSET = 7          # 15507: Operating mode
+    EXT_SELF_RESERVE_OFFSET = 8  # 15508: Self-consumption reserve %
+    EXT_TOU_RESERVE_OFFSET = 9   # 15509: TOU reserve %
+    EXT_TOU_DISPATCH_OFFSET = 16 # 15516: TOU dispatch state
+
+    EXT_MODE_MAP = {
+        0: ("standby", "Standby"),
+        1: ("emergency_backup", "Emergency Backup"),
+        2: ("self_consumption", "Self Consumption"),
+        3: ("time_of_use", "Time of Use"),
+    }
+
+    TOU_DISPATCH_MAP = {
+        0: "Idle", 1: "Home Loads", 2: "Standby",
+        3: "Solar Charging", 4: "Grid Charging", 5: "Grid Discharge",
+        6: "Self Consumption", 7: "Grid Export", 8: "Grid Charge",
     }
 
     def __init__(self):
@@ -440,7 +469,7 @@ class ModbusDataSource(DataSource):
         return val - 0x10000 if val >= 0x8000 else val
 
     async def read_battery_data(self) -> Optional[BatteryData]:
-        """Read battery data via Modbus TCP. Returns SOC + grid power."""
+        """Read battery data via Modbus TCP: SunSpec models + Franklin extensions."""
         start_time = time.time()
 
         try:
@@ -464,10 +493,10 @@ class ModbusDataSource(DataSource):
             # Build battery data with what Modbus provides
             battery_data = BatteryData(
                 soc_percent=soc_percent,
-                battery_power_kw=0.0,   # Not reliably available via Modbus yet
+                battery_power_kw=0.0,
                 grid_power_kw=0.0,
-                solar_power_kw=0.0,     # Will be filled from Enphase
-                home_load_kw=0.0,       # Not reliably available via Modbus yet
+                solar_power_kw=0.0,
+                home_load_kw=0.0,
                 source="modbus",
                 timestamp=datetime.now()
             )
@@ -499,12 +528,59 @@ class ModbusDataSource(DataSource):
                 if voltage_raw > 0:
                     battery_data.grid_voltage_v = voltage_raw / 10.0
 
+            # Grid connection state from offset 3
+            if model_701 and len(model_701) > 3:
+                battery_data.grid_status = "Connected" if model_701[3] == 1 else "Disconnected"
+
+            # --- Franklin Extension Registers (15500-15516) ---
+            ext = self._read_registers(self.EXT_BASE, self.EXT_READ_COUNT)
+            if ext and len(ext) >= 10:
+                # Home load (15506) - watts
+                load_val = ext[self.EXT_HOME_LOAD_OFFSET]
+                if load_val != 0xFFFF:
+                    battery_data.home_load_kw = load_val / 1000.0
+
+                # PV/solar from Franklin (15502) - watts
+                # Store as ext_solar for cross-check; Enphase will override in merge
+                pv_val = ext[self.EXT_PV_OFFSET]
+                if pv_val != 0xFFFF:
+                    battery_data._ext_solar_kw = pv_val / 1000.0
+
+                # Derive battery power from energy balance:
+                # solar + grid + battery = home_load
+                # battery = home_load - solar - grid
+                if load_val != 0xFFFF:
+                    ext_solar_w = pv_val if pv_val != 0xFFFF else 0
+                    battery_data.battery_power_kw = (load_val - ext_solar_w - (battery_data.grid_power_kw * 1000)) / 1000.0
+
+                # Mode from 15507 - direct hardware state
+                mode_raw = ext[self.EXT_MODE_OFFSET]
+                if mode_raw in self.EXT_MODE_MAP:
+                    mode_id, mode_label = self.EXT_MODE_MAP[mode_raw]
+                    battery_data._ext_mode = mode_id
+                    battery_data._ext_mode_name = mode_label
+
+                    # TOU dispatch sub-state from 15516
+                    if mode_raw == 3 and len(ext) > self.EXT_TOU_DISPATCH_OFFSET:
+                        dispatch = ext[self.EXT_TOU_DISPATCH_OFFSET]
+                        dispatch_text = self.TOU_DISPATCH_MAP.get(dispatch, f"Unknown({dispatch})")
+                        battery_data._ext_tou_dispatch = dispatch
+                        battery_data._ext_tou_dispatch_text = dispatch_text
+                        battery_data._ext_mode_name = f"TOU-{dispatch_text}"
+
+                # Reserves
+                battery_data._ext_self_reserve = ext[self.EXT_SELF_RESERVE_OFFSET]
+                battery_data._ext_tou_reserve = ext[self.EXT_TOU_RESERVE_OFFSET]
+            else:
+                logger.debug("Franklin extension registers not available")
+
             # Record success
             response_time = (time.time() - start_time) * 1000
             self.stats.record_success(response_time)
 
             logger.debug(f"Modbus read: SOC={soc_percent:.1f}%, "
                         f"Grid={battery_data.grid_power_kw:.3f}kW, "
+                        f"Load={battery_data.home_load_kw:.3f}kW, "
                         f"Time={response_time:.0f}ms")
 
             return battery_data
@@ -705,6 +781,12 @@ class CloudDataSource(DataSource):
                 timestamp=datetime.now()
             )
 
+            # Populate cumulative totals from cloud API
+            battery_data.battery_charge_total_kwh = getattr(stats.totals, 'battery_charge', 0.0)
+            battery_data.battery_discharge_total_kwh = getattr(stats.totals, 'battery_discharge', 0.0)
+            battery_data.grid_import_total_kwh = getattr(stats.totals, 'grid_import', 0.0)
+            battery_data.solar_total_kwh = getattr(stats.totals, 'solar', 0.0)
+
             if status and isinstance(status, dict):
                 battery_data.run_status = status.get("run_status")
                 battery_data.mode_name = status.get("name", "Unknown")
@@ -752,7 +834,15 @@ class CloudDataSource(DataSource):
 
             if mode in ['emergency_backup', 'backup']:
                 mode_obj = Mode.emergency_backup(soc=config.RESERVE_SOC_BACKUP)
+            elif mode == 'self_consumption':
+                # v4 engine explicitly requests self_consumption for peak hours
+                mode_obj = Mode.self_consumption(soc=config.RESERVE_SOC_HOME)
+            elif mode == 'time_of_use':
+                # v4 three-mode strategy: TOU is the default resting state
+                # Requires Franklin app TOU tariff configured with "aPower charges from solar"
+                mode_obj = Mode.time_of_use(soc=config.RESERVE_SOC_HOME)
             else:
+                # v3.5 legacy "home" target — use config.HOME_MODE to decide
                 if config.HOME_MODE == 'self_consumption':
                     mode_obj = Mode.self_consumption(soc=config.RESERVE_SOC_HOME)
                 else:
@@ -840,31 +930,58 @@ class DataSourceManager:
                 if solar_kw is not None:
                     battery_data.solar_power_kw = solar_kw
                     battery_data.source = "modbus+enphase"
+                elif hasattr(battery_data, '_ext_solar_kw') and battery_data._ext_solar_kw > 0:
+                    battery_data.solar_power_kw = battery_data._ext_solar_kw
+                    battery_data.source = "modbus+ext"
                 else:
-                    # No solar data available — not critical at night
                     logger.debug("No solar data available (may be nighttime)")
 
                 # Track SOC for trend analysis
                 self.soc_tracker.record(battery_data.soc_percent)
 
-                # Derive solar-to-battery rate from SOC trend
-                solar_to_bat = self.soc_tracker.estimate_solar_to_battery(
-                    battery_data.solar_power_kw,
-                    battery_data.grid_power_kw
-                )
-                battery_data.solar_to_battery_kw = solar_to_bat
+                # Charging flow estimation: use battery_power from extension registers
+                # battery_power_kw > 0 means discharging, < 0 means charging
+                if battery_data.battery_power_kw < -0.05:
+                    # Battery is charging — figure out from where
+                    charge_rate = abs(battery_data.battery_power_kw)
+                    if battery_data.solar_power_kw > 0.1:
+                        battery_data.solar_to_battery_kw = min(charge_rate, battery_data.solar_power_kw)
+                        battery_data.grid_to_battery_kw = max(0, charge_rate - battery_data.solar_to_battery_kw)
+                    else:
+                        battery_data.grid_to_battery_kw = charge_rate
+                        battery_data.solar_to_battery_kw = 0.0
+                elif battery_data.battery_power_kw > 0.05:
+                    battery_data.solar_to_battery_kw = 0.0
+                    battery_data.grid_to_battery_kw = 0.0
+                else:
+                    # Near-zero battery power — fall back to SOC trend
+                    solar_to_bat = self.soc_tracker.estimate_solar_to_battery(
+                        battery_data.solar_power_kw,
+                        battery_data.grid_power_kw
+                    )
+                    battery_data.solar_to_battery_kw = solar_to_bat
+                    charging_rate = self.soc_tracker.get_charging_rate_kw()
+                    if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
+                        battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
 
-                # Derive grid-to-battery: if SOC rising and grid importing
-                charging_rate = self.soc_tracker.get_charging_rate_kw()
-                if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
-                    battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
-
-                # Apply mode from local tracker
-                battery_data.mode_name = self.mode_tracker.get_mode_name()
-
-                # Periodic cloud verification for mode + per-battery SOC
-                if self.mode_tracker.needs_verification():
-                    await self._verify_mode_from_cloud(battery_data)
+                # Mode: prefer extension register (direct hardware state) over tracker
+                # Register 15507 gives us the actual hardware mode — no cloud call needed.
+                # Cloud verification is only used as fallback when Modbus ext registers
+                # are unavailable, and always after mode switches (handled in switch_mode).
+                ext_mode = getattr(battery_data, '_ext_mode', None)
+                ext_mode_name = getattr(battery_data, '_ext_mode_name', None)
+                if ext_mode and ext_mode_name:
+                    # Modbus register 15507 is the authoritative hardware state.
+                    # This eliminates routine cloud API calls for mode verification,
+                    # reducing cloud usage from every-30-min to mode-switches-only (~2-4/day).
+                    battery_data.mode_name = ext_mode_name
+                    self.mode_tracker.record_verification(ext_mode, ext_mode_name)
+                else:
+                    # Extension registers unavailable — use local tracker and
+                    # fall back to cloud verification on the 15-min schedule
+                    battery_data.mode_name = self.mode_tracker.get_mode_name()
+                    if self.mode_tracker.needs_verification():
+                        await self._verify_mode_from_cloud(battery_data)
 
                 self.last_data = battery_data
                 return battery_data
@@ -920,15 +1037,73 @@ class DataSourceManager:
             return "emergency_backup"
         if "self" in name_lower and "consumption" in name_lower:
             return "self_consumption"
-        # Anything else (TOU-B, TOU-Summer, custom schedule, etc.) is home mode
+        if "tou" in name_lower or "time" in name_lower:
+            return "time_of_use"
+        # Anything else (custom schedule names, etc.) is home mode
         return config.HOME_MODE
 
     async def switch_mode(self, mode: str) -> bool:
-        """Switch mode via cloud API and record locally."""
-        success = await self.cloud_source.switch_mode(mode)
-        if success:
-            self.mode_tracker.record_switch(mode)
-        return success
+        """
+        Switch mode via cloud API, verify against hardware, and record locally.
+        
+        Returns True only if the hardware confirms the mode change.
+        Retries up to 3 times with increasing delays if verification fails.
+        """
+        MAX_RETRIES = 3
+        VERIFY_DELAYS = [5, 8, 12]  # seconds between switch and verification
+
+        for attempt in range(MAX_RETRIES):
+            # Send the switch command
+            success = await self.cloud_source.switch_mode(mode)
+            if not success:
+                logger.warning(f"Mode switch API call failed (attempt {attempt + 1}/{MAX_RETRIES})")
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(2)
+                continue
+
+            # Wait for hardware to apply the change
+            delay = VERIFY_DELAYS[attempt] if attempt < len(VERIFY_DELAYS) else 12
+            logger.info(f"Mode switch sent, verifying in {delay}s (attempt {attempt + 1})...")
+            await asyncio.sleep(delay)
+
+            # Verify against the actual hardware state via cloud API
+            verification = await self.cloud_source.verify_mode()
+            if verification:
+                hw_mode_name = verification.get("mode_name", "Unknown")
+                hw_mode = self._detect_mode_from_name(hw_mode_name)
+
+                # Check if hardware matches what we commanded
+                mode_matches = False
+                if mode in ['emergency_backup', 'backup']:
+                    mode_matches = (hw_mode == "emergency_backup")
+                elif mode == 'self_consumption':
+                    mode_matches = (hw_mode == "self_consumption")
+                elif mode == 'time_of_use':
+                    # TOU shows up as various names: "TOU-B", "TOU-Summer", etc.
+                    # _detect_mode_from_name maps these to config.HOME_MODE
+                    # With v4, HOME_MODE should be "time_of_use" or "tou"
+                    hw_name_lower = hw_mode_name.lower()
+                    mode_matches = ("tou" in hw_name_lower or "time" in hw_name_lower
+                                   or hw_mode not in ["emergency_backup", "self_consumption"])
+                else:
+                    # "home" mode — anything that's not emergency_backup
+                    mode_matches = (hw_mode != "emergency_backup")
+
+                if mode_matches:
+                    self.mode_tracker.record_verification(hw_mode, hw_mode_name)
+                    logger.info(f"Mode switch VERIFIED: {mode} -> {hw_mode_name}")
+                    return True
+                else:
+                    logger.warning(f"Mode switch NOT confirmed (attempt {attempt + 1}): "
+                                 f"commanded={mode}, hardware={hw_mode_name} ({hw_mode})")
+            else:
+                logger.warning(f"Mode verification failed (attempt {attempt + 1}): "
+                             f"cloud API returned no data")
+
+        # All retries exhausted — switch did not stick
+        logger.error(f"MODE SWITCH FAILED after {MAX_RETRIES} attempts: "
+                    f"commanded={mode}, hardware did not confirm")
+        return False
 
     def get_current_mode(self) -> str:
         """Get current mode from local tracker."""
@@ -1008,6 +1183,7 @@ async def switch_battery_mode(mode: str) -> bool:
 
 if __name__ == "__main__":
     """Test the data source manager."""
+    configure_logging()
     import sys
 
     async def test():
