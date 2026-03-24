@@ -54,11 +54,13 @@ All notable changes to FranklinWH Battery Automation.
 - Engine version and expanded config reporting included
 
 ### Other Changes
+- **Open-Meteo solar forecast** — replaced Forecast.Solar with Open-Meteo for solar forecasting. No API key required, 10,000 free calls/day, hourly global tilted irradiance already corrected for array tilt/azimuth. Existing calibration and fallback logic unchanged
 - `rate_schedule.py` — rate schedule management with JSON config file (`data/rate_schedule.json`)
 - `diagnostic_bundle.py` — one-click sanitized diagnostic bundle from dashboard with credentials auto-stripped
 - `collect_solaredge_panels.py` — per-optimizer panel health monitoring with 21-day rolling window
 - **Export system support** (`SOLAR_EXPORT=true`) — post-peak solar discharge and curtailment protection both skip on export systems
 - Removed dead `import csv` from `smart_decision.py`
+- **Documentation refresh** — all 6 docs/ files updated for v4.1 (Configuration Reference, Docker Installation, Troubleshooting, Web Dashboard, Installation, Modbus Register Map). CHANGELOG moved to repo root with full version history back to v1.0
 
 ### Upgrade Notes
 **Fresh install required.** There is no supported upgrade path from v3.x or v4.0.x. Back up your `.env`, clone fresh, copy your settings (reviewing `.env.example` for new variables), and start the new container. Historical CSV data is not migrated. See README for full upgrade instructions.
