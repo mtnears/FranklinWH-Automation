@@ -74,6 +74,7 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 - **Home Assistant integration** — MQTT discovery for HA dashboards alongside the built-in web dashboard
 - **Dashboard device auto-detection** — Automatically detect viewport dimensions and adapt layout, replacing manual device presets
 - **Dashboard cache-busting** — Version query strings on asset URLs (`?v=X`) to avoid manual cache clearing in Fully Kiosk Browser on updates
+- **Utility billing data import (Opower)** — Integration with the [tronikos/opower](https://github.com/tronikos/opower) library to pull historical usage and cost data from supported utilities (PG&E, ComEd, SMUD, Exelon subsidiaries, and 25+ others). Would enable bill estimation, savings validation against actual utility data, and historical import for new users who don't have local data yet. Caveat: utility data arrives with ~48 hour delay and auth is web-scraping based (fragile). Local Modbus/Enphase data is more timely for real-time decisions, so this would primarily serve billing validation and historical backfill. *(Community request — [#10](https://github.com/mtnears/FranklinWH-Automation/issues/10))*
 
 ---
 
