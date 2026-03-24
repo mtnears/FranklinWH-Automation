@@ -25,11 +25,6 @@ Beta tester on ComEd (Illinois) dynamic pricing encountering mode detection issu
 
 ## 📋 Planned
 
-### Forecast Provider Swap (Open-Meteo)
-**Priority: High**
-
-Replace Forecast.Solar free tier (12 req/day limit, recurring outages) with Open-Meteo as the primary solar forecast source. Open-Meteo offers 10,000 free calls/day with no API key and returns `global_tilted_irradiance` already corrected for tilt/azimuth. March calibration factor ~0.447, consistent with existing model range. Implementation ready once v4.1 merge is complete.
-
 ### Dashboard Conditional UI
 **Priority: Medium**
 
@@ -62,11 +57,6 @@ Evolve the engine from pure algorithmic to hybrid ML. Keep algorithmic safety/mo
 **Priority: Low**
 
 The Script Status dashboard tab needs updated descriptions for the new v4.1 scripts and scheduled tasks added in this release.
-
-### Documentation Refresh
-**Priority: Low**
-
-The docs/ folder (TROUBLESHOOTING.md, WEB_DASHBOARD.md, CONFIGURATION_REFERENCE.md, DOCKER_INSTALLATION.md, INSTALLATION.md) references v3.3-3.4 era concepts: CSV logs, old script names, `solar_intelligence.log`, pre-SQLite data paths. Needs a full refresh for v4.1 but doesn't block functionality.
 
 ### Multi-Gateway Management
 **Priority: Low**
@@ -108,6 +98,8 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 - **Telemetry v2**: Schema v2 payload (~2.7KB) with 13 new config flags, 10 health signal queries, engine version reporting. Curtailment query fixed to `MAX()-MIN()` for cumulative counter.
 - **Solar health monitor wired**: Nightly panel health report at 8:30 PM using 21-day rolling window. SolarEdge per-optimizer health scoring
 - **Engine writes to system_readings**: `curtailed_kwh` and `engine_priority` populated after each decision cycle
+- **Open-Meteo solar forecast**: Replaced Forecast.Solar (12 req/day limit, recurring outages) with Open-Meteo. No API key required, 10,000 free calls/day, returns `global_tilted_irradiance` already corrected for tilt/azimuth. Existing calibration layer applies on top.
+- **Documentation refresh**: All 6 docs/ files updated for v4.1 (CONFIGURATION_REFERENCE, DOCKER_INSTALLATION, TROUBLESHOOTING, WEB_DASHBOARD, INSTALLATION, MODBUS_REGISTER_MAP). CHANGELOG moved to repo root with full version history back to v1.0.
 
 ### v4.0.3 — Overnight Preservation, Solar Deferral, Hourly Gap Model (Feb 2026)
 - **Overnight battery preservation (P8 fix)**: P8 default mode changed from Self-Consumption to TOU. Battery now holds charge overnight with the grid powering the home at off-peak rates.
