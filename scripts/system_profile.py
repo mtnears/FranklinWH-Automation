@@ -26,6 +26,11 @@ from typing import Optional
 
 logger = logging.getLogger('system_profile')
 
+try:
+    from config import VERSION
+except ImportError:
+    VERSION = '0.0.0'
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -224,7 +229,7 @@ class SystemProfile:
     data_start: str = ""
     data_end: str = ""
     total_rows_processed: int = 0
-    version: str = "4.0.0"
+    version: str = field(default_factory=lambda: VERSION)
 
     def time_to_charge_kwh(self, current_soc: float, target_soc: float) -> float:
         """Estimate hours to charge from current_soc to target_soc using grid.

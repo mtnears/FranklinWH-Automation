@@ -11,7 +11,9 @@ does NOT contribute to battery charging. It only matters for aggregated
 NEM2 billing, not for charging decisions.
 
 Forecast sources (priority order):
-  1. Forecast.Solar API (free, no key) — weather-aware hourly estimates
+  1. Open-Meteo API (free, no key, 10k calls/day) — hourly global
+     tilted irradiance already corrected for tilt/azimuth, converted
+     to estimated production via array kWp and system efficiency
   2. Weather-calibrated clear-sky model — uses local weather history
      from SQLite (weather_daily + weather_observations tables) to
      estimate production quality
@@ -57,8 +59,9 @@ logger = logging.getLogger('solar_forecast')
 # Constants
 # ---------------------------------------------------------------------------
 
-FORECAST_SOLAR_BASE_URL = "https://api.forecast.solar"
-FORECAST_SOLAR_MIN_INTERVAL_SEC = 360   # 6 min between API calls
+OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_MIN_INTERVAL_SEC = 300   # 5 min between API calls (generous limit)
+OPEN_METEO_SYSTEM_EFFICIENCY = 0.85 # Inverter + wiring + temperature derating
 
 FORECAST_CACHE_MAX_AGE_MIN = 60         # Re-fetch hourly
 CALIBRATION_MIN_DAYS = 14               # Minimum paired data points
@@ -66,7 +69,7 @@ CALIBRATION_MIN_DAYS = 14               # Minimum paired data points
 # House array defaults (battery-connected — the ONLY array that matters)
 HOUSE_ARRAY_KWP = 6.96                  # 16x Hyundai 435W
 HOUSE_ARRAY_TILT = 22                   # Roof pitch estimate
-HOUSE_ARRAY_AZIMUTH = -65               # ~295° true → -65 in Forecast.Solar (0=S, -90=E, 90=W)
+HOUSE_ARRAY_AZIMUTH = -65               # ~295° true → -65 (0=S, -90=E, 90=W)
 
 DEFAULT_LATITUDE = 38.91
 DEFAULT_LONGITUDE = -120.84
@@ -97,7 +100,7 @@ class ArrayConfig:
     latitude: float
     longitude: float
     declination: int        # Tilt degrees
-    azimuth: int            # Forecast.Solar: 0=south, -90=east, 90=west
+    azimuth: int            # 0=south, -90=east, 90=west
     kwp: float
     feeds_battery: bool = True
 
@@ -217,22 +220,32 @@ def get_default_arrays() -> List[ArrayConfig]:
 
 
 # ---------------------------------------------------------------------------
-# Forecast.Solar API
+# Open-Meteo API
 # ---------------------------------------------------------------------------
 
-class ForecastSolarAPI:
-    """Free Forecast.Solar API — no key needed, 12 req/hour."""
+class OpenMeteoAPI:
+    """Open-Meteo solar forecast — free, no key, 10k calls/day.
 
-    def __init__(self, arrays: List[ArrayConfig], api_key: str = None):
+    Returns global_tilted_irradiance (GTI) in W/m², already corrected for
+    the configured tilt and azimuth. Conversion to estimated production:
+      watts = gti_wm2 * array_kwp * system_efficiency
+    Since GTI is normalized to 1000 W/m² at STC (same basis as kWp rating),
+    the multiplication gives estimated real power output in kW, scaled to W.
+    """
+
+    def __init__(self, arrays: List[ArrayConfig]):
         self.arrays = [a for a in arrays if a.feeds_battery]
-        self.api_key = api_key or os.getenv('FORECAST_SOLAR_API_KEY', '')
         self._last_fetch: Optional[datetime] = None
 
     def _build_url(self, array: ArrayConfig) -> str:
-        base = FORECAST_SOLAR_BASE_URL
-        if self.api_key:
-            return f"{base}/{self.api_key}/estimate/{array.latitude}/{array.longitude}/{array.api_path()}"
-        return f"{base}/estimate/{array.latitude}/{array.longitude}/{array.api_path()}"
+        return (
+            f"{OPEN_METEO_BASE_URL}"
+            f"?latitude={array.latitude}&longitude={array.longitude}"
+            f"&hourly=global_tilted_irradiance"
+            f"&tilt={array.declination}&azimuth={array.azimuth}"
+            f"&forecast_days=2"
+            f"&timezone=auto"
+        )
 
     def fetch(self) -> Optional[Dict[str, DayForecast]]:
         if not HAS_URLLIB or not self.arrays:
@@ -241,78 +254,87 @@ class ForecastSolarAPI:
         # Rate limit
         if self._last_fetch:
             elapsed = (datetime.now() - self._last_fetch).total_seconds()
-            if elapsed < FORECAST_SOLAR_MIN_INTERVAL_SEC:
-                logger.debug(f"Rate limit: {elapsed:.0f}s < {FORECAST_SOLAR_MIN_INTERVAL_SEC}s")
+            if elapsed < OPEN_METEO_MIN_INTERVAL_SEC:
+                logger.debug(f"Rate limit: {elapsed:.0f}s < {OPEN_METEO_MIN_INTERVAL_SEC}s")
                 return None
 
-        combined_watts: Dict[str, Dict[int, list]] = {}
-        combined_daily: Dict[str, float] = {}
+        # Open-Meteo supports one location per call; sum across arrays
+        combined_gti: Dict[str, Dict[int, float]] = {}  # date -> {hour: gti_sum}
         any_success = False
 
         for array in self.arrays:
             url = self._build_url(array)
-            logger.info(f"Forecast.Solar: {array.name} → {url}")
+            logger.info(f"Open-Meteo: {array.name} ({array.kwp}kWp) → {url}")
 
             try:
                 req = urllib.request.Request(url)
                 req.add_header('Accept', 'application/json')
-                req.add_header('User-Agent', 'FranklinWH-Automation/4.0')
+                req.add_header('User-Agent', 'FranklinWH-Automation/4.1')
 
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     self._last_fetch = datetime.now()
                     data = json.loads(resp.read().decode())
 
-                if not data or 'result' not in data:
+                if not data or 'hourly' not in data:
+                    logger.warning("Open-Meteo: no hourly data in response")
                     continue
 
-                msg = data.get('message', {})
-                if msg.get('type') == 'error':
-                    logger.error(f"API error: {msg.get('text', '?')}")
+                hourly = data['hourly']
+                times = hourly.get('time', [])
+                gti_values = hourly.get('global_tilted_irradiance', [])
+
+                if not times or not gti_values or len(times) != len(gti_values):
+                    logger.warning("Open-Meteo: mismatched time/GTI arrays")
                     continue
 
                 any_success = True
-                result = data['result']
 
-                for ts_str, watts in result.get('watts', {}).items():
+                for ts_str, gti in zip(times, gti_values):
                     try:
-                        ts = datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+                        ts = datetime.fromisoformat(ts_str)
                         dk = ts.strftime('%Y-%m-%d')
                         h = ts.hour
-                        combined_watts.setdefault(dk, {}).setdefault(h, []).append(float(watts))
+                        # Convert GTI (W/m²) to estimated watts for this array
+                        # kWp is rated at 1000 W/m² STC, so: watts = gti * kwp * efficiency
+                        watts = max(0.0, float(gti)) * array.kwp * OPEN_METEO_SYSTEM_EFFICIENCY
+                        combined_gti.setdefault(dk, {}).setdefault(h, 0.0)
+                        combined_gti[dk][h] += watts
                     except (ValueError, TypeError):
                         continue
 
-                for dk, wh in result.get('watt_hours_day', {}).items():
-                    combined_daily[dk] = combined_daily.get(dk, 0) + float(wh)
-
             except urllib.error.HTTPError as e:
-                logger.warning(f"Forecast.Solar HTTP {e.code}" +
-                               (" (rate limited)" if e.code == 429 else f": {e.reason}"))
+                logger.warning(f"Open-Meteo HTTP {e.code}: {e.reason}")
             except Exception as e:
-                logger.error(f"Forecast.Solar error: {e}")
+                logger.error(f"Open-Meteo error: {e}")
 
         if not any_success:
             return None
 
+        # Build DayForecast objects
         forecasts = {}
         now_str = datetime.now().isoformat()
-        for dk in sorted(combined_watts.keys()):
+        for dk in sorted(combined_gti.keys()):
             hourly = []
             for hour in range(24):
-                raw = combined_watts[dk].get(hour, [])
-                avg_w = sum(raw) / len(raw) if raw else 0.0
-                hourly.append(HourlyForecast(hour=hour, watts=avg_w, watt_hours=avg_w, source='api'))
+                watts = combined_gti[dk].get(hour, 0.0)
+                # For hourly data, watts avg over 1 hour = watt_hours
+                hourly.append(HourlyForecast(
+                    hour=hour, watts=round(watts, 1),
+                    watt_hours=round(watts, 1), source='api'
+                ))
 
             dt = datetime.strptime(dk, '%Y-%m-%d').date()
-            total = combined_daily.get(dk, sum(h.watt_hours for h in hourly)) / 1000.0
+            total_kwh = sum(h.watt_hours for h in hourly) / 1000.0
             forecasts[dk] = DayForecast(
-                date=dt, hourly=hourly, total_kwh=round(total, 2),
-                raw_api_kwh=round(total, 2), source='forecast_solar',
+                date=dt, hourly=hourly,
+                total_kwh=round(total_kwh, 2),
+                raw_api_kwh=round(total_kwh, 2),
+                source='open_meteo',
                 fetched_at=now_str,
             )
 
         today_kwh = forecasts.get(date.today().isoformat(), DayForecast(date=date.today())).total_kwh
-        logger.info(f"Forecast.Solar: {len(forecasts)} days, today={today_kwh:.1f} kWh")
+        logger.info(f"Open-Meteo: {len(forecasts)} days, today={today_kwh:.1f} kWh")
         return forecasts
 
 
@@ -333,7 +355,7 @@ class WeatherCalibration:
     history immediately via collect_weather_db.py. After 14 days of paired
     weather + solar data, the calibration model activates automatically.
 
-    Users without WU still get Forecast.Solar API (which has its own weather
+    Users without WU still get Open-Meteo API (which has its own weather
     model) — the calibration just adds local fine-tuning on top.
     """
 
@@ -595,7 +617,7 @@ class WeatherCalibration:
                    f"?stationId={self.wu_station_id}&format=json&units=e"
                    f"&apiKey={self.wu_api_key}")
             req = urllib.request.Request(url)
-            req.add_header('User-Agent', 'FranklinWH-Automation/4.0')
+            req.add_header('User-Agent', 'FranklinWH-Automation/4.1')
 
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
@@ -677,7 +699,7 @@ class SolarForecastEngine:
         self.cache_dir = cache_dir or os.getenv('DATA_DIR', '/app/data')
         self.solar_profile = solar_profile
 
-        self._api = ForecastSolarAPI(self.arrays)
+        self._api = OpenMeteoAPI(self.arrays)
         self._calibration = WeatherCalibration(
             house_kwp=self.arrays[0].kwp if self.arrays else HOUSE_ARRAY_KWP,
             db_module=db_module,
@@ -709,7 +731,7 @@ class SolarForecastEngine:
         if cached and cached.fetched_at and not force_refresh:
             try:
                 age = (datetime.now() - datetime.fromisoformat(cached.fetched_at)).total_seconds() / 60
-                if age < FORECAST_CACHE_MAX_AGE_MIN and cached.source.startswith('forecast_solar'):
+                if age < FORECAST_CACHE_MAX_AGE_MIN and cached.source.startswith('open_meteo'):
                     return cached
             except (ValueError, TypeError):
                 pass
@@ -746,7 +768,23 @@ class SolarForecastEngine:
         return forecast
 
     def _apply_calibration(self, forecast: DayForecast):
-        """Apply weather calibration to a forecast."""
+        """Apply weather calibration to a forecast, then correct with actual data.
+
+        Two-layer calibration:
+          1. Weather model: correction_factor from weather_score regression
+          2. Yesterday actual: compare yesterday's Enphase actual production
+             to yesterday's calibrated forecast. If we over- or under-predicted
+             yesterday, apply that ratio as a secondary correction today.
+
+        Layer 2 is the key improvement: the weather model maps weather conditions
+        to a production ratio vs clear-sky, but then applies that ratio to API
+        raw values (a different baseline). This creates hourly shape distortion.
+        The yesterday-actual correction compensates: if yesterday we predicted
+        19 kWh but actual was 20.4 kWh, today's forecast gets scaled up by 1.07.
+
+        The correction is bounded [0.7, 1.8] and only applies when yesterday
+        had meaningful production (>5 kWh) and a valid cached forecast.
+        """
         weather = self._calibration.get_today_weather()
         if not weather:
             return
@@ -761,6 +799,114 @@ class SolarForecastEngine:
             h.watt_hours *= correction
             h.source = 'calibrated'
         forecast.total_kwh = round(forecast.raw_api_kwh * correction, 2)
+
+        # --- Layer 2: Yesterday actual vs forecast correction ---
+        yesterday_factor = self._yesterday_correction_factor()
+        if yesterday_factor != 1.0:
+            for h in forecast.hourly:
+                h.watts *= yesterday_factor
+                h.watt_hours *= yesterday_factor
+                h.source = 'calibrated+actual'
+            forecast.total_kwh = round(forecast.total_kwh * yesterday_factor, 2)
+            forecast.calibration_factor = round(correction * yesterday_factor, 4)
+            logger.info(
+                f"Calibration: weather={correction:.3f} × yesterday={yesterday_factor:.3f} "
+                f"= {forecast.calibration_factor:.3f}, total={forecast.total_kwh:.1f}kWh"
+            )
+
+    def _yesterday_correction_factor(self) -> float:
+        """Compare yesterday's actual production to yesterday's calibrated forecast.
+
+        Queries enphase_readings for yesterday's actual inverter production,
+        and compares to the cached forecast for yesterday. Returns a correction
+        factor to apply on top of today's weather calibration.
+
+        This grounds the forecast in observed reality rather than relying
+        solely on the weather model, which maps weather→clear_sky ratio
+        but applies it to API values (different baseline, different hourly shape).
+
+        Returns 1.0 (no correction) when:
+          - No DB module available
+          - Yesterday's actual < 5 kWh (cloudy day, not useful reference)
+          - No cached forecast for yesterday
+          - Yesterday's forecast was 0 or missing
+          - Correction would be outside [0.7, 1.8] bounds
+        """
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Get yesterday's actual from enphase_readings
+        actual_kwh = None
+        try:
+            import sqlite3
+            db_path = os.path.join(self.cache_dir, 'franklin.db')
+            conn = sqlite3.connect(db_path, timeout=10)
+            row = conn.execute(
+                "SELECT SUM(inverter_sum_w * 5.0 / 60.0) / 1000.0 "
+                "FROM enphase_readings WHERE date(timestamp) = ?",
+                (yesterday,)
+            ).fetchone()
+            conn.close()
+            if row and row[0]:
+                actual_kwh = row[0]
+        except Exception as e:
+            logger.debug(f"Yesterday actual query failed: {e}")
+            return 1.0
+
+        if actual_kwh is None or actual_kwh < 5.0:
+            return 1.0
+
+        # Compare actual production directly against the raw API forecast.
+        # The ratio actual/raw_api is the ground truth calibration factor —
+        # what fraction of the API prediction actually materialized yesterday.
+        #
+        # This factor gets applied ON TOP of today's weather calibration in
+        # _apply_calibration(). So if the weather model already applied 0.39
+        # and yesterday's actual/raw was 0.41, the correction is 0.41/0.39≈1.05.
+        #
+        # When the weather model is None or broken (R²<0.1), the weather
+        # calibration falls back to the weather score (~0.96 for clear days),
+        # which barely reduces the API. In that case, the yesterday correction
+        # does the heavy lifting: actual/raw ≈ 0.41, divided by weather's 0.96,
+        # gives ~0.43 — which brings the final total down from 48 kWh to ~21 kWh.
+        cached = self._cache.get(yesterday)
+        if not cached:
+            return 1.0
+
+        raw_api_kwh = getattr(cached, 'raw_api_kwh', None)
+        if not raw_api_kwh or raw_api_kwh < 1.0:
+            return 1.0
+
+        # What the weather calibration alone would predict for today
+        # (this is what _apply_calibration will apply BEFORE our correction)
+        today_weather_factor = self._calibration.correction_factor()
+        if today_weather_factor < 0.05:
+            return 1.0
+
+        # What actually happened yesterday vs API raw
+        actual_ratio = actual_kwh / raw_api_kwh
+
+        # Our correction = actual_ratio / weather_factor
+        # So final calibration = weather_factor × (actual_ratio / weather_factor) = actual_ratio
+        factor = actual_ratio / today_weather_factor
+        forecast_kwh = raw_api_kwh * today_weather_factor  # for logging
+
+        factor = actual_kwh / forecast_kwh
+
+        # Bound to prevent wild corrections
+        if factor < 0.7 or factor > 1.8:
+            logger.info(
+                f"Yesterday correction out of bounds: actual={actual_kwh:.1f}kWh "
+                f"vs forecast={forecast_kwh:.1f}kWh → factor={factor:.2f} (clamped)"
+            )
+            factor = max(0.7, min(1.8, factor))
+
+        if abs(factor - 1.0) > 0.05:
+            logger.info(
+                f"Yesterday correction: actual={actual_kwh:.1f}kWh "
+                f"vs forecast={forecast_kwh:.1f}kWh → factor={factor:.3f}"
+            )
+
+        return round(factor, 3)
 
     def morning_plan(self, current_soc_pct: float, target_soc_pct: float,
                      battery_capacity_kwh: float, peak_start_hour: int = 17,
@@ -942,7 +1088,7 @@ def get_forecast_engine(config=None, solar_profile=None) -> SolarForecastEngine:
     populated by collect_weather_db.py every 15 minutes.
 
     The db module is required — if unavailable, weather calibration is disabled
-    but the engine still works via Forecast.Solar API and clear-sky fallback.
+    but the engine still works via Open-Meteo API and clear-sky fallback.
     """
     global _engine
     if _engine is not None:
@@ -984,7 +1130,9 @@ if __name__ == '__main__':
     arrays = get_default_arrays()
     for a in arrays:
         print(f"\nArray: {a.name} ({a.kwp} kWp, tilt={a.declination}°, az={a.azimuth}°)")
-        print(f"  API: {FORECAST_SOLAR_BASE_URL}/estimate/{a.latitude}/{a.longitude}/{a.api_path()}")
+        print(f"  Open-Meteo: {OPEN_METEO_BASE_URL}?latitude={a.latitude}&longitude={a.longitude}"
+              f"&hourly=global_tilted_irradiance&tilt={a.declination}&azimuth={a.azimuth}"
+              f"&forecast_days=2&timezone=auto")
 
     db_module = None
     try:

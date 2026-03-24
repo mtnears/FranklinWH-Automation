@@ -49,6 +49,7 @@ RUN mkdir -p /app/scripts /app/logs /app/data /app/web
 
 # Copy application files
 COPY scripts/*.py /app/scripts/
+COPY VERSION /app/VERSION
 
 # Make scripts executable
 RUN chmod +x /app/scripts/*.py

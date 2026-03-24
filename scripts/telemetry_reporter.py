@@ -13,8 +13,12 @@ users just click "Enable" on the dashboard. No configuration needed.
 
 What IS collected:
   - System size (battery kWh, panel count, engine version)
-  - Config flags (modbus, adaptive engine, forecast, CARE rate, etc.)
+  - Config flags (modbus, adaptive engine, forecast, CARE rate, export, etc.)
+  - Full configuration matrix (pricing provider, peak days, home mode,
+    charging strategy, integrations enabled, reserve %, decision interval)
   - Aggregate performance (peak protection %, self-consumption %, error rates)
+  - System health signals (peak entry SOC, mode flap rate, curtailment,
+    SC hold rate, overnight drain success, forecast accuracy, Modbus health)
   - Region (state-level only, user-provided via .env)
 
 What is NOT collected:
@@ -66,7 +70,7 @@ TELEMETRY_ENDPOINT = os.getenv('TELEMETRY_ENDPOINT', 'https://mtnears.com/teleme
 TELEMETRY_API_KEY = os.getenv('TELEMETRY_API_KEY', 'fwh_telem_87bba18ff738325790b60cffd9487013f2c30065')
 
 # ── Schema ─────────────────────────────────────────────────────────
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -445,7 +449,7 @@ def _build_hardware_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
 
 
 def _build_config_flags() -> Dict[str, Any]:
-    """Which features are enabled."""
+    """Which features are enabled and key configuration choices."""
     flags = {
         'adaptive_engine': False,
         'modbus_enabled': False,
@@ -454,6 +458,17 @@ def _build_config_flags() -> Dict[str, Any]:
         'multi_meter': False,
         'care_rate': False,
         'solar_export': False,
+        'dynamic_pricing_provider': None,
+        'peak_days': 'weekdays',
+        'num_peak_periods': 1,
+        'home_mode': 'tou',
+        'enphase_enabled': False,
+        'solaredge_monitoring': False,
+        'weather_enabled': False,
+        'pvoutput_enabled': False,
+        'charging_strategy': 'balanced',
+        'backup_reserve_pct': 20,
+        'decision_interval_min': 30,
     }
 
     try:
@@ -465,6 +480,44 @@ def _build_config_flags() -> Dict[str, Any]:
         flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(os.getenv('METER2_ACCOUNT', ''))
         flags['care_rate'] = getattr(config, 'CARE_RATE', False) or os.getenv('CARE_RATE', '').lower() in ('true', '1', 'yes')
         flags['solar_export'] = getattr(config, 'SOLAR_EXPORT', False)
+
+        # Dynamic pricing provider
+        if getattr(config, 'DYNAMIC_PRICING_ENABLED', False):
+            flags['dynamic_pricing_provider'] = getattr(config, 'PRICING_PROVIDER', 'unknown')
+
+        # Peak schedule shape
+        flags['peak_days'] = getattr(config, 'PEAK_DAYS', 'weekdays')
+        num_peaks = 1 if getattr(config, 'TOU_ENABLED', False) else 0
+        if getattr(config, 'PEAK2_START_HOUR', None) and getattr(config, 'PEAK2_END_HOUR', None):
+            num_peaks = 2
+        flags['num_peak_periods'] = num_peaks
+
+        # Home mode (v3.5 users may be on SC, v4 users on TOU)
+        flags['home_mode'] = getattr(config, 'HOME_MODE', 'tou')
+
+        # Solar integrations
+        solar_arrays = getattr(config, 'SOLAR_ARRAYS', '')
+        if solar_arrays:
+            for arr_id in [a.strip() for a in solar_arrays.split(',') if a.strip()]:
+                arr_type = os.getenv(f'SOLAR_ARRAY_{arr_id.upper()}_TYPE', '')
+                if arr_type == 'enphase':
+                    flags['enphase_enabled'] = True
+                elif arr_type == 'solaredge':
+                    flags['solaredge_monitoring'] = True
+        elif getattr(config, 'ENPHASE_ENABLED', False):
+            flags['enphase_enabled'] = True
+        if getattr(config, 'SOLAREDGE_PANEL_MONITORING', False):
+            flags['solaredge_monitoring'] = True
+
+        # Other integrations
+        flags['weather_enabled'] = getattr(config, 'WEATHER_ENABLED', False)
+        flags['pvoutput_enabled'] = getattr(config, 'PVOUTPUT_ENABLED', False)
+
+        # Tuning parameters
+        flags['charging_strategy'] = getattr(config, 'CHARGING_STRATEGY', 'balanced')
+        flags['backup_reserve_pct'] = getattr(config, 'BACKUP_RESERVE_PCT',
+                                      getattr(config, 'RESERVE_SOC_HOME', 20))
+        flags['decision_interval_min'] = getattr(config, 'CHECK_INTERVAL_MINUTES', 30)
 
         # Enrich forecast flag from engine_status.json runtime state
         if not flags['forecast_solar_enabled']:
@@ -609,6 +662,17 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         'solar_discharge_activations': None,
         'solar_discharge_kwh_avg': None,
         'solar_discharge_days': None,
+        # Health signals
+        'peak_entry_soc_avg': None,
+        'peak_entry_soc_min': None,
+        'mode_flap_days': None,
+        'mode_flaps_per_day_avg': None,
+        'sc_hold_rate_pct': None,
+        'overnight_target_hit_pct': None,
+        'forecast_accuracy_ratio': None,
+        'modbus_success_rate_pct': None,
+        'modbus_avg_response_ms': None,
+        'home_load_kwh_avg': None,
     }
 
     cutoff = datetime.now() - timedelta(days=days)
@@ -620,6 +684,7 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         conn = _sqlite3.connect(str(db_path))
         conn.row_factory = _sqlite3.Row
         cutoff_str = cutoff.strftime('%Y-%m-%d %H:%M:%S')
+        cutoff_date = cutoff.strftime('%Y-%m-%d')
 
         day_rows = conn.execute(
             "SELECT date(timestamp) as day, COUNT(*) as cnt FROM intelligence_log "
@@ -644,6 +709,37 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
         if total_count > 0:
             stats['api_error_rate_pct'] = round((error_count / total_count) * 100, 2)
 
+        # ── Health: Mode flapping ──
+        # Count days with 6+ mode switches (Mode changed: messages) — sign of flapping
+        flap_rows = conn.execute(
+            "SELECT date(timestamp) as day, COUNT(*) as cnt FROM intelligence_log "
+            "WHERE timestamp >= ? AND message LIKE 'Mode changed:%' GROUP BY day", (cutoff_str,)
+        ).fetchall()
+        if flap_rows:
+            flap_counts = [r['cnt'] for r in flap_rows]
+            stats['mode_flaps_per_day_avg'] = round(sum(flap_counts) / len(flap_counts), 1)
+            stats['mode_flap_days'] = sum(1 for c in flap_counts if c >= 6)
+
+        # ── Health: SC commitment hold rate ──
+        # SC commits = "Mode changed: * -> self_consumption" outside peak
+        # SC breaks = "Mode changed: self_consumption -> time_of_use" within 30 min
+        # (approximation: count SC→TOU switches same day vs SC commits)
+        sc_commit_rows = conn.execute(
+            "SELECT date(timestamp) as day, COUNT(*) as cnt FROM intelligence_log "
+            "WHERE timestamp >= ? AND message LIKE 'Mode changed:%self_consumption' "
+            "AND message NOT LIKE '%Peak%' GROUP BY day", (cutoff_str,)
+        ).fetchall()
+        sc_break_rows = conn.execute(
+            "SELECT date(timestamp) as day, COUNT(*) as cnt FROM intelligence_log "
+            "WHERE timestamp >= ? AND message LIKE 'Mode changed: self_consumption%time_of_use%' "
+            "AND message NOT LIKE '%Peak%' GROUP BY day", (cutoff_str,)
+        ).fetchall()
+        total_commits = sum(r['cnt'] for r in sc_commit_rows) if sc_commit_rows else 0
+        total_breaks = sum(r['cnt'] for r in sc_break_rows) if sc_break_rows else 0
+        if total_commits > 0:
+            hold_pct = max(0, (total_commits - total_breaks) / total_commits * 100)
+            stats['sc_hold_rate_pct'] = round(hold_pct, 1)
+
         conn.close()
     except Exception as e:
         logger.debug(f"Intelligence log DB stats error: {e}")
@@ -660,7 +756,6 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
             "SELECT * FROM daily_savings WHERE date >= ? ORDER BY date DESC LIMIT ?",
             (cutoff_date, days)
         ).fetchall()]
-        conn.close()
 
         peak_protected = 0
         total_peak_days = 0
@@ -698,8 +793,111 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
             stats['solar_discharge_kwh_avg'] = round(sum(solar_discharge_values) / len(solar_discharge_values), 2)
             stats['solar_discharge_days'] = len(solar_discharge_values)
 
+        # ── Health: Peak entry SOC ──
+        # SOC at peak start (17:00 for most users) — the single best health indicator.
+        # High = system is working. Low = charging strategy failing.
+        try:
+            from config import config as _cfg
+            peak_hour = getattr(_cfg, 'PEAK_START_HOUR', 17)
+        except ImportError:
+            peak_hour = 17
+
+        peak_soc_rows = conn.execute(
+            "SELECT date(timestamp) as day, "
+            "AVG(soc_pct) as avg_soc, MIN(soc_pct) as min_soc "
+            "FROM system_readings "
+            "WHERE date(timestamp) >= ? "
+            "AND CAST(strftime('%H', timestamp) AS INT) = ? "
+            "AND soc_pct IS NOT NULL "
+            "GROUP BY day",
+            (cutoff_date, peak_hour)
+        ).fetchall()
+        if peak_soc_rows:
+            avg_socs = [r['avg_soc'] for r in peak_soc_rows if r['avg_soc'] is not None]
+            min_socs = [r['min_soc'] for r in peak_soc_rows if r['min_soc'] is not None]
+            if avg_socs:
+                stats['peak_entry_soc_avg'] = round(sum(avg_socs) / len(avg_socs), 1)
+            if min_socs:
+                stats['peak_entry_soc_min'] = round(min(min_socs), 1)
+
+        # ── Health: Overnight drain target hit rate ──
+        # Check if SOC at 6-8 AM is below 55% (drain worked) on days with data
+        morning_rows = conn.execute(
+            "SELECT date(timestamp) as day, MIN(soc_pct) as morning_min "
+            "FROM system_readings "
+            "WHERE date(timestamp) >= ? "
+            "AND CAST(strftime('%H', timestamp) AS INT) BETWEEN 6 AND 8 "
+            "AND soc_pct IS NOT NULL "
+            "GROUP BY day",
+            (cutoff_date,)
+        ).fetchall()
+        if morning_rows:
+            hit_count = sum(1 for r in morning_rows if r['morning_min'] is not None and r['morning_min'] < 55)
+            stats['overnight_target_hit_pct'] = round(hit_count / len(morning_rows) * 100, 1)
+
+        # ── Health: Curtailment ──
+        curtail_rows = conn.execute(
+            "SELECT date(timestamp) as day, "
+            "MAX(curtailed_kwh) - MIN(curtailed_kwh) as daily_curtail "
+            "FROM system_readings "
+            "WHERE date(timestamp) >= ? AND curtailed_kwh IS NOT NULL "
+            "GROUP BY day HAVING daily_curtail > 0.01",
+            (cutoff_date,)
+        ).fetchall()
+        if curtail_rows:
+            curtail_vals = [r['daily_curtail'] for r in curtail_rows if r['daily_curtail'] is not None]
+            if curtail_vals:
+                stats['curtailment_kwh_avg'] = round(sum(curtail_vals) / len(curtail_vals), 2)
+
+        # ── Health: Forecast accuracy ──
+        # Compare actual solar (from enphase or daily_energy_summary) to what was forecasted
+        # Use daily_energy_summary solar_kwh vs forecast cache if available
+        try:
+            forecast_rows = conn.execute(
+                "SELECT e.date, e.solar_kwh FROM daily_energy_summary e "
+                "WHERE e.date >= ? AND e.solar_kwh > 1.0 "
+                "ORDER BY e.date DESC LIMIT ?",
+                (cutoff_date, days)
+            ).fetchall()
+            if forecast_rows:
+                # Read last cached forecast total for comparison
+                forecast_cache = DATA_DIR / 'solar_forecast_cache.json'
+                if forecast_cache.exists():
+                    with open(forecast_cache, 'r') as f:
+                        fc = json.load(f)
+                    fc_total = fc.get('total_kwh', 0)
+                    if fc_total > 1.0:
+                        actual_avg = sum(r['solar_kwh'] for r in forecast_rows) / len(forecast_rows)
+                        stats['forecast_accuracy_ratio'] = round(actual_avg / fc_total, 2)
+        except Exception:
+            pass
+
+        # ── Health: Home load from daily_energy_summary ──
+        load_rows = conn.execute(
+            "SELECT home_load_kwh FROM daily_energy_summary "
+            "WHERE date >= ? AND home_load_kwh > 0.1",
+            (cutoff_date,)
+        ).fetchall()
+        if load_rows:
+            load_vals = [r['home_load_kwh'] for r in load_rows]
+            stats['home_load_kwh_avg'] = round(sum(load_vals) / len(load_vals), 1)
+
+        conn.close()
     except Exception as e:
         logger.debug(f"Daily savings DB stats error: {e}")
+
+    # ── Health: Data source health ──
+    try:
+        health_file = LOG_DIR / 'data_source_health.json'
+        if health_file.exists():
+            with open(health_file, 'r') as f:
+                health = json.load(f)
+            modbus_stats = health.get('sources', {}).get('modbus', {})
+            if modbus_stats.get('total_attempts', 0) > 0:
+                stats['modbus_success_rate_pct'] = round(modbus_stats.get('success_rate', 0), 1)
+                stats['modbus_avg_response_ms'] = round(modbus_stats.get('avg_response_time_ms', 0), 1)
+    except Exception:
+        pass
 
     # TOU drift rate — from engine status if available
     try:

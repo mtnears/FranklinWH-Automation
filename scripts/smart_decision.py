@@ -55,7 +55,6 @@ Changelog:
   v3.0.0 - Configuration-driven with feature toggles
 """
 import asyncio
-import csv
 from datetime import datetime, timedelta
 
 # Import configuration and data sources
@@ -924,7 +923,7 @@ async def main() -> int:
         # Save data source health statistics
         data_manager.save_health_stats()
         
-        # Log to CSV with enriched data
+        # Build enriched data for logging and engine status
         now = datetime.now()
         data = {
             'timestamp': now.strftime('%Y-%m-%d %H:%M:%S'),
@@ -999,6 +998,24 @@ async def main() -> int:
                 import json as _json
                 with open(config.DATA_DIR / 'engine_status.json', 'w') as f:
                     _json.dump(status, f, indent=2, default=str)
+            except Exception:
+                pass
+
+            # Write curtailment and engine priority to most recent system_readings row
+            # so the data is available for rollup, telemetry, and dashboard queries
+            try:
+                import sqlite3 as _sq
+                _db_path = config.DATA_DIR / 'franklin.db'
+                _conn = _sq.connect(str(_db_path), timeout=5)
+                _curtail_val = status.get('curtailed_kwh')
+                _priority_val = data.get('engine_priority')
+                _conn.execute(
+                    "UPDATE system_readings SET curtailed_kwh = ?, engine_priority = ? "
+                    "WHERE id = (SELECT MAX(id) FROM system_readings)",
+                    (_curtail_val, _priority_val)
+                )
+                _conn.commit()
+                _conn.close()
             except Exception:
                 pass
         

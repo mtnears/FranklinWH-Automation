@@ -274,6 +274,7 @@ def collect_franklin(test_mode=False, force=False):
 
     try:
         import asyncio
+        import httpx
         from franklinwh import Client, TokenFetcher
 
         try:
@@ -287,13 +288,67 @@ def collect_franklin(test_mode=False, force=False):
             gateway_id = os.getenv('FRANKLIN_GATEWAY_ID', '')
 
         if all([username, password, gateway_id]):
-            async def get_battery_info():
+            async def get_cloud_info():
                 fetcher = TokenFetcher(username, password)
                 client = Client(fetcher, gateway_id)
                 status = await client._status()
-                return status
+                # get_home_gateway_list for richer gateway info
+                gw_list = None
+                try:
+                    token = await fetcher.fetch_token()
+                    headers = {'loginToken': token, 'Content-Type': 'application/json'}
+                    async with httpx.AsyncClient(timeout=30) as http:
+                        resp = await http.post(
+                            'https://energy.franklinwh.com/hes/api/host/getHomeGatewayList',
+                            headers=headers,
+                            json={'pageNum': 1, 'pageSize': 10}
+                        )
+                        if resp.status_code == 200:
+                            body = resp.json()
+                            gw_list = body.get('result', {}).get('records', [])
+                except Exception as e:
+                    log.debug(f"get_home_gateway_list failed: {e}")
+                return status, gw_list
 
-            status = asyncio.run(get_battery_info())
+            status, gw_list = asyncio.run(get_cloud_info())
+
+            # Enrich gateway record with cloud API data
+            if gw_list:
+                for gw in gw_list:
+                    gw_sn = gw.get('gatewaySerialNum', '')
+                    if gw_sn and (gw_sn == gateway_serial or not gateway_serial):
+                        extra = {}
+                        for key in ['realSysHdVersion', 'protocolVer', 'sysSdVersion',
+                                    'sysVersion', 'gatewayVersion', 'fhpVersion']:
+                            val = gw.get(key)
+                            if val:
+                                extra[key] = val
+                        cloud_fw = gw.get('sysVersion', '')
+                        cloud_model = gw.get('gatewayModel', 'aGate')
+                        # Merge with existing gateway device if present
+                        for dev in devices:
+                            if dev['device_type'] == 'gateway' and dev['serial_number'] == gw_sn:
+                                old_extra = json.loads(dev['extra_json']) if dev['extra_json'] else {}
+                                old_extra.update(extra)
+                                dev['extra_json'] = json.dumps(old_extra)
+                                if cloud_fw:
+                                    dev['firmware'] = cloud_fw
+                                break
+                        else:
+                            # No Modbus gateway found — add from cloud
+                            if gw_sn:
+                                devices.append({
+                                    'system': 'franklin',
+                                    'device_type': 'gateway',
+                                    'serial_number': gw_sn,
+                                    'model': cloud_model,
+                                    'firmware': cloud_fw,
+                                    'parent_serial': None,
+                                    'extra_json': json.dumps(extra) if extra else None,
+                                })
+                        log.info(f"  Cloud API: gateway enriched hw={extra.get('realSysHdVersion','?')} "
+                                 f"proto={extra.get('protocolVer','?')}")
+
             if status and isinstance(status, dict):
                 battery_sns = status.get('fhpSn', [])
                 battery_socs = status.get('fhpSoc', [])
@@ -306,16 +361,21 @@ def collect_franklin(test_mode=False, force=False):
                             extra['current_soc'] = battery_socs[i]
                         if i < len(battery_powers):
                             extra['current_power_kw'] = battery_powers[i]
+                        # Identify battery model from serial prefix
+                        # Positions 4-8 of serial: '0015' = aPower 2
+                        battery_model = 'aPower'
+                        if len(sn) >= 8 and sn[3:7] == '0015':
+                            battery_model = 'aPower 2'
                         devices.append({
                             'system': 'franklin',
                             'device_type': 'battery',
                             'serial_number': sn,
-                            'model': 'aPower',
+                            'model': battery_model,
                             'firmware': '',
                             'parent_serial': gateway_serial,
                             'extra_json': json.dumps(extra) if extra else None,
                         })
-                        log.info(f"  Cloud API: battery {sn}")
+                        log.info(f"  Cloud API: battery {sn} ({battery_model})")
         else:
             log.warning("Franklin cloud credentials not configured")
     except Exception as e:

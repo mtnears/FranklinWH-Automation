@@ -965,60 +965,23 @@ class DataSourceManager:
                         battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
 
                 # Mode: prefer extension register (direct hardware state) over tracker
+                # Register 15507 gives us the actual hardware mode — no cloud call needed.
+                # Cloud verification is only used as fallback when Modbus ext registers
+                # are unavailable, and always after mode switches (handled in switch_mode).
                 ext_mode = getattr(battery_data, '_ext_mode', None)
                 ext_mode_name = getattr(battery_data, '_ext_mode_name', None)
                 if ext_mode and ext_mode_name:
+                    # Modbus register 15507 is the authoritative hardware state.
+                    # This eliminates routine cloud API calls for mode verification,
+                    # reducing cloud usage from every-30-min to mode-switches-only (~2-4/day).
                     battery_data.mode_name = ext_mode_name
                     self.mode_tracker.record_verification(ext_mode, ext_mode_name)
                 else:
+                    # Extension registers unavailable — use local tracker and
+                    # fall back to cloud verification on the 15-min schedule
                     battery_data.mode_name = self.mode_tracker.get_mode_name()
-
-                # Smart mode verification schedule:
-                # The ModeStateTracker only knows what we last commanded, not what
-                # the hardware is actually doing. A failed switch, manual app change,
-                # or rate-limited API call can cause desync. We verify against the
-                # cloud API on a tiered schedule based on how costly a desync would be.
-                #
-                # - During peak hours: EVERY cycle (desync = 39¢/kWh wasted)
-                # - Within 1 hour before peak: EVERY cycle (staging is critical)  
-                # - All other times: every 15 minutes (catch drift without hammering API)
-                # - Always after a switch: handled in switch_mode() with retry+verify
-                should_verify = False
-                now = datetime.now()
-                current_hour = now.hour
-
-                # Import peak config to check timing
-                try:
-                    from config import config as cfg, is_peak_period
-                    in_peak_now = False
-                    near_peak = False
-
-                    if getattr(cfg, 'TOU_ENABLED', False):
-                        in_peak_now = is_peak_period(
-                            current_hour, cfg.PEAK_START_HOUR, cfg.PEAK_END_HOUR)
-                        # Check secondary peak too
-                        if (cfg.PEAK2_START_HOUR is not None and 
-                                cfg.PEAK2_END_HOUR is not None):
-                            in_peak_now = in_peak_now or is_peak_period(
-                                current_hour, cfg.PEAK2_START_HOUR, cfg.PEAK2_END_HOUR)
-
-                        # "Near peak" = within 1 hour before peak start
-                        hours_before = (cfg.PEAK_START_HOUR - current_hour) % 24
-                        near_peak = (0 < hours_before <= 1)
-
-                    if in_peak_now or near_peak:
-                        should_verify = True
-                        logger.debug(f"Mode verify: {'peak' if in_peak_now else 'near-peak'} — every cycle")
-                    elif self.mode_tracker.needs_verification():
-                        should_verify = True
-                        logger.debug("Mode verify: scheduled (15-min interval)")
-                except Exception as e:
-                    # If config import fails, fall back to tracker interval
-                    should_verify = self.mode_tracker.needs_verification()
-                    logger.debug(f"Mode verify: fallback schedule (config error: {e})")
-
-                if should_verify:
-                    await self._verify_mode_from_cloud(battery_data)
+                    if self.mode_tracker.needs_verification():
+                        await self._verify_mode_from_cloud(battery_data)
 
                 self.last_data = battery_data
                 return battery_data

@@ -1,6 +1,6 @@
 # FranklinWH aGate — Modbus TCP Register Reference
 
-> **Last updated:** February 17, 2026
+> **Last updated:** March 24, 2026
 > **Project:** [FranklinWH Battery Automation](https://github.com/MTNEARS/FranklinWH-Battery-Automation)
 
 ---
@@ -46,6 +46,7 @@ The aGate uses 700-series DER models (newer SunSpec standard), not the older 101
 | 703 (Watt-Hours) | 279 | 17 | Lifetime energy accumulators |
 | 713 (DER Status) | 1035 | 7 | SOC, battery DC voltage, rated power |
 | 502 (Solar/PV) | 1098 | 28 | PV/solar data (mostly non-functional — see notes) |
+| Extended (vendor) | 15500+ | — | Operating mode (15507), other vendor-specific registers |
 
 ---
 
@@ -134,6 +135,16 @@ Static values representing inverter capacity. These do not change during operati
 
 **Status: Largely non-functional.** Most registers return zero even during active solar production. The aGate does not appear to expose PV data through this model. Solar production data should be sourced from the solar inverter directly (e.g., Enphase local API, SolarEdge API) or from a service like PVOutput.
 
+### Extended Registers — Operating Mode (15500 Block)
+
+These registers are outside the standard SunSpec model chain and appear to be vendor-specific FranklinWH extensions.
+
+| Register | Field | Values | Notes |
+|----------|-------|--------|-------|
+| **15507** | **OnGrid Mode** | **0=Backup, 1=TOU, 2=Self-Consumption, 3=Manual** | **Current operating mode. Confirmed matching cloud API mode detection. Used for local mode verification to eliminate routine cloud API polling.** |
+
+**Discovery note:** Register 15507 was identified through systematic polling of the 15500-15600 range while switching modes via the cloud API. Values change within seconds of a mode switch command. This register is used by `data_sources.py` for mode verification, reducing cloud API calls from every 30 minutes to only on actual mode switches (~2-4/day).
+
 ---
 
 ## Grid Disconnect Detection
@@ -186,7 +197,7 @@ The inverter state (register 74) toggles between `3` and `7` frequently during n
 |--------|--------|-------|
 | Battery power (charge/discharge kW) | Partially tested | Register 82 (offset 10) shows weak correlation during low activity. Needs testing during heavy charge/discharge. |
 | Home load (kW) | Partially tested | Register 83 (offset 11) shows moderate match with limited samples. |
-| Operating mode | Not found | `der_mode` returns `0` in all modes tested (TOU, Self-Consumption, Emergency Backup). Mode detection requires cloud API. |
+| ~~Operating mode~~ | **Found** | Register 15507 — see Extended Registers section above. |
 | Reserve SOC setting | Not found | Not exposed via Modbus. |
 | Solar production | Not available | Model 502 returns zeros during active production. |
 | Per-battery SOC | Not available | Only aggregate SOC at register 1037. Individual battery SOC requires cloud API. |
@@ -202,8 +213,9 @@ Modbus TCP (local, 26-50ms)           Cloud API (remote, 2-7s)
 ├── SOC monitoring                     ├── Mode switching (TOU/SC/EB)
 ├── Grid power tracking                ├── Per-battery SOC
 ├── Grid disconnect detection          ├── Reserve SOC changes
-├── Temperature monitoring             └── Mode verification
+├── Temperature monitoring             └── (fallback mode verification)
 ├── Voltage / frequency
+├── Mode verification (reg 15507)
 └── Real-time dashboard updates
 ```
 
@@ -217,7 +229,7 @@ if conn_state == 0:
 # Safe to proceed with cloud API mode switch
 ```
 
-This prevents failed API calls and unintended behavior during grid outages when the system is operating in island mode.
+Mode verification uses register 15507 to confirm the current operating mode locally, eliminating the need for routine cloud API polling. The cloud API is now used only for actual mode switch commands (~2-4/day) and as a fallback if extended registers are unavailable.
 
 ---
 
@@ -243,6 +255,11 @@ frequency = regs.registers[16] / 1000.0
 voltage = regs.registers[13] / 10.0
 ambient_c = regs.registers[33] / 10.0
 cabinet_c = regs.registers[34] / 10.0
+
+# Operating mode (extended register)
+regs = client.read_holding_registers(15507, count=1, device_id=1)
+mode_map = {0: 'backup', 1: 'tou', 2: 'self_consumption', 3: 'manual'}
+mode = mode_map.get(regs.registers[0], 'unknown')
 
 client.close()
 ```

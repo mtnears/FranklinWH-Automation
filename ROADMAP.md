@@ -1,6 +1,6 @@
 # FranklinWH Battery Automation — Roadmap
 
-Planned features and improvements. Items are listed in rough priority order. Contributions, feedback, and discussion are welcome — open an issue or start a discussion.
+Planned features and improvements. Items are listed in rough priority order. Contributions, feedback, and discussion are welcome — open an [issue](https://github.com/mtnears/FranklinWH-Automation/issues).
 
 ---
 
@@ -9,7 +9,7 @@ Planned features and improvements. Items are listed in rough priority order. Con
 ### Telemetry Expansion
 **Priority: Medium**
 
-Initial telemetry deployment is complete — opt-in anonymous collection with dashboard consent flow. Next steps: expand the telemetry payload to include energy source breakdown (solar vs grid contribution), build `scripts/aggregate.py` for the [franklin-telemetry](https://github.com/mtnears/franklin-telemetry) collection repo to generate `summary.json` and a community dashboard with anonymous fleet statistics (system sizes, utility distribution, engine versions, aggregate performance). Expand the collection repo README with full privacy policy, data schema documentation, and opt-out instructions.
+Initial telemetry deployment is complete — opt-in anonymous collection with dashboard consent flow, v2 schema with expanded config flags and health signals. Next steps: build `scripts/aggregate.py` for the [franklin-telemetry](https://github.com/mtnears/franklin-telemetry) collection repo to generate `summary.json` and a community dashboard with anonymous fleet statistics (system sizes, utility distribution, engine versions, aggregate performance). Expand the collection repo README with full privacy policy, data schema documentation, and opt-out instructions.
 
 ### Open Issue Resolution
 **Priority: Medium**
@@ -19,11 +19,16 @@ Beta tester on ComEd (Illinois) dynamic pricing encountering mode detection issu
 ### SolarEdge Inverter Local Data
 **Priority: Medium**
 
-`solaredge_inverter_readings` table exists and schema is defined, but has zero rows — a collector is needed. Pending Modbus TCP enablement on the barn inverters (technicians working on it; recent firmware update may have resolved SetApp connection issues). Once Modbus is live on the barn, inverter-level data (AC/DC power, temperature, status) can be collected locally at the same 1-min cadence as the house system.
+`solaredge_inverter_readings` table exists and schema is defined. SE7600H (device_id=1) confirmed working via Modbus TCP at 192.168.4.213:1502. SE11400H (device_id=2) not yet responding — awaiting verification by installer. Once both inverters are confirmed, a production collector can be built for inverter-level data (AC/DC power, temperature, status) at the same cadence as the house system.
 
 ---
 
 ## 📋 Planned
+
+### Forecast Provider Swap (Open-Meteo)
+**Priority: High**
+
+Replace Forecast.Solar free tier (12 req/day limit, recurring outages) with Open-Meteo as the primary solar forecast source. Open-Meteo offers 10,000 free calls/day with no API key and returns `global_tilted_irradiance` already corrected for tilt/azimuth. March calibration factor ~0.447, consistent with existing model range. Implementation ready once v4.1 merge is complete.
 
 ### Dashboard Conditional UI
 **Priority: Medium**
@@ -46,12 +51,22 @@ Savings calculations need updating for v4 changes:
 ### Home Load & Battery Power via Modbus
 **Priority: Medium**
 
-`home_load_kw` and `battery_kw` are currently hardcoded to `0.0` in the Modbus data path. Quick win: energy balance derivation after Modbus+Enphase merge. Proper fix: validate Modbus registers 82 (battery power) and 83 (home load) during active charging and peak discharge. Resolves flat zero lines in Power Flow charts.
+`home_load_kw` and `battery_kw` are currently hardcoded to `0.0` in the Modbus data path (`home_load_kwh` daily rollup is now working via instantaneous power fallback). Quick win: energy balance derivation after Modbus+Enphase merge. Proper fix: validate Modbus registers 82 (battery power) and 83 (home load) during active charging and peak discharge. Resolves flat zero lines in Power Flow charts.
+
+### Hybrid ML Engine Evolution
+**Priority: Medium**
+
+Evolve the engine from pure algorithmic to hybrid ML. Keep algorithmic safety/mode logic as guardrails, add learned models for: solar prediction (actual vs forecast accuracy), load prediction (beyond static hourly averages), and SC/TOU timing optimization (from historical outcomes). Data foundation exists in SQLite. The algorithmic tuning keeps circling on the same variables a trained model could learn from data.
 
 ### Script Status Dashboard — Description Updates
 **Priority: Low**
 
 The Script Status dashboard tab needs updated descriptions for the new v4.1 scripts and scheduled tasks added in this release.
+
+### Documentation Refresh
+**Priority: Low**
+
+The docs/ folder (TROUBLESHOOTING.md, WEB_DASHBOARD.md, CONFIGURATION_REFERENCE.md, DOCKER_INSTALLATION.md, INSTALLATION.md) references v3.3-3.4 era concepts: CSV logs, old script names, `solar_intelligence.log`, pre-SQLite data paths. Needs a full refresh for v4.1 but doesn't block functionality.
 
 ### Multi-Gateway Management
 **Priority: Low**
@@ -74,19 +89,25 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 
 ## ✅ Recently Completed
 
-### v4.1 — SQLite Migration, Engine Hardening, Analytics Dashboard (March 2026)
-- **SQLite database layer** (`db.py`): All data storage migrated from CSV to SQLite. 15 tables cover system readings, solar data, weather, device inventory, billing, and engine decisions. DB initializes automatically on first run.
+### v4.1.0 — SQLite Migration, Engine Hardening, Analytics Dashboard (March 2026)
+- **SQLite database layer** (`db.py`): All data storage migrated from CSV to SQLite. 17 tables cover system readings, solar data, weather, device inventory, billing, and engine decisions. DB initializes automatically on first run.
 - **New collectors**: `collect_franklin_cloud.py`, `collect_modbus.py`, `collect_solar_enphase.py`, `collect_weather_db.py`, `collect_pv_output.py`, `collect_device_inventory.py`, `rollup_daily_energy.py` — all write directly to SQLite
+- **Modbus-first mode verification**: Replaced routine cloud API mode checks with Modbus register 15507 reads (OnGridMode: 0=Backup, 1=TOU, 2=SC, 3=Manual). Cloud API reserved for actual mode switches only (~2-4/day). Eliminates routine cloud API polling and resolves phone app session logout issues.
 - **Post-peak solar discharge**: Engine stays in Self-Consumption after peak to burn net solar surplus stored in the battery. Computes solar excess (solar charged − peak discharge used), sets target SOC drain point, returns to TOU once reached
 - **Taper ceiling** (`TAPER_CEILING_PCT`): Caps grid charging ceiling for non-export systems to prevent curtailment. Tunable per-system based on observed curtailment behavior
 - **Pre-peak gate**: Within 30 min of peak, holds current mode instead of starting new EB burst unless already charging
 - **Anchor drift fix**: `_get_soc_at_peak_end()` pins to first reading at-or-after peak end, eliminating float arithmetic window drift across engine cycles
 - **Peak discharge fallback**: `_compute_peak_discharge_kwh()` queries SOC at peak window from `system_readings` when `daily_savings` rollup hasn't run yet
+- **home_load_kwh rollup fix**: `rollup_daily_energy.py` uses instantaneous power fallback (`daily_kwh_from_instantaneous()`) for Modbus rows that don't populate cumulative counters
 - **System profile overhaul**: `scan_db()` replaces CSV scan; solar interval uses actual reading timestamps; capacity bug fixed (was doubling total kWh); weekly rebuild job added
+- **Version management**: Single `VERSION` file in repo root, wired to `config.py`, `system_profile.py`, `scheduler.py`. Dashboard About card reads dynamically from `/api/version`. GitHub release check with "Update Available" badge (localStorage cached, once/day). `ENGINE_VERSION` env var deprecated.
 - **Plotly.js analytics tab**: Interactive charts replace static weekly PNGs. Date range selection, carousel, zoom/pan/hover, touch support. All data sourced from SQLite
 - **Fire HD 10 dashboard optimization**: Layout validated at 1507×943 CSS pixels for Fully Kiosk Browser tablet display
 - **Export system support** (`SOLAR_EXPORT=true`): Post-peak solar discharge and curtailment protection both skip on export systems. Set in `.env` for NEM2/NEM3 full-export setups
+- **Device inventory enrichment**: Gateway record enriched with `realSysHdVersion` (hw 1.3), `protocolVer`, full firmware string via `get_home_gateway_list()`. aPower 2 identification from serial prefix `0015`.
+- **Telemetry v2**: Schema v2 payload (~2.7KB) with 13 new config flags, 10 health signal queries, engine version reporting. Curtailment query fixed to `MAX()-MIN()` for cumulative counter.
 - **Solar health monitor wired**: Nightly panel health report at 8:30 PM using 21-day rolling window. SolarEdge per-optimizer health scoring
+- **Engine writes to system_readings**: `curtailed_kwh` and `engine_priority` populated after each decision cycle
 
 ### v4.0.3 — Overnight Preservation, Solar Deferral, Hourly Gap Model (Feb 2026)
 - **Overnight battery preservation (P8 fix)**: P8 default mode changed from Self-Consumption to TOU. Battery now holds charge overnight with the grid powering the home at off-peak rates.

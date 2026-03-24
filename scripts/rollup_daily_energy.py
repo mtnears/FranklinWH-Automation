@@ -56,13 +56,46 @@ def rollup_date(date_str: str, device_id: str = 'agate_main') -> bool:
             return 0.0
         return max(vals) - min(vals)
 
+    def daily_kwh_from_instantaneous(kw_vals, row_list):
+        """Estimate daily kWh by integrating instantaneous kW readings over time intervals.
+        Used as fallback when the cumulative counter (kwh_*) is sparse or absent,
+        which happens for Modbus-sourced rows that don't populate cloud counters."""
+        if len(kw_vals) < 2:
+            return 0.0
+        total_kwh = 0.0
+        prev_ts = None
+        for r in row_list:
+            kw = r.get('home_load_kw')
+            if kw is None:
+                continue
+            ts_str = r.get('timestamp', '')
+            try:
+                from datetime import datetime as _dt
+                ts = _dt.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
+            except (ValueError, TypeError):
+                continue
+            if prev_ts is not None:
+                delta_h = (ts - prev_ts).total_seconds() / 3600.0
+                if 0 < delta_h <= 1.0:
+                    total_kwh += kw * delta_h
+            prev_ts = ts
+        return total_kwh
+
+    # Home load kWh: the cumulative counter (kwh_load) is only populated by
+    # cloud API enrichment rows. Modbus-only rows leave it NULL, so daily_kwh()
+    # returns 0.0 on days with mostly Modbus data. Fall back to integrating
+    # the instantaneous home_load_kw readings when the counter is too sparse.
+    home_load_from_counter = daily_kwh(kwh_load_vals)
+    if home_load_from_counter < 0.1 and loads:
+        home_load_from_counter = daily_kwh_from_instantaneous(loads, rows)
+
     summary = {
         'solar_kwh': round(daily_kwh(kwh_solar_vals), 3),
         'grid_import_kwh': round(daily_kwh(kwh_grid_imp_vals), 3),
         'grid_export_kwh': round(daily_kwh(kwh_grid_exp_vals), 3),
         'battery_charge_kwh': round(daily_kwh(kwh_bat_chg_vals), 3),
         'battery_discharge_kwh': round(daily_kwh(kwh_bat_dis_vals), 3),
-        'home_load_kwh': round(daily_kwh(kwh_load_vals), 3),
+        'home_load_kwh': round(home_load_from_counter, 3),
         'generator_kwh': round(daily_kwh(kwh_gen_vals), 3),
         'peak_solar_kw': round(max(solars), 3) if solars else 0,
         'peak_load_kw': round(max(loads), 3) if loads else 0,

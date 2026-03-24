@@ -10,16 +10,12 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
-> **🚧 v4.1 Beta (March 2026):** This branch contains a major update that has been running in production for several weeks and is stable, but is still considered beta until merged to `main`. The SQLite migration, engine hardening, and dashboard overhaul represent significant changes across nearly every script. **If you are upgrading from any previous version, start fresh — do not attempt an in-place upgrade.** See the [Fresh Install](#upgrading-fresh-install-required) section below. Merge to `main` is planned for mid-March 2026 after DST validation. **Testers welcome** — open a [Discussion](https://github.com/mtnears/FranklinWH-Automation/discussions) or reach out.
-
----
-
 ## What's New in v4.1
 
 ### SQLite Database (Breaking Change)
 All data collection has migrated from CSV files to a SQLite database (`data/franklin.db`). This is the largest structural change since the project began.
 
-- `db.py` — new unified database layer; all 15 tables initialized on first run
+- `db.py` — new unified database layer; all 17 tables initialized on first run
 - All collectors rewritten to write directly to SQLite: `collect_franklin_cloud.py`, `collect_modbus.py`, `collect_solar_enphase.py`, `collect_weather_db.py`, `collect_pv_output.py`, `collect_device_inventory.py`
 - `rollup_daily_energy.py` — new daily energy rollup replacing CSV-based summaries
 - Several old scripts removed: `collect_enphase.py`, `collect_pvoutput.py`, `collect_solaredge.py`, `collect_weather.py`, `capture_grid_status.py`, `daily_status_report.py`, `generate_weekly_charts.py`
@@ -27,10 +23,11 @@ All data collection has migrated from CSV files to a SQLite database (`data/fran
 
 ### Adaptive Engine Hardening
 - **Post-peak solar discharge** — after peak, engine burns free solar stored in the battery via Self-Consumption instead of defaulting back to TOU. Computes net solar excess, sets a target SOC drain point, returns to TOU once reached
-- **Taper ceiling** (`TAPER_CEILING_PCT`) — caps grid charging ceiling for non-export systems to prevent curtailment. Tunable via `.env`, default 85% (start at 95% and lower by 5 per sunny day until curtailment clears)
+- **Taper ceiling** (`TAPER_CEILING_PCT`) — caps grid charging ceiling for non-export systems to prevent curtailment. Tunable via `.env`, default 85% (start at 95 and lower by 5 per sunny day until curtailment clears)
 - **Pre-peak gate** — within 30 min of peak, engine holds current mode rather than starting a new EB burst if not already charging. Prevents unnecessary late charging cycles
 - **Anchor drift fix** — `_get_soc_at_peak_end()` now pins to the first reading at-or-after peak end instead of `rows[-1]`, which drifted as float arithmetic shifted window edges
 - **Peak discharge fallback** — new `_compute_peak_discharge_kwh()` queries SOC at peak start and end from `system_readings` when `daily_savings` hasn't run yet. Fixes post-peak target SOC being too aggressive early in the evening
+- **Modbus-first mode verification** — routine cloud API mode checks replaced with Modbus register 15507 reads. Cloud API reserved for actual mode switches only
 
 ### System Profile Overhaul
 - `system_profile.py` now reads from SQLite (`scan_db()`) instead of CSV, with CSV fallback
@@ -44,11 +41,19 @@ All data collection has migrated from CSV files to a SQLite database (`data/fran
 - **Plotly.js analytics tab** replaces static weekly PNG charts — interactive charts with zoom, pan, hover tooltips, and touch support. Date range selection, carousel navigation
 - All chart data now sourced from SQLite via `generate_dashboard_data.py`
 - Static PNG generation removed
+- Dynamic version display and "Update Available" badge via GitHub releases API
+
+### Version Management
+- Single `VERSION` file in repo root; read by `config.py`, `system_profile.py`, `scheduler.py`
+- `ENGINE_VERSION` env var deprecated — no longer needed
+- Dashboard About card and `/api/version` endpoint serve version dynamically
 
 ### Other Changes
-- `collect_device_inventory.py` — tracks serial numbers and firmware versions across Enphase, SolarEdge, and Franklin devices; only writes on change
+- `collect_device_inventory.py` — tracks serial numbers and firmware versions across Enphase, SolarEdge, and Franklin devices; only writes on change. Gateway record enriched with hardware revision and protocol version
 - `collect_solaredge_panels.py` — panel-level optimizer data for barn array health monitoring
-- Telemetry pipeline stabilized — `engine_version`, `multi_meter`, `FORECAST_ENABLED` config gaps fixed
+- Telemetry v2 — expanded schema with 13 new config flags, 10 health signal queries, engine version reporting
+- `rate_schedule.py` — rate schedule management with JSON config
+- `diagnostic_bundle.py` — sanitized diagnostic bundle for issue reporting
 
 ---
 
@@ -65,7 +70,6 @@ cp .env .env.backup
 # 2. Clone fresh into a new directory
 git clone https://github.com/mtnears/FranklinWH-Automation.git FranklinWH-v41
 cd FranklinWH-v41
-git checkout v4-forecast-engine
 
 # 3. Copy your .env settings — review .env.example first, new vars have been added
 cp ../<old-dir>/.env .env
@@ -83,7 +87,7 @@ docker compose up -d
 docker logs -f franklin-automation
 ```
 
-Your historical data from CSV logs will not be migrated to the new SQLite database. The system starts collecting fresh from day one. If you need historical data preserved, open a [Discussion](https://github.com/mtnears/FranklinWH-Automation/discussions) before upgrading.
+Your historical data from CSV logs will not be migrated to the new SQLite database. The system starts collecting fresh from day one. If you need historical data preserved, open a [GitHub Issue](https://github.com/mtnears/FranklinWH-Automation/issues) before upgrading.
 
 ---
 
@@ -183,7 +187,6 @@ See [MODBUS_REGISTER_MAP.md](docs/MODBUS_REGISTER_MAP.md) for the full register 
 # 1. Clone and configure
 git clone https://github.com/mtnears/FranklinWH-Automation.git
 cd FranklinWH-Automation
-git checkout v4-forecast-engine
 cp .env.example .env
 nano .env   # Set your credentials, battery config, TOU schedule
 
@@ -377,20 +380,18 @@ Enphase Local API (house array)        SolarEdge Cloud API (barn array)
 
 On the **System Logs** tab of the dashboard, click the **🐛 Report Issue** button. This generates a sanitized diagnostic bundle with credentials automatically stripped.
 
-You can also open a [GitHub Issue](https://github.com/mtnears/FranklinWH-Automation/issues/new) or post in [GitHub Discussions](https://github.com/mtnears/FranklinWH-Automation/discussions).
-
-Please include: log output, rate plan, setup details (battery count, solar size, Modbus enabled), and what happened vs. what you expected.
+You can also open a [GitHub Issue](https://github.com/mtnears/FranklinWH-Automation/issues/new) with log output, your rate plan, setup details (battery count, solar size, Modbus enabled), and what happened vs. what you expected.
 
 ---
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome!
 
 - Report bugs with log excerpts
 - Share configurations for different utilities
 - Submit PRs for new pricing providers or rate schedules
-- Open discussions for feature ideas
+- Open an [Issue](https://github.com/mtnears/FranklinWH-Automation/issues) for feature ideas
 
 ---
 

@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-Configuration Management for FranklinWH Battery Automation - v3.5.1
+Configuration Management for FranklinWH Battery Automation
 
 Loads settings from environment variables (.env file) with sensible defaults.
 Provides a centralized configuration object used by all scripts.
-
-v3.5.0 Changes:
-- Added Modbus TCP integration options
-- Added conditional polling frequency based on dynamic pricing
-- Added anonymous telemetry options
-- Fixed midnight-crossing peak period validation
+Version is read from the VERSION file in the repo root.
 
 Usage:
     from config import config
@@ -40,6 +35,24 @@ try:
             break
 except ImportError:
     pass  # dotenv not installed, rely on environment variables
+
+
+def get_version() -> str:
+    """Read version from VERSION file in repo root."""
+    for candidate in [
+        Path(__file__).parent.parent / 'VERSION',
+        Path(__file__).parent / 'VERSION',
+    ]:
+        try:
+            if candidate.exists():
+                return candidate.read_text().strip()
+        except Exception:
+            pass
+    return '0.0.0'
+
+
+# Module-level version constant
+VERSION = get_version()
 
 
 def get_bool(key: str, default: bool = False) -> bool:
@@ -152,7 +165,7 @@ class Config:
     TELEMETRY_ENABLED: bool = field(default_factory=lambda: get_bool('TELEMETRY_ENABLED', False))
     TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
     TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
-    ENGINE_VERSION: str = field(default_factory=lambda: os.getenv('ENGINE_VERSION', '4.0'))
+    ENGINE_VERSION: str = field(default_factory=lambda: os.getenv('ENGINE_VERSION', VERSION))
     MULTI_METER: bool = field(default_factory=lambda: get_bool('MULTI_METER', False))
     FORECAST_ENABLED: bool = field(default_factory=lambda: get_bool('FORECAST_ENABLED', False))
 
@@ -486,7 +499,7 @@ class Config:
         """Return a formatted summary of current configuration."""
         lines = [
             "=" * 60,
-            "CONFIGURATION SUMMARY - v3.5.1 / v4.0",
+            f"CONFIGURATION SUMMARY - v{VERSION}",
             "=" * 60,
             "",
             "ENABLED FEATURES:",
@@ -558,7 +571,7 @@ class Config:
     def to_dict(self) -> dict:
         """Export configuration as dictionary (excludes sensitive data)."""
         return {
-            'version': '3.5.1',
+            'version': VERSION,
             'battery_capacity_kwh': self.BATTERY_CAPACITY_KWH,
             'charge_rate_per_hour': self.CHARGE_RATE_PER_HOUR,
             'target_soc': self.TARGET_SOC,

@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-**Common issues and solutions for FranklinWH Battery Automation v3.3.0**
+**Common issues and solutions for FranklinWH Battery Automation v4.1**
 
 ---
 
@@ -9,17 +9,11 @@
 Run these commands first to understand the current state:
 
 ```bash
-# Check container is running and version
-docker logs franklin-automation 2>&1 | head -5
+docker exec -w /app/scripts franklin-automation python3 -c "from config import VERSION; print('Version:', VERSION)"
 
-# Check recent decisions
-docker exec franklin-automation tail -20 /app/logs/solar_intelligence.log
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log ORDER BY id DESC LIMIT 20\").fetchall(); [print(r) for r in rows]"
 
-# Check scheduler activity
-docker logs --tail 20 franklin-automation
-
-# Verify configuration loaded
-docker logs franklin-automation 2>&1 | grep "Enabled features" -A 10
+docker exec franklin-automation cat /app/logs/data_source_health.json | python3 -m json.tool
 ```
 
 ---
@@ -29,13 +23,10 @@ docker logs franklin-automation 2>&1 | grep "Enabled features" -A 10
 ### Container won't start
 
 ```bash
-# Check for errors
 docker logs franklin-automation
 
-# Verify .env file exists and has required values
 cat .env | grep FRANKLIN
 
-# Verify directories exist
 ls -la logs/ data/ web/
 ```
 
@@ -52,206 +43,180 @@ docker compose up -d
 ### Dashboard not accessible
 
 ```bash
-# Check both containers are running
 docker compose ps
 
-# Check dashboard container
 docker compose logs franklin-dashboard
 
-# Test health endpoint
 curl http://localhost:8100/health
-
-# Check firewall allows the port
 ```
 
 ### Dashboard shows "Loading..."
 
 ```bash
-# Check data file is being generated
 docker exec franklin-automation ls -la /app/web/power_dashboard_data.json
 
-# Check dashboard data generator is running
 docker logs --tail 50 franklin-automation | grep Dashboard
 ```
 
-### Logs tab shows "Unable to load log file"
-
-```bash
-# Check logs directory inside container
-docker exec franklin-automation ls -la /app/logs/
-
-# Verify intelligence log exists and has content
-docker exec franklin-automation tail -5 /app/logs/solar_intelligence.log
-```
-
-### Wrong log file location
-
-The Docker container writes logs to `/app/logs/` which maps to `./logs/` on the host (relative to your `docker-compose.yml` location). If you have an older installation, you may have logs in a different directory. Check:
-
-```bash
-# Container's actual log location
-docker exec franklin-automation tail -1 /app/logs/solar_intelligence.log
-
-# Host-side locations to check
-ls -la logs/solar_intelligence.log
-```
-
 ---
 
-## API Connection Problems
+## Data Source Issues
 
-### "Device response timed out" — Frequent Timeouts
-
-The Franklin Cloud API can be slow. The system retries 5 times with 10-second delays.
+### Check which data sources are active
 
 ```bash
-# Check retry patterns
-docker exec franklin-automation grep "Attempt" /app/logs/solar_intelligence.log | tail -10
+docker exec franklin-automation cat /app/logs/data_source_health.json | python3 -m json.tool
 ```
 
-**Good output (successful retry):**
-```
-Attempt 1 starting...
-Attempt 1 failed: Device response timed out, retrying in 10s...
-Attempt 2 starting...
-Success on attempt 2
-```
+This shows Modbus, cloud API, and Enphase health stats including success rates, response times, and total attempts.
 
-**If all 5 attempts consistently fail:**
-1. Check Franklin WH system status in mobile app
-2. Verify internet connection on your server
-3. Check if Franklin is having service issues (common during updates)
-4. Wait 1 hour and check if it resolves
-
-### "Authentication failed"
+### Modbus not connecting
 
 ```bash
-# Check credentials in .env
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%modbus%' OR message LIKE '%Modbus%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
+```
+
+Common causes: aGate IP changed (check router DHCP), Modbus not enabled on aGate (contact installer), firewall blocking port 502.
+
+### Cloud API — frequent timeouts
+
+The Franklin cloud API can be slow (2-7 seconds typical). The system retries automatically. Check recent API activity:
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%Attempt%' OR message LIKE '%timeout%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
+```
+
+If all attempts consistently fail: check Franklin WH system status in the mobile app, verify internet connectivity, wait 1 hour and check if it resolves (Franklin service disruptions are common during firmware updates).
+
+### Cloud API — zero attempts (expected with Modbus)
+
+With Modbus enabled and working, the cloud API should show zero or near-zero `total_attempts` in the health stats. Cloud API calls only happen for actual mode switches (2-4 per day). This is by design — Modbus handles all monitoring.
+
+### Authentication failed
+
+```bash
 grep "FRANKLIN_USERNAME\|FRANKLIN_PASSWORD" .env
 ```
 
-- Verify you can log into the Franklin WH mobile app with the same credentials
-- Check for special characters in password that may need escaping
-- Try resetting your Franklin WH password
+Verify you can log into the Franklin WH mobile app with the same credentials. Check for special characters in the password that may need escaping.
 
-### "Gateway not found"
+### Gateway not found
 
 ```bash
-# Check gateway ID
 grep "FRANKLIN_GATEWAY_ID" .env
 ```
 
-- Find Gateway ID in Franklin WH app: Settings → System Info
-- Should be exactly 20 characters
-- Check for extra spaces or missing characters
+Find the Gateway ID in the Franklin WH app: Settings → System Info. It should be exactly 20 characters.
 
 ---
 
-## Mode Switching Issues
+## Engine Decision Issues
+
+### Check recent decisions
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE 'Decision%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
+```
+
+Each decision shows its priority level: `[v4 P7]` means the P7 (pre-peak charging) rule fired. Priority levels: P1 (emergency) through P8 (default TOU).
 
 ### Mode not switching when expected
 
-v3.3.0 detects the current mode from the API's `name` field (e.g., "Emergency Backup", "Self Consumption"). This replaced `run_status` which could report incorrect values on some firmware versions. Check what the system sees:
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%SWITCHING%' OR message LIKE '%Mode changed%' OR message LIKE '%Mode unchanged%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
+```
+
+The v4 engine verifies every mode switch against the actual hardware state. If the hardware doesn't confirm the change, it retries up to 3 times.
+
+### Mode verification — Modbus vs cloud
+
+With Modbus enabled, mode verification uses Modbus register 15507 (instant, local) instead of the cloud API. Check current mode:
 
 ```bash
-# Check recent mode detection
-docker exec franklin-automation grep "API Mode\|Mode unchanged\|Mode changed\|SWITCHING" /app/logs/solar_intelligence.log | tail -10
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, mode, mode_detail, source FROM system_readings ORDER BY id DESC LIMIT 5\").fetchall(); [print(r) for r in rows]"
 ```
-
-**Expected log format:**
-```
-API Mode: TOU (name=Time of Use, detected=tou)
-Mode unchanged: tou (TOU)
-```
-
-Mode detection mapping: "Emergency Backup" → backup, "Self Consumption" → self_consumption, anything else → home mode (tou).
-
-### Mode switch not verified
-
-v3.3.0 verifies mode changes with a 5-second initial check and 8-second retry. A 10-minute cooldown prevents repeated switching on consecutive cycles. If you see warning messages:
-
-```bash
-docker exec franklin-automation grep "WARNING.*mode" /app/logs/solar_intelligence.log | tail -5
-```
-
-This could indicate the API accepted the command but the gateway hasn't applied it yet. The system will detect the correct mode on the next cycle.
 
 ### Battery charging during peak hours
 
-This should never happen. Check:
+This should never happen. Check for any mode issues during peak (5-8 PM for E-TOU-D):
 
 ```bash
-# Look for any mode changes during peak (5-8 PM)
-docker exec franklin-automation grep "SWITCHING" /app/logs/solar_intelligence.log | grep " 1[7-9]:\| 20:0[0-7]"
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, soc_pct, mode, battery_kw FROM system_readings WHERE CAST(strftime('%H',timestamp) AS INT) BETWEEN 17 AND 19 AND date(timestamp)=date('now','-1 day') ORDER BY timestamp\").fetchall(); [print(r) for r in rows[-10:]]"
 ```
 
-This should return nothing. If you see mode switches during peak:
-1. Verify `PEAK_START_HOUR` and `PEAK_END_HOUR` in `.env`
-2. Check system timezone: `docker exec franklin-automation date`
-3. Open a GitHub issue with log excerpts
+If you see grid charging during peak: verify `PEAK_START_HOUR` and `PEAK_END_HOUR` in `.env`, check system timezone with `docker exec franklin-automation date`.
+
+### Excessive mode switching (flapping)
+
+Some mode switching before peak is normal — the engine evaluates conditions each cycle. Check today's switch count:
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT COUNT(*) FROM intelligence_log WHERE message LIKE '%SWITCHING%' AND date(timestamp)=date('now')\").fetchone(); print('Mode switches today:', rows[0])"
+```
+
+More than 10-15 switches in a day may warrant investigation.
 
 ---
 
-## Scheduling Issues
+## Forecast Issues
 
-### Pre-peak check not running
-
-```bash
-# Verify it's scheduled
-docker logs franklin-automation 2>&1 | grep "Pre-peak\|Post-peak"
-```
-
-Should show:
-```
-Pre-peak check: Daily at 16:55 (5min before peak)
-Post-peak check: Daily at 20:01 (1min after peak ends)
-```
-
-If not visible, check that `PEAK_TRANSITION_BUFFER_MINUTES` is set in `.env` and rebuild the container.
-
-### Decision running at wrong intervals
+### Check forecast status
 
 ```bash
-# Check configured interval
-docker logs franklin-automation 2>&1 | grep "Smart Decision"
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%Open-Meteo%' OR message LIKE '%Morning plan%' OR message LIKE '%Calibration%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
 ```
 
-Should show `Smart Decision: Every XX minutes` matching your `CHECK_INTERVAL_MINUTES` setting.
+You should see `Open-Meteo: house (X.XXkWp)` with a kWh total, followed by a morning plan with forecast source `[open_meteo]`.
 
-### Wrong HOME_MODE
+### Forecast shows unrealistic values
 
-If the system returns to the wrong mode after peak:
+The raw Open-Meteo forecast is calibrated using local weather data and yesterday's actual production. If values seem off, check that weather collection is working:
 
 ```bash
-grep "HOME_MODE" .env
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT date, temp_high, temp_low, humidity_avg, precip_total FROM weather_daily ORDER BY date DESC LIMIT 5\").fetchall(); [print(r) for r in rows]"
 ```
 
-Set to `tou` if you use Time-of-Use mode, or `self_consumption` if you use Self Consumption mode. This must match what you've configured in the Franklin app.
+### No forecast available
+
+If the forecast falls back to `clear_sky` or `profile_fallback`, Open-Meteo may be unreachable. Check:
+
+```bash
+docker exec franklin-automation python3 -c "import urllib.request, json; r=urllib.request.urlopen('https://api.open-meteo.com/v1/forecast?latitude=38.91&longitude=-120.84&hourly=global_tilted_irradiance&tilt=22&azimuth=0&forecast_days=1', timeout=10); print(json.loads(r.read().decode()).get('hourly',{}).get('time',['none'])[:3])"
+```
+
+---
+
+## Database Issues
+
+### Check database size and table counts
+
+```bash
+docker exec franklin-automation ls -lh /app/data/franklin.db
+
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); tables=conn.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\").fetchall(); print(f'{len(tables)} tables:'); [print(f'  {t[0]}') for t in tables]"
+```
+
+### Check recent readings
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, soc_pct, solar_kw, grid_kw, mode, source FROM system_readings ORDER BY id DESC LIMIT 5\").fetchall(); [print(r) for r in rows]"
+```
+
+### Daily energy summary
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT date, solar_kwh, grid_import_kwh, battery_charge_kwh, battery_discharge_kwh, home_load_kwh FROM daily_energy_summary ORDER BY date DESC LIMIT 7\").fetchall(); [print(r) for r in rows]"
+```
 
 ---
 
 ## Per-Battery Monitoring
 
-### Battery data not showing
-
-The system automatically detects the number of batteries. Check:
+### Battery data
 
 ```bash
-docker exec franklin-automation grep "Per-battery" /app/logs/solar_intelligence.log | tail -3
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); r=conn.execute(\"SELECT timestamp, soc_pct, per_battery_soc_json, per_battery_power_json FROM system_readings ORDER BY id DESC LIMIT 1\").fetchone(); print(r)"
 ```
-
-Expected:
-```
-Per-battery SOC: Bat1: 65.1%, Bat2: 65.2% (combined: 63.3%)
-```
-
-If missing, the system may be running an older version. Check:
-
-```bash
-docker logs franklin-automation 2>&1 | head -3
-```
-
-Should show `Scheduler v3.3.0`.
 
 ### Large SOC difference between batteries
 
@@ -261,52 +226,38 @@ A small difference (< 2%) is normal. If batteries diverge significantly, this co
 
 ## Log Analysis
 
-### Understanding v3.3.0 log entries
+### Understanding v4.1 decision cycle
 
-A complete decision cycle looks like:
+A complete engine cycle in the intelligence log looks like:
 
 ```
-2026-02-02 14:15:23 - Attempting to get battery stats (max 5 attempts)...
-2026-02-02 14:15:23 - Attempt 1 starting...
-2026-02-02 14:15:26 - Success on first attempt
-2026-02-02 14:15:26 - ======================================================================
-2026-02-02 14:15:26 - Features: Solar, TOU (17:00-20:00), PVOutput
-2026-02-02 14:15:26 - API Mode: TOU (name=Time of Use, detected=tou)
-2026-02-02 14:15:26 - Per-battery SOC: Bat1: 78.3%, Bat2: 78.4% (combined: 76.1%)
-2026-02-02 14:15:26 - Environment: Temp: 55F/12.8C, Signal: 30
-2026-02-02 14:15:26 - SOC: 76.1%, Solar: 4.2kW, Grid->Bat: 0.0kW, Solar->Bat: 4.2kW
-2026-02-02 14:15:26 - Status: 2.7h to peak
-2026-02-02 14:15:26 - Decision: Solar can provide ~18.7% (need 18.9%), looking promising
-2026-02-02 14:15:26 - Action: Solar-first (tou mode)
-2026-02-02 14:15:26 - Mode unchanged: tou (TOU)
+AdaptiveEngine initialized: target_soc=95.0%, rate_schedule=PG&E E-TOU-D...
+TOU drift loaded from DB: X.XX%/hr...
+Loaded hourly load profile from DB: night=X.XkW, morning=X.XkW...
+======================================================================
+FranklinWH Smart Decision Engine v4.0 Adaptive
+======================================================================
+Data source: modbus+enphase
+Features: Solar, TOU (17:00-20:00), Modbus TCP...
+API Mode: TOU-Idle (detected=time_of_use)
+Environment: Temp: XXF/XX.XC, Freq: 59.90Hz
+SOC: XX.X%, Solar: X.XXXkW, Grid: X.XXXkW, Battery: -X.XXXkW
+Charging: Grid→Bat: X.XXkW, Solar→Bat: X.XXkW
+Status: X.Xh to peak
+Decision: [v4 PX] ...
+Action: TIME_OF_USE mode (time_of_use)
+Mode unchanged: time_of_use (TIME_OF_USE)
+Engine metrics: ct_target_soc=XX.X, ct_floor_pct=XX.X...
 ```
 
 ### Finding specific events
 
 ```bash
-# Mode changes
-docker exec franklin-automation grep "SWITCHING\|Mode changed" /app/logs/solar_intelligence.log | tail -10
-
-# API errors
-docker exec franklin-automation grep -i "error\|failed\|timeout" /app/logs/solar_intelligence.log | tail -10
-
-# Peak transitions
-docker exec franklin-automation grep "Peak period\|IN PEAK" /app/logs/solar_intelligence.log | tail -10
-
-# Emergency charging events
-docker exec franklin-automation grep -i "emergency\|out of time\|Must start" /app/logs/solar_intelligence.log | tail -10
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%SWITCHING%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
 ```
 
-### Log file growing too large
-
 ```bash
-# Check log size
-docker exec franklin-automation du -h /app/logs/*.log
-
-# Logs can be archived from the host side
-cd logs/
-tar -czf archive-$(date +%Y%m%d).tar.gz *.log
-> solar_intelligence.log   # Truncate (system recreates)
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE '%error%' OR message LIKE '%failed%' ORDER BY id DESC LIMIT 10\").fetchall(); [print(r) for r in rows]"
 ```
 
 ---
@@ -314,14 +265,19 @@ tar -czf archive-$(date +%Y%m%d).tar.gz *.log
 ## Known Limitations
 
 ### Franklin Cloud API
-- Timeout frequency varies — the 5-retry mechanism handles most cases
-- Rate limiting is undocumented — the 15-minute default interval avoids issues
+- Timeout frequency varies — retry mechanism handles most cases
+- Rate limiting is undocumented — Modbus-first monitoring minimizes cloud calls
 - Service disruptions can occur during Franklin firmware updates
+
+### Modbus
+- Read-only interface — mode switching still requires cloud API
+- Per-battery SOC not available via Modbus (only aggregate SOC)
+- Solar production registers (Model 502) return zeros — use Enphase/SolarEdge directly
 
 ### System Limitations
 - TOU schedule cannot be queried from the API — must be set manually in `.env`
-- Mode IDs are firmware-specific — the system uses `run_status` codes instead for universal detection
-- Cell-level battery data is not available through the cloud API (requires local Modbus access)
+- Cell-level battery data is not available through any current interface
+- `PEAK_END_HOUR=24` has a known bug — use `PEAK_END_HOUR=0` as a workaround
 
 ---
 
@@ -331,26 +287,20 @@ tar -czf archive-$(date +%Y%m%d).tar.gz *.log
 
 1. Check this troubleshooting guide
 2. Review the container logs: `docker logs franklin-automation`
-3. Review the intelligence log: `docker exec franklin-automation tail -50 /app/logs/solar_intelligence.log`
-4. Check your `.env` configuration
+3. Check the System Logs tab in the dashboard
+4. Use the **🐛 Report Issue** button in the dashboard to generate a sanitized diagnostic bundle
 
 ### Include this info in bug reports
 
-```bash
-# Version
-docker logs franklin-automation 2>&1 | head -3
+- Version (from dashboard About card or startup banner)
+- Recent engine decisions (last 20 lines from intelligence log)
+- Data source health stats
+- Your rate plan and setup details (battery count, solar size, Modbus enabled)
+- What happened vs. what you expected
 
-# Recent decisions
-docker exec franklin-automation tail -30 /app/logs/solar_intelligence.log
-
-# Configuration (remove credentials!)
-grep -v "PASSWORD\|USERNAME" .env
-```
-
-- GitHub Issues: https://github.com/mtnears/FranklinWH-Automation/issues
-- GitHub Discussions: https://github.com/mtnears/FranklinWH-Automation/discussions
+GitHub Issues: https://github.com/mtnears/FranklinWH-Automation/issues
 
 ---
 
-**Last Updated:** February 2026
-**Version:** 3.3.0
+**Last Updated:** March 2026
+**Version:** 4.1.0

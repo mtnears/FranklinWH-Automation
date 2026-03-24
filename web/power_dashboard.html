@@ -926,7 +926,7 @@
             </div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">About</div>
-            <div class="info-row"><span class="info-key">Dashboard Version</span><span class="info-val">4.0</span></div>
+            <div class="info-row"><span class="info-key">Version</span><span class="info-val"><span id="about-version">--</span> <span id="update-badge" style="display:none;margin-left:8px;font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(79,143,255,.12);color:var(--accent-blue);cursor:pointer" onclick="window.open(this.dataset.url,'_blank')">Update Available</span></span></div>
             <div class="info-row"><span class="info-key">Last Data Update</span><span class="info-val" id="about-update">--</span></div>
             <div class="info-row"><span class="info-key">Anonymous Analytics</span><span class="info-val"><span id="telemetry-badge" class="telemetry-badge">loading...</span></span></div>
             <div class="info-row"><span class="info-key">Project</span><span class="info-val"><a href="https://github.com/mtnears/FranklinWH-Automation" target="_blank" style="color:var(--accent-blue);text-decoration:none">GitHub ↗</a></span></div>
@@ -1127,6 +1127,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     loadSettings(); tick(); setInterval(tick,1000);
     update(); startDash(); startLogAR(); loadOV();
     checkTelemetryConsent();
+    fetchVersionAndCheckUpdate();
     // Show Solar Array tab if any solar data is available
     (async()=>{
         let found=false;
@@ -2514,6 +2515,49 @@ async function generateReport(){
 function openGitHubIssue(){
     // Fallback if button onclick wasn't set
     window.open('https://github.com/mtnears/FranklinWH-Automation/issues/new?labels=bug,v4-beta','_blank');
+}
+
+// ===== VERSION & UPDATE CHECK =====
+async function fetchVersionAndCheckUpdate(){
+    // Fetch current version from scheduler API
+    let currentVersion='--';
+    try{
+        const r=await fetch('/api/version');
+        if(r.ok){const d=await r.json();currentVersion=d.version||'--'}
+    }catch(e){}
+    document.getElementById('about-version').textContent=currentVersion;
+    if(currentVersion==='--')return;
+
+    // Check GitHub for latest release — once per day, cached in localStorage
+    const cacheKey='fwh_update_check';
+    const now=Date.now();
+    try{
+        const cached=JSON.parse(localStorage.getItem(cacheKey)||'{}');
+        if(cached.ts && (now-cached.ts)<86400000){
+            if(cached.tag && cached.tag!==currentVersion && cached.url){
+                const b=document.getElementById('update-badge');
+                b.textContent=cached.tag+' Available';
+                b.dataset.url=cached.url;
+                b.style.display='inline';
+            }
+            return;
+        }
+    }catch(e){}
+
+    try{
+        const r=await fetch('https://api.github.com/repos/mtnears/FranklinWH-Automation/releases/latest');
+        if(!r.ok)return;
+        const d=await r.json();
+        const tag=(d.tag_name||'').replace(/^v/,'');
+        const url=d.html_url||'https://github.com/mtnears/FranklinWH-Automation/releases';
+        localStorage.setItem(cacheKey,JSON.stringify({ts:now,tag:tag,url:url}));
+        if(tag && tag!==currentVersion){
+            const b=document.getElementById('update-badge');
+            b.textContent=tag+' Available';
+            b.dataset.url=url;
+            b.style.display='inline';
+        }
+    }catch(e){}
 }
 
 // ===== TELEMETRY CONSENT =====

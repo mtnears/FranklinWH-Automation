@@ -17,9 +17,12 @@ Decision Priority Stack:
   4. Peak rate protection → never buy at peak
   5. Solar curtailment prevention → SC when SOC at ceiling with solar producing
   6. Dynamic pricing cheap power → charge below threshold
-  7. Forecast-aware charging gap → charge only what solar won't provide
-  8. Overnight drain → burn unused solar + make headroom for tomorrow, last-responsible-moment
-  9. Default → TOU
+  7. Continuous target tracking (non-export) + EB gap charging:
+     a) Compute target_soc from forecast solar — where SOC should be NOW
+     b) If SOC > target: SC to drain (load-profile-aware timing)
+     c) If SOC < target: TOU to charge (solar fills battery)
+     d) If gap exists that solar can't fill: EB (last-responsible-moment)
+  8. Default → TOU
 
 Part of the v4.0 Adaptive Decision Engine.
 """
@@ -78,23 +81,13 @@ MODE_SWITCH_COOLDOWN_S = 300
 # EB until hours_to_peak <= 3.0h (i.e., ~2pm for 5pm peak).
 EB_DEFERRAL_MIN_BUFFER_HOURS = 2.0
 
-# Overnight drain — burn unused solar + make headroom for tomorrow's solar.
-# Fires once after solar production ends for the day. Uses last-responsible-moment
-# timing so it never drains earlier than necessary.
+# Overnight drain — REPLACED by continuous target tracking in v4.1.
+# These constants are retained only as fallbacks if the DB load profile
+# query fails (e.g., fresh install with no historical data).
 OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW = 0.3   # kW below which solar is considered done
-OVERNIGHT_DRAIN_CONFIRM_CYCLES = 2          # Consecutive low-solar cycles to confirm end-of-day
-OVERNIGHT_DRAIN_MIN_HOUR = 15              # Earliest hour to consider solar day complete (avoids AM cloud gaps)
 
-# Daytime solar headroom — proactive SC to prevent SOC from hitting ceiling
-# during active solar production. Uses last-responsible-moment timing:
-# calculates time until SOC reaches ceiling at current net charge rate,
-# and only switches to SC when that time is short enough to act.
-# On weekdays near peak, stays in SC to ride into peak (no flapping).
-DAYTIME_HEADROOM_MIN_SOLAR_KW = 0.3    # Minimum solar to consider "active production"
-DAYTIME_HEADROOM_CEILING_BUFFER = 3.0  # Start acting this many % below ceiling
-DAYTIME_HEADROOM_MIN_NET_CHARGE_KW = 0.2  # Minimum net charge rate to project ceiling hit
-DAYTIME_HEADROOM_LEAD_HOURS = 1.5      # Switch to SC this many hours before projected ceiling hit
-DAYTIME_HEADROOM_PEAK_RIDE_HOURS = 3.0 # If peak is within this many hours, stay in SC through peak
+# Daytime solar headroom — REPLACED by continuous target tracking in v4.1.
+# Retained only for P5 safety net (curtailment at 95%+).
 
 # Taper-aware ceiling — hard cap on grid charging target SOC.
 # Above this SOC, battery charge rate tapers significantly on Franklin systems,
@@ -112,6 +105,44 @@ TAPER_CEILING_PCT = float(os.environ.get('TAPER_CEILING_PCT', '85'))
 # mode switch and grid cost. Exception: if already in EB from prior cycle
 # and still below ceiling, let it finish.
 PRE_PEAK_GATE_HOURS = 0.5  # 30 minutes before peak
+
+# ---------------------------------------------------------------------------
+# Continuous Target Tracking — v4.1
+# ---------------------------------------------------------------------------
+# Replaces Phase 1/2 headroom, daytime headroom, and overnight drain with
+# a single mechanism. Every cycle: compute target_soc from forecast solar,
+# compare to current SOC, pick mode.
+
+# Where we want SOC at peak start (not 100 — Franklin shuts solar gate at ~99%)
+CT_PEAK_ENTRY_TARGET = 98.0
+
+# Dead band around target to prevent flapping (±this value)
+CT_TOLERANCE_PCT = 3.0
+
+# Safety margin scaling by weather confidence
+CT_BASE_SAFETY_PCT = 3.0     # Safety margin at wx_score=1.0 (clear sky)
+CT_MAX_SAFETY_PCT = 12.0     # Safety margin at wx_score=0.0 (overcast)
+
+# Hard minimum: target never drops below reserve + peak_need + this
+CT_MIN_FLOOR_ABOVE_RESERVE = 5.0
+
+# Peak survival margin: when projecting SC charge forward to peak, SOC must
+# reach reserve + peak_need + this margin to choose SC over TOU.
+# Provides buffer for load variability (HVAC spikes, dryer, etc).
+CT_PEAK_SURVIVAL_MARGIN_PCT = 10.0
+
+# Minimum forecast solar surplus (kWh) before target tracking engages.
+# Below this, the system just parks in TOU and lets solar/grid handle it.
+CT_MIN_FORECAST_SOLAR_KWH = 2.0
+
+# Default hourly load profile (kW) when DB history is unavailable.
+# Index 0 = midnight, 23 = 11 PM. Based on typical US residential.
+CT_DEFAULT_HOURLY_LOAD = [
+    0.8, 0.7, 0.7, 0.7, 0.8, 0.9,   # 00-05: overnight baseline
+    1.2, 1.5, 1.8, 2.0, 2.2, 2.3,   # 06-11: morning ramp
+    2.5, 2.5, 2.3, 2.2, 2.0, 2.5,   # 12-17: afternoon
+    3.0, 2.8, 2.5, 2.0, 1.5, 1.0,   # 18-23: evening peak then wind-down
+]
 
 
 # ---------------------------------------------------------------------------
@@ -410,9 +441,9 @@ class AdaptiveEngine:
         self.curtailed_value_cents = 0.0
         self.decisions_made = 0
 
-        # Overnight drain state — tracks consecutive low-solar cycles for end-of-day detection
-        self._low_solar_cycles: int = 0           # consecutive cycles with solar < threshold
-        self._overnight_drain_target: Optional[float] = None  # locked drain target SOC once set
+        # Continuous target tracking state
+        self._hourly_load_kw = list(CT_DEFAULT_HOURLY_LOAD)  # 24-element array, index=hour
+        self._load_profile_from_db()  # Override defaults with actual history
 
         # Retained for backward compatibility with dashboard/telemetry readers
         self.solar_discharge_kwh: float = 0.0
@@ -424,7 +455,8 @@ class AdaptiveEngine:
         logger.info(f"AdaptiveEngine initialized: target_soc={target_soc}%, "
                     f"rate_schedule={rate_schedule.name}, "
                     f"forecast_engine={'yes' if self.forecast_engine else 'no'}, "
-                    f"solar_export={'yes' if self.solar_export else 'no'}")
+                    f"solar_export={'yes' if self.solar_export else 'no'}, "
+                    f"load_profile_avg={sum(self._hourly_load_kw)/24:.1f}kW")
 
     def _init_forecast_engine(self):
         """Initialize the solar forecast engine if available."""
@@ -441,6 +473,50 @@ class AdaptiveEngine:
         except Exception as e:
             logger.warning(f"Solar forecast engine init failed: {e} — using learned profile")
             self.forecast_engine = None
+
+    def _load_profile_from_db(self):
+        """Load hourly average home load from system_readings history.
+
+        Queries the last 14 days of home_load_kw data, grouped by hour,
+        to build a 24-element load profile. This is used by the continuous
+        target tracker for load-aware drain timing — evening hours drain
+        faster than overnight because load is higher.
+
+        Falls back to CT_DEFAULT_HOURLY_LOAD if DB is unavailable or has
+        insufficient data.
+        """
+        try:
+            import sqlite3
+            db_path = os.path.join(os.getenv('DATA_DIR', '/app/data'), 'franklin.db')
+            conn = sqlite3.connect(db_path, timeout=10)
+            cutoff = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
+            rows = conn.execute(
+                "SELECT CAST(strftime('%H', timestamp) AS INT) as hour, "
+                "       AVG(home_load_kw) as avg_kw, "
+                "       COUNT(*) as n "
+                "FROM system_readings "
+                "WHERE timestamp > ? AND home_load_kw > 0 "
+                "GROUP BY hour "
+                "ORDER BY hour",
+                (cutoff,)
+            ).fetchall()
+            conn.close()
+
+            if len(rows) >= 20:
+                profile = list(CT_DEFAULT_HOURLY_LOAD)
+                for hour, avg_kw, n in rows:
+                    if 0 <= hour <= 23 and n >= 10:
+                        profile[hour] = round(max(avg_kw, 0.3), 2)
+                self._hourly_load_kw = profile
+                logger.info(f"Loaded hourly load profile from DB: "
+                            f"night={profile[2]:.1f}kW, "
+                            f"morning={profile[8]:.1f}kW, "
+                            f"afternoon={profile[14]:.1f}kW, "
+                            f"evening={profile[20]:.1f}kW")
+            else:
+                logger.info(f"Insufficient DB history ({len(rows)} hours) — using default load profile")
+        except Exception as e:
+            logger.debug(f"Load profile DB query failed: {e} — using defaults")
 
     def _get_morning_plan(self, soc_percent: float, timestamp: datetime) -> Optional['MorningPlan']:
         """Get or refresh the morning plan from the forecast engine.
@@ -631,32 +707,27 @@ class AdaptiveEngine:
                 metrics={'dynamic_price': state.dynamic_price_cents},
             )
 
-        # --- Priority 7: Forecast-Aware Charging Gap ---
-        decision = self._evaluate_charging_gap(state)
-        if decision:
-            return decision
-
-        # --- Priority 8: Daytime Solar Headroom + Overnight Drain ---
-        # Non-export systems only. Two complementary checks:
-        #   A) Daytime: if solar is actively charging and SOC is approaching
-        #      the ceiling, switch to SC proactively (last-responsible-moment).
-        #      Near peak on weekdays, stay in SC to ride into peak.
-        #   B) Overnight: after solar ends, drain to make room for tomorrow.
+        # --- Priority 7: Continuous Target Tracking + EB Gap Charging ---
+        # Two sub-concerns evaluated in order:
+        #   A) Continuous target (non-export only): compute target_soc from
+        #      forecast solar, compare to current SOC, drain or charge.
+        #   B) EB gap charging: if solar can't fill the gap to peak, grid charge
+        #      using last-responsible-moment timing.
         if not self.solar_export:
-            headroom_decision = self._evaluate_daytime_headroom(state)
-            if headroom_decision:
-                return headroom_decision
+            ct_decision = self._evaluate_continuous_target(state)
+            if ct_decision:
+                return ct_decision
 
-            drain_decision = self._evaluate_overnight_drain(state)
-            if drain_decision:
-                return drain_decision
+        eb_decision = self._evaluate_eb_gap(state)
+        if eb_decision:
+            return eb_decision
 
         # --- Default: TOU ---
         backup_reserve = self.config.get('backup_reserve_pct', 20.0)
         if state.soc_percent <= backup_reserve + 2.0:
             return self._decide(
                 state, "time_of_use",
-                f"No peak approaching, SOC {state.soc_percent:.0f}% near reserve "
+                f"No action needed, SOC {state.soc_percent:.0f}% near reserve "
                 f"({backup_reserve:.0f}%) — TOU to let grid power home",
                 confidence=0.85, priority=8,
                 action="switch_to_tou",
@@ -664,305 +735,700 @@ class AdaptiveEngine:
 
         return self._decide(
             state, "time_of_use",
-            "No peak approaching — TOU (preserve battery, grid powers home)",
+            "No action needed — TOU (preserve battery, grid powers home)",
             confidence=0.8, priority=8,
             action="switch_to_tou",
         )
 
-    def _evaluate_daytime_headroom(self, state: SystemState) -> Optional[Decision]:
-        """Proactive daytime solar headroom — prevent SOC from hitting ceiling.
+    # ===================================================================
+    # Continuous Target Tracking — v4.1
+    # ===================================================================
 
-        During active solar production, if SOC is climbing toward the taper
-        ceiling, switch to SC so the home draws from battery+solar instead
-        of grid. This keeps SOC from hitting 100% where Franklin suppresses
-        solar input entirely.
+    def _get_remaining_solar_kwh(self, state: SystemState) -> tuple:
+        """Get remaining solar-to-battery forecast for headroom management.
 
-        Uses last-responsible-moment timing: calculates hours until SOC
-        reaches the ceiling at the current net charge rate, and only acts
-        when that time is within DAYTIME_HEADROOM_LEAD_HOURS.
+        Simple two-path decision based on observed reality, not clock time:
 
-        Near peak on weekdays: if SOC is high enough to survive peak and
-        we're within DAYTIME_HEADROOM_PEAK_RIDE_HOURS of peak, stay in SC
-        and ride straight into peak — no flapping back to TOU.
+          1. Solar IS producing right now → use morning plan (remaining today)
+          2. Solar is NOT producing → use next solar day's forecast from cache
+
+        "Next solar day" is determined by the cache: try today first (covers
+        the after-midnight case where today's solar hasn't started yet), then
+        tomorrow (covers the after-sunset case where today's solar is done).
+
+        Returns (remaining_kwh, wx_score, forecast_source).
         """
-        # Only during active solar
-        if state.solar_kw < DAYTIME_HEADROOM_MIN_SOLAR_KW:
-            return None
+        solar_producing = state.solar_kw > OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW
 
-        taper_ceiling = TAPER_CEILING_PCT
-        battery_kwh = self.config.get(
-            'battery_capacity_kwh',
-            getattr(getattr(self.profile, 'capacity', None),
-                    'total_capacity_kwh', 27.2)
-        )
-        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
-
-        # How much is the battery actually gaining right now?
-        # solar_to_battery_kw is the net solar going into the battery.
-        # If Franklin is in TOU, solar charges battery while grid powers home.
-        # The net charge rate determines how fast SOC is climbing.
-        net_charge_kw = state.solar_to_battery_kw
-        if net_charge_kw < DAYTIME_HEADROOM_MIN_NET_CHARGE_KW:
-            # Battery isn't actually gaining — solar is just covering home load
-            # or SOC is already high enough that Franklin is throttling.
-            # Check if we're already near the ceiling (Franklin may have throttled
-            # solar_to_battery to 0 but we're still at risk)
-            if state.soc_percent < taper_ceiling - DAYTIME_HEADROOM_CEILING_BUFFER:
-                return None
-
-        # --- How long until we hit the ceiling? ---
-        headroom_pct = max(0, taper_ceiling - state.soc_percent)
-        headroom_kwh = headroom_pct / 100.0 * battery_kwh
-
-        if headroom_pct <= DAYTIME_HEADROOM_CEILING_BUFFER:
-            # Already at or very near the ceiling — act now
-            hours_to_ceiling = 0.0
-        elif net_charge_kw > DAYTIME_HEADROOM_MIN_NET_CHARGE_KW:
-            hours_to_ceiling = headroom_kwh / net_charge_kw
-        else:
-            # Not charging meaningfully but near ceiling — be cautious
-            hours_to_ceiling = 2.0  # conservative estimate
-
-        # --- Weekday peak-ride logic ---
-        # If peak is coming soon and SOC is sufficient, stay in SC to ride
-        # straight into peak rather than flapping TOU→SC→TOU→SC.
-        peak_need_kwh = 0.0
-        peak_need_pct = 0.0
-        if state.hours_to_peak is not None and state.hours_to_peak > 0:
-            avg_load_kw = 2.0
-            if hasattr(self.profile, 'consumption') and hasattr(self.profile.consumption, 'avg_kwh_per_hour'):
-                avg_load_kw = max(self.profile.consumption.avg_kwh_per_hour, 0.5)
-            peak_duration = state.peak_duration_hours if state.peak_duration_hours > 0 else 3.0
-            peak_need_kwh = avg_load_kw * peak_duration
-            peak_need_pct = peak_need_kwh / battery_kwh * 100.0
-
-            # Close to peak with enough SOC to survive — ride in SC into peak
-            if (state.hours_to_peak <= DAYTIME_HEADROOM_PEAK_RIDE_HOURS
-                    and state.soc_percent >= backup_reserve + peak_need_pct):
-                metrics = {
-                    'daytime_headroom': True,
-                    'peak_ride': True,
-                    'soc': round(state.soc_percent, 1),
-                    'hours_to_peak': round(state.hours_to_peak, 1),
-                    'peak_need_pct': round(peak_need_pct, 1),
-                    'solar_kw': round(state.solar_kw, 2),
-                    'taper_ceiling': taper_ceiling,
-                }
-                return self._decide(
-                    state, "self_consumption",
-                    f"Daytime headroom: {state.hours_to_peak:.1f}h to peak, "
-                    f"SOC {state.soc_percent:.0f}% covers peak need "
-                    f"({peak_need_pct:.0f}%) — riding SC into peak",
-                    confidence=0.85, priority=8,
-                    action="switch_to_self_consumption",
-                    metrics=metrics,
-                )
-
-        # --- Last-responsible-moment check ---
-        # Don't switch to SC until we're within LEAD_HOURS of hitting ceiling
-        if hours_to_ceiling > DAYTIME_HEADROOM_LEAD_HOURS:
-            return None  # Plenty of room — stay in TOU, revisit next cycle
-
-        # --- Act: switch to SC ---
-        metrics = {
-            'daytime_headroom': True,
-            'peak_ride': False,
-            'soc': round(state.soc_percent, 1),
-            'taper_ceiling': taper_ceiling,
-            'headroom_pct': round(headroom_pct, 1),
-            'net_charge_kw': round(net_charge_kw, 2),
-            'hours_to_ceiling': round(hours_to_ceiling, 2),
-            'solar_kw': round(state.solar_kw, 2),
-            'hours_to_peak': round(state.hours_to_peak, 1) if state.hours_to_peak else None,
-        }
-
-        return self._decide(
-            state, "self_consumption",
-            f"Daytime headroom: SOC {state.soc_percent:.0f}% approaching "
-            f"ceiling {taper_ceiling:.0f}% ({hours_to_ceiling:.1f}h at "
-            f"{net_charge_kw:.1f}kW net charge) — SC to prevent curtailment",
-            confidence=0.8, priority=8,
-            action="switch_to_self_consumption",
-            metrics=metrics,
-        )
-
-    def _evaluate_overnight_drain(self, state: SystemState) -> Optional[Decision]:
-        """Priority 8: Overnight drain — burn unused solar + headroom for tomorrow.
-
-        Fires only after solar production ends for the day. Uses last-responsible-moment
-        timing so it never drains earlier than necessary. Returns None (TOU) until
-        the moment it must act.
-
-        Logic:
-          1. Confirm solar day is complete (time + observed low production)
-          2. Compute drain target: leave enough for peak need + tomorrow's solar headroom
-          3. If already at or below target, return None (TOU)
-          4. Last-responsible-moment: only fire when hours_to_next_peak <= hours_needed
-          5. Return SC to drain to target
-        """
-        if self.solar_export:
-            return None
-
-        # --- Step 1: Confirm solar day is complete ---
-        # Use monthly sunset table from solar_forecast for location-aware, seasonal timing.
-        # Require current hour to be past sunset AND solar has been below threshold
-        # for OVERNIGHT_DRAIN_CONFIRM_CYCLES consecutive cycles.
-        # The minimum hour guard (OVERNIGHT_DRAIN_MIN_HOUR) prevents false triggers
-        # from morning cloud gaps.
-        now_hour = state.timestamp.hour + state.timestamp.minute / 60.0
-
-        if now_hour < OVERNIGHT_DRAIN_MIN_HOUR:
-            self._low_solar_cycles = 0
-            return None
-
-        # Get sunset hour for this month (from solar_forecast SUN_SCHEDULE)
-        sunset_hour = 18.0  # safe default
-        try:
-            from solar_forecast import SUN_SCHEDULE
-            _, sunset_hour = SUN_SCHEDULE.get(state.timestamp.month, (7.0, 18.0))
-        except ImportError:
-            pass
-
-        # Track consecutive low-solar cycles
-        if state.solar_kw < OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW:
-            self._low_solar_cycles += 1
-        else:
-            self._low_solar_cycles = 0
-
-        solar_done = (
-            now_hour > sunset_hour + 0.5
-            and self._low_solar_cycles >= OVERNIGHT_DRAIN_CONFIRM_CYCLES
-        )
-
-        if not solar_done:
-            return None
-
-        # --- Step 2: Compute drain target ---
-        battery_kwh = self.config.get(
-            'battery_capacity_kwh',
-            getattr(getattr(self.profile, 'capacity', None),
-                    'total_capacity_kwh', 27.2)
-        )
-        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
-
-        # What we need in the battery at peak start
-        avg_load_kw = 2.0
-        if hasattr(self.profile, 'consumption') and hasattr(self.profile.consumption, 'avg_kwh_per_hour'):
-            avg_load_kw = max(self.profile.consumption.avg_kwh_per_hour, 0.5)
-        peak_duration = state.peak_duration_hours if state.peak_duration_hours > 0 else 3.0
-        peak_need_kwh = avg_load_kw * peak_duration
-        peak_need_pct = peak_need_kwh / battery_kwh * 100.0
-
-        # Headroom for tomorrow's solar forecast
-        tomorrow_solar_kwh = 0.0
-        try:
+        # --- Solar producing: use morning plan for remaining today ---
+        if solar_producing:
             plan = self._get_morning_plan(state.soc_percent, state.timestamp)
-            if plan is not None:
-                tomorrow_solar_kwh = plan.forecast_remaining_kwh
+            if plan is not None and plan.forecast_to_battery_kwh > 0:
+                return (
+                    plan.forecast_to_battery_kwh,
+                    getattr(plan, 'weather_score', 0.5),
+                    plan.forecast_source,
+                )
+            # Solar is producing but plan says 0 — rare edge case, fall through
+
+        # --- No solar: use next solar day's full-day forecast from cache ---
+        if self.forecast_engine is not None:
+            next_solar_kwh, next_solar_date = self._get_next_solar_day_forecast(state.timestamp)
+            if next_solar_kwh is not None and next_solar_kwh > 0:
+                battery_kwh = self.config.get('battery_capacity_kwh', 27.2)
+                battery_portion = min(next_solar_kwh * 0.85, battery_kwh * 0.95)
+                wx_score = self._get_forecast_wx_score(next_solar_date)
+                logger.info(f"CT next solar day forecast ({next_solar_date}): "
+                            f"{next_solar_kwh:.1f}kWh total, "
+                            f"{battery_portion:.1f}kWh to battery, wx={wx_score:.2f}")
+                return (battery_portion, wx_score, 'forecast_tomorrow')
+
+        # --- Fallback: morning plan (may return 0) ---
+        plan = self._get_morning_plan(state.soc_percent, state.timestamp)
+        if plan is not None:
+            return (
+                plan.forecast_to_battery_kwh,
+                getattr(plan, 'weather_score', 0.5),
+                plan.forecast_source,
+            )
+
+        # Fallback: learned profile
+        peak_start = self.rates.next_peak_start(state.timestamp)
+        if peak_start and hasattr(self.profile, 'solar'):
+            remaining = self.profile.solar.forecast_remaining_kwh(
+                state.timestamp, peak_start.hour
+            )
+            return (remaining, 0.5, 'learned_profile')
+
+        return (0.0, 0.5, 'none')
+
+    def _get_next_solar_day_forecast(self, timestamp: datetime) -> tuple:
+        """Get the total solar forecast for the next solar day.
+
+        Tries today's date first in the cache. If today has no forecast or
+        today's solar is already fully accounted for (morning plan returned 0
+        during production), tries tomorrow. This handles both:
+          - After midnight before sunrise: today's forecast is what we need
+          - After sunset before midnight: tomorrow's forecast is what we need
+        Without any clock-time checks — just cache availability.
+
+        Returns (total_kwh, date_string) or (None, None) if not cached.
+        """
+        if self.forecast_engine is None:
+            return (None, None)
+        try:
+            cache = getattr(self.forecast_engine, '_cache', None)
+            if not cache or not isinstance(cache, dict):
+                return (None, None)
+
+            today = timestamp.strftime('%Y-%m-%d')
+            tomorrow = (timestamp + timedelta(days=1)).strftime('%Y-%m-%d')
+
+            # Try today first — covers the after-midnight case
+            if today in cache:
+                entry = cache[today]
+                total = entry.total_kwh if hasattr(entry, 'total_kwh') else None
+                if total is not None and total > 0:
+                    # Check if today's solar has meaningful production remaining.
+                    # Sum hourly watt_hours from current hour onward.
+                    remaining_wh = 0
+                    current_hour = timestamp.hour
+                    hourly = getattr(entry, 'hourly', None)
+                    if hourly:
+                        for h in hourly:
+                            h_hour = h.hour if hasattr(h, 'hour') else h.get('hour', 0)
+                            h_wh = h.watt_hours if hasattr(h, 'watt_hours') else h.get('watt_hours', 0)
+                            if h_hour >= current_hour:
+                                remaining_wh += h_wh
+                    remaining_kwh = remaining_wh / 1000.0
+                    if remaining_kwh > 1.0:
+                        return (total, today)
+
+            # Today exhausted or not available — try tomorrow
+            if tomorrow in cache:
+                entry = cache[tomorrow]
+                total = entry.total_kwh if hasattr(entry, 'total_kwh') else None
+                if total is not None and total > 0:
+                    return (total, tomorrow)
+
+        except Exception as e:
+            logger.debug(f"Next solar day forecast lookup failed: {e}")
+        return (None, None)
+
+    def _get_forecast_wx_score(self, date_str: str) -> float:
+        """Get weather score for a specific cached forecast date.
+
+        Returns a value between 0.0 and 1.0. Defaults to 0.75 if unavailable.
+        """
+        if self.forecast_engine is None:
+            return 0.75
+        try:
+            cache = getattr(self.forecast_engine, '_cache', None)
+            if cache and isinstance(cache, dict) and date_str in cache:
+                entry = cache[date_str]
+                ws = getattr(entry, 'weather_score', None)
+                if ws is not None and isinstance(ws, (int, float)):
+                    return max(0.0, min(1.0, ws))
+                cf = getattr(entry, 'calibration_factor', None)
+                if cf is not None and isinstance(cf, (int, float)):
+                    return max(0.0, min(1.0, cf))
+                if isinstance(entry, dict):
+                    ws = entry.get('weather_score')
+                    if ws is not None and isinstance(ws, (int, float)):
+                        return max(0.0, min(1.0, ws))
+                    cf = entry.get('calibration_factor')
+                    if cf is not None and isinstance(cf, (int, float)):
+                        return max(0.0, min(1.0, cf))
+        except Exception:
+            pass
+        return 0.75
+
+    def _compute_intraday_solar_factor(self, state: SystemState) -> float:
+        """Compute correction factor: actual solar vs forecast for current hour.
+
+        Compares recent actual solar production (from system_readings) to
+        the forecast cache value for the current hour. Returns a multiplier
+        to apply to future forecast hours in the SC projection.
+
+        Uses the higher of: current instantaneous reading, or the average
+        of recent readings from the current and previous hour. This smooths
+        out momentary cloud dips without losing responsiveness.
+
+        Returns 1.0 (no correction) when:
+          - No forecast cache available
+          - Forecast shows zero for current hour (avoid divide-by-zero)
+          - Solar isn't meaningfully producing
+          - Factor would be < 1.0 (forecast already optimistic enough)
+
+        The factor is capped at 3.0 to prevent runaway projections from
+        a single anomalous reading.
+        """
+        if state.solar_kw < 0.3:
+            return 1.0
+
+        # Get forecast value for current hour
+        forecast_kw = None
+        if self.forecast_engine is not None:
+            try:
+                today = state.timestamp.strftime('%Y-%m-%d')
+                cache = getattr(self.forecast_engine, '_cache', None)
+                if cache and today in cache:
+                    entry = cache[today]
+                    hourly = getattr(entry, 'hourly', None)
+                    if hourly:
+                        current_hour = state.timestamp.hour
+                        for h in hourly:
+                            h_hour = h.hour if hasattr(h, 'hour') else h.get('hour', 0)
+                            if h_hour == current_hour:
+                                h_watts = h.watts if hasattr(h, 'watts') else h.get('watts', 0)
+                                forecast_kw = h_watts / 1000.0
+                                break
+            except Exception:
+                pass
+
+        if forecast_kw is None or forecast_kw < 0.2:
+            return 1.0
+
+        # Get smoothed actual solar from recent system_readings
+        # Use DB average over last 2 hours for stability
+        avg_actual_kw = state.solar_kw  # fallback: instantaneous
+        try:
+            import sqlite3
+            db_path = os.path.join(os.getenv('DATA_DIR', '/app/data'), 'franklin.db')
+            conn = sqlite3.connect(db_path, timeout=5)
+            cutoff = (state.timestamp - timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+            row = conn.execute(
+                "SELECT AVG(solar_kw) FROM system_readings "
+                "WHERE timestamp >= ? AND solar_kw > 0.1",
+                (cutoff,)
+            ).fetchone()
+            conn.close()
+            if row and row[0] and row[0] > 0.3:
+                avg_actual_kw = max(row[0], state.solar_kw)
         except Exception:
             pass
 
-        usable_kwh = battery_kwh * (1.0 - backup_reserve / 100.0)
-        headroom_needed_kwh = max(0.0, tomorrow_solar_kwh - (usable_kwh - peak_need_kwh))
-        target_soc = 100.0 - (headroom_needed_kwh / battery_kwh * 100.0)
+        factor = avg_actual_kw / forecast_kw
 
-        # Lock in target once set — prevents moving target across cycles
-        if self._overnight_drain_target is None:
-            self._overnight_drain_target = round(max(target_soc, backup_reserve + peak_need_pct), 1)
+        # Only correct upward — if forecast is already optimistic, don't reduce
+        if factor < 1.0:
+            return 1.0
+
+        # Cap at 3.0 to prevent runaway from anomalous readings
+        factor = min(factor, 3.0)
+
+        if factor > 1.15:
             logger.info(
-                f"Overnight drain target set: {self._overnight_drain_target:.0f}% "
-                f"(peak_need={peak_need_kwh:.1f}kWh, "
-                f"tomorrow_solar={tomorrow_solar_kwh:.1f}kWh, "
-                f"headroom_needed={headroom_needed_kwh:.1f}kWh)"
+                f"Intraday solar correction: actual={avg_actual_kw:.1f}kW vs "
+                f"forecast={forecast_kw:.1f}kW → factor={factor:.2f}"
             )
 
-        target_soc = self._overnight_drain_target
+        return round(factor, 3)
 
-        # Reset target at start of each new solar day (before OVERNIGHT_DRAIN_MIN_HOUR)
-        # This happens naturally since solar_done=False early in the day resets nothing —
-        # target resets when engine restarts or when we detect a new day. New day detection:
-        # if solar is now producing again (daytime), clear the locked target.
-        if state.solar_kw > 1.0:
-            self._overnight_drain_target = None
-            self._low_solar_cycles = 0
-            return None
+    def _project_soc_in_sc(self, state: SystemState, hours_to_peak: float,
+                            battery_kwh: float) -> float:
+        """Project SOC at peak start if we switch to SC now.
 
-        # --- Step 3: Already at or below target? ---
-        if state.soc_percent <= target_soc + 1.0:
-            return None
+        In SC mode, the battery charges from solar surplus (solar - home load)
+        when solar exceeds load, and discharges when load exceeds solar.
 
-        # --- Step 4: Last-responsible-moment ---
-        # Resolve hours to next peak — works for weekdays and weekends
-        hours_to_next_peak = state.hours_to_peak
-        if hours_to_next_peak is None:
-            next_peak = self.rates.next_peak_start(state.timestamp)
-            if next_peak is not None:
-                delta = (next_peak - state.timestamp).total_seconds() / 3600.0
-                hours_to_next_peak = max(0.0, delta)
+        Walks forward from now to peak start in 1-hour steps using:
+          - Hourly solar forecast from the forecast engine cache
+          - Intraday correction factor (actual vs forecast for current hour)
+          - Hourly load profile from DB history
+          - Current SOC as starting point
 
-        if hours_to_next_peak is not None:
-            drain_pct = max(0, state.soc_percent - target_soc)
-            drain_kwh = drain_pct / 100.0 * battery_kwh
-            hours_needed = drain_kwh / max(avg_load_kw, 0.5)
-            if hours_to_next_peak > hours_needed + 0.5:
-                return None  # Too early — wait, let forecast evolve
+        The intraday correction is the key anti-flapping mechanism: if actual
+        solar is running 2x above forecast (common with the calibration model),
+        the projection uses the corrected values rather than the crushed
+        forecast. This eliminates the marginal pass/fail oscillation that
+        causes TOU↔SC flapping.
 
-        # --- Step 5: Drain ---
-        drain_kwh = (state.soc_percent - target_soc) / 100.0 * battery_kwh
+        Returns projected SOC at peak start. If forecast data isn't available,
+        uses current solar and load as constant estimates (conservative).
+        """
+        current_soc = state.soc_percent
+        now_hour = state.timestamp.hour + state.timestamp.minute / 60.0
+        steps = int(hours_to_peak)
+        if steps < 1:
+            return current_soc
+
+        # Intraday correction: actual solar vs forecast for current hour
+        solar_correction = self._compute_intraday_solar_factor(state)
+
+        # Try to get hourly solar forecast from cache
+        hourly_solar = None
+        if self.forecast_engine is not None:
+            try:
+                today = state.timestamp.strftime('%Y-%m-%d')
+                cache = getattr(self.forecast_engine, '_cache', None)
+                if cache and today in cache:
+                    entry = cache[today]
+                    hourly = getattr(entry, 'hourly', None)
+                    if hourly:
+                        hourly_solar = {}
+                        for h in hourly:
+                            h_hour = h.hour if hasattr(h, 'hour') else h.get('hour', 0)
+                            h_watts = h.watts if hasattr(h, 'watts') else h.get('watts', 0)
+                            hourly_solar[h_hour] = h_watts / 1000.0  # Convert to kW
+            except Exception:
+                pass
+
+        projected_soc = current_soc
+
+        for step in range(min(steps, 12)):  # Cap at 12 hours lookahead
+            hour = int(now_hour + step) % 24
+
+            # Solar for this hour — apply intraday correction to forecast values
+            if hourly_solar and hour in hourly_solar:
+                solar_kw = hourly_solar[hour] * solar_correction
+            else:
+                # Fallback: use current solar, tapering off toward sunset
+                solar_kw = max(0, state.solar_kw * (1.0 - step * 0.15))
+
+            # Cap at array physical maximum (IQ8MC: 16 panels x 330W = 5.28 kW)
+            solar_kw = min(solar_kw, 5.3)
+
+            # Load for this hour
+            load_kw = self._hourly_load_kw[hour]
+
+            # SC surplus: solar - load. Positive = battery charges, negative = battery discharges
+            surplus_kw = solar_kw - load_kw
+            surplus_kwh = surplus_kw * 1.0  # 1 hour step
+            soc_change = surplus_kwh / battery_kwh * 100.0
+
+            projected_soc += soc_change
+            # Clamp to physical limits
+            projected_soc = max(0, min(100, projected_soc))
+
+        return projected_soc
+
+    def _get_solar_ramp_hour(self, timestamp: datetime) -> float:
+        """Get the hour when solar production exceeds average home load.
+
+        Uses SUN_SCHEDULE sunrise + a ramp offset. In March, sunrise is ~7 AM
+        but solar doesn't exceed ~2 kW load until ~10 AM. The offset accounts
+        for panel orientation, shading, and seasonal angle.
+        """
+        sunrise = 7.0
+        try:
+            from solar_forecast import SUN_SCHEDULE
+            sunrise, _ = SUN_SCHEDULE.get(timestamp.month, (7.0, 18.0))
+        except ImportError:
+            pass
+        # Solar ramp to meaningful production: sunrise + 2.5-3h typically
+        return sunrise + 3.0
+
+    def _get_sunset_hour(self, timestamp: datetime) -> float:
+        """Get sunset hour for the current month."""
+        try:
+            from solar_forecast import SUN_SCHEDULE
+            _, sunset = SUN_SCHEDULE.get(timestamp.month, (7.0, 18.0))
+            return sunset
+        except ImportError:
+            return 18.0
+
+    def _evaluate_continuous_target(self, state: SystemState) -> Optional[Decision]:
+        """Continuous target tracking — the unified headroom management method.
+
+        Every cycle, computes where SOC SHOULD be right now to absorb the
+        remaining solar forecast without curtailment, while maintaining enough
+        charge for peak. Compares current SOC to target and picks mode.
+
+        Replaces: Phase 1 surplus drain, Phase 2 rate management, daytime
+        headroom, and overnight drain. One calculation, one comparison,
+        one mode decision.
+
+        Returns None when target tracking doesn't apply (no forecast, export
+        system, or insufficient solar to matter).
+        """
+        battery_kwh = self.config.get(
+            'battery_capacity_kwh',
+            getattr(getattr(self.profile, 'capacity', None),
+                    'total_capacity_kwh', 27.2)
+        )
+        backup_reserve = self.config.get('backup_reserve_pct', 20.0)
+
+        # --- Get forecast solar ---
+        remaining_solar_kwh, wx_score, forecast_source = self._get_remaining_solar_kwh(state)
+
+        if remaining_solar_kwh < CT_MIN_FORECAST_SOLAR_KWH and forecast_source == 'none':
+            return None  # No forecast data at all — fall through to default
+
+        # --- Compute target SOC ---
+        remaining_solar_pct = remaining_solar_kwh / battery_kwh * 100.0
+
+        # Raw target: where SOC should be now to land at entry target after absorbing solar
+        raw_target = CT_PEAK_ENTRY_TARGET - remaining_solar_pct
+
+        # Floor: never drain below reserve + peak need + safety
+        avg_load_kw = sum(self._hourly_load_kw) / 24.0
+        peak_duration = state.peak_duration_hours if state.peak_duration_hours > 0 else 3.0
+        hours_to_peak = self._resolve_hours_to_next_peak(state)
+        peak_need_kwh = avg_load_kw * peak_duration
+        peak_need_pct = peak_need_kwh / battery_kwh * 100.0
+
+        safety_pct = (CT_BASE_SAFETY_PCT
+                      + (CT_MAX_SAFETY_PCT - CT_BASE_SAFETY_PCT) * (1.0 - wx_score))
+        floor_pct = backup_reserve + peak_need_pct + safety_pct
+        hard_min = backup_reserve + peak_need_pct + CT_MIN_FLOOR_ABOVE_RESERVE
+        floor_pct = max(floor_pct, hard_min)
+
+        target_soc = max(raw_target, floor_pct)
+
+        # --- Build metrics ---
         metrics = {
-            'drain_target_soc': target_soc,
-            'current_soc': state.soc_percent,
-            'drain_kwh': round(drain_kwh, 1),
-            'peak_need_kwh': round(peak_need_kwh, 1),
-            'tomorrow_solar_kwh': round(tomorrow_solar_kwh, 1),
-            'headroom_needed_kwh': round(headroom_needed_kwh, 1),
-            'hours_to_next_peak': round(hours_to_next_peak, 1) if hours_to_next_peak is not None else None,
-            'sunset_hour': round(sunset_hour, 1),
+            'ct_target_soc': round(target_soc, 1),
+            'ct_floor_pct': round(floor_pct, 1),
+            'ct_raw_target': round(raw_target, 1),
+            'ct_remaining_solar_kwh': round(remaining_solar_kwh, 1),
+            'ct_remaining_solar_pct': round(remaining_solar_pct, 1),
+            'ct_safety_pct': round(safety_pct, 1),
+            'ct_peak_need_pct': round(peak_need_pct, 1),
+            'ct_wx_score': round(wx_score, 2),
+            'ct_forecast_source': forecast_source,
+            'soc': round(state.soc_percent, 1),
+            'hours_to_peak': round(hours_to_peak, 1) if hours_to_peak is not None else None,
         }
 
-        return self._decide(
-            state, "self_consumption",
-            f"Overnight drain: {state.soc_percent:.0f}% → {target_soc:.0f}% "
-            f"({drain_kwh:.1f} kWh, peak_need={peak_need_kwh:.1f}kWh, "
-            f"tomorrow={tomorrow_solar_kwh:.1f}kWh forecast)",
-            confidence=0.85, priority=8,
-            action="switch_to_self_consumption",
-            metrics=metrics,
+        # --- Check if CT should engage ---
+        # CT stays active when:
+        #   - Tomorrow's forecast is loaded (drain management)
+        #   - Solar is currently producing (fill management)
+        #   - Remaining forecast is significant (> threshold)
+        # CT disengages only when remaining solar is tiny, no solar producing,
+        # and we're not using tomorrow's forecast for drain planning.
+        solar_producing = state.solar_kw > MIN_SOLAR_PRODUCING_KW
+        ct_should_engage = (
+            remaining_solar_kwh >= CT_MIN_FORECAST_SOLAR_KWH
+            or forecast_source == 'forecast_tomorrow'
+            or solar_producing
         )
-
-    def _evaluate_charging_gap(self, state: SystemState) -> Optional[Decision]:
-        """Priority 7: Calculate if we need grid charging to reach target SOC by peak.
-        
-        When the solar forecast engine is available, uses morning_plan() for a
-        weather-aware gap calculation with a dynamic ceiling — only grid charges
-        the amount solar can't provide, leaving headroom for free solar.
-        
-        Fallback: learned profile historical averages (original logic).
-        
-        gap_kwh = target_kwh - current_kwh - forecast_solar_to_battery_kwh
-        If gap > 0 and current rate is the cheapest before peak: charge.
-        If gap ≤ 0: solar will handle it.
-        """
-        if state.hours_to_peak is None:
+        if not ct_should_engage:
             return None
 
-        if state.hours_to_peak <= 0:
-            return None  # Already in peak, handled by Priority 4
+        # --- Compare SOC to target ---
+        soc = state.soc_percent
+        above_target = soc > target_soc + CT_TOLERANCE_PCT
+        below_target = soc < target_soc - CT_TOLERANCE_PCT
+        at_target = not above_target and not below_target
 
-        if state.hours_to_peak > 12:
-            return None  # Too far away to plan
+        now_hour = state.timestamp.hour + state.timestamp.minute / 60.0
+        solar_ramp_hour = self._get_solar_ramp_hour(state.timestamp)
+        sunset_hour = self._get_sunset_hour(state.timestamp)
+        solar_exceeds_load = state.solar_kw > avg_load_kw
 
-        # --- Try forecast-aware morning plan first ---
+        metrics['ct_solar_ramp_hour'] = round(solar_ramp_hour, 1)
+        metrics['ct_sunset_hour'] = round(sunset_hour, 1)
+
+        # =====================================================================
+        # SOC ABOVE TARGET — need to drain
+        # =====================================================================
+        if above_target:
+            drain_pct = soc - target_soc
+            metrics['ct_drain_pct'] = round(drain_pct, 1)
+
+            # Case A: Solar is producing and exceeds home load.
+            # SC is ideal — solar powers home, surplus trickles to battery slowly,
+            # battery may even drain slightly if load > solar.
+            if solar_exceeds_load:
+                return self._decide(
+                    state, "self_consumption",
+                    f"CT: SOC {soc:.0f}% > target {target_soc:.0f}%, "
+                    f"solar {state.solar_kw:.1f}kW > load — SC to throttle fill",
+                    confidence=0.85, priority=7,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
+
+            # Case B: Solar producing but below load — SC drains battery
+            # because home draws difference from battery.
+            if solar_producing and not solar_exceeds_load:
+                return self._decide(
+                    state, "self_consumption",
+                    f"CT: SOC {soc:.0f}% > target {target_soc:.0f}%, "
+                    f"solar {state.solar_kw:.1f}kW < load — SC to drain",
+                    confidence=0.85, priority=7,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
+
+            # Case C: No solar (evening/overnight/pre-dawn).
+            # SOC is above target — drain via SC. The home runs off battery,
+            # SOC drops toward target. This is the continuous approach: if
+            # SOC is above where it should be, act now. The target already
+            # incorporates the floor (reserve + peak need + safety), so
+            # draining to target is always safe.
+            #
+            # The cost is small: off-peak grid rate × kWh drained (~$0.34
+            # for 10% SOC). The alternative — waiting and then curtailing
+            # solar tomorrow — costs 3-7x more. Starting during high-load
+            # evening hours is also more efficient (3.5 kW vs 1.0 kW overnight),
+            # so acting now rather than deferring gets the drain done faster.
+            return self._decide(
+                state, "self_consumption",
+                f"CT: SOC {soc:.0f}% > target {target_soc:.0f}%, "
+                f"no solar — SC to drain "
+                f"({drain_pct:.0f}% = {drain_pct/100*battery_kwh:.1f}kWh)",
+                confidence=0.85, priority=7,
+                action="switch_to_self_consumption", metrics=metrics,
+            )
+
+        # =====================================================================
+        # SOC BELOW TARGET — need to charge
+        # =====================================================================
+        if below_target:
+            deficit_pct = target_soc - soc
+            metrics['ct_deficit_pct'] = round(deficit_pct, 1)
+
+            # Below target = charge. The question is TOU vs SC.
+            #
+            # TOU: grid powers home, ALL solar goes to battery. Aggressive charge.
+            # SC:  solar powers home first, only surplus charges battery. Gentle.
+            #
+            # Last-responsible-moment approach:
+            #   1. Stay in TOU until solar actually exceeds home load RIGHT NOW.
+            #      No projections, no forecasts — observe reality. This prevents
+            #      premature SC switches during the morning ramp when solar is
+            #      0.1-0.3 kW and would just drain the battery in SC mode.
+            #
+            #   2. Once solar > load (observed, not forecast), SC is net-positive
+            #      for the battery. Run the projection to confirm SC can reach
+            #      the survival floor by peak. If yes, commit to SC.
+            #
+            #   3. If solar > load but projection says SC can't make it to the
+            #      floor, stay in TOU — we need the aggressive charge rate.
+            #
+            # This eliminates the entire class of morning flapping: the engine
+            # never considers SC until solar is genuinely productive, and once
+            # it commits, the projection uses intraday-corrected values that
+            # reflect reality rather than the crushed forecast.
+
+            if (state.solar_kw > state.home_load_kw
+                    and hours_to_peak is not None
+                    and hours_to_peak > 0
+                    and state.current_mode != 'emergency_backup'):
+
+                # When peak is far away (>24h, e.g., weekend), projecting to
+                # peak is meaningless — 12 hours of overnight drain makes SC
+                # always look bad. Instead, project to end of today's solar.
+                # The question becomes: "will SC keep SOC healthy through
+                # today's remaining sun?" not "can SC get me to Monday peak?"
+                #
+                # When peak is today/tomorrow (<24h), project to peak as before.
+                if hours_to_peak > 24:
+                    hours_to_sunset = max(0, sunset_hour - now_hour)
+                    projection_hours = max(1, hours_to_sunset)
+                    # On no-peak days, survival floor is just the CT floor —
+                    # we don't need peak_need margin, just enough to not drain
+                    # below reserve overnight.
+                    survival_floor = floor_pct
+                else:
+                    projection_hours = hours_to_peak
+                    survival_floor = backup_reserve + peak_need_pct + CT_PEAK_SURVIVAL_MARGIN_PCT
+
+                sc_projected_soc = self._project_soc_in_sc(
+                    state, projection_hours, battery_kwh
+                )
+
+                # Log the intraday correction factor for diagnostics
+                solar_correction = self._compute_intraday_solar_factor(state)
+                metrics['ct_sc_projected_soc'] = round(sc_projected_soc, 1)
+                metrics['ct_survival_floor'] = round(survival_floor, 1)
+                metrics['ct_solar_correction'] = round(solar_correction, 2)
+                metrics['ct_projection_hours'] = round(projection_hours, 1)
+
+                horizon = 'sunset' if hours_to_peak > 24 else 'peak'
+
+                if sc_projected_soc >= survival_floor:
+                    return self._decide(
+                        state, "self_consumption",
+                        f"CT: SOC {soc:.0f}% < target {target_soc:.0f}%, "
+                        f"solar {state.solar_kw:.1f}kW > load {state.home_load_kw:.1f}kW, "
+                        f"SC projects to {sc_projected_soc:.0f}% by {horizon} "
+                        f"(need {survival_floor:.0f}%) — SC commit",
+                        confidence=0.85, priority=7,
+                        action="switch_to_self_consumption", metrics=metrics,
+                    )
+                else:
+                    metrics['ct_sc_rejected'] = True
+                    return self._decide(
+                        state, "time_of_use",
+                        f"CT: SOC {soc:.0f}% < target {target_soc:.0f}%, "
+                        f"solar > load but SC projects only {sc_projected_soc:.0f}% by {horizon} "
+                        f"(need {survival_floor:.0f}%) — TOU for full charge",
+                        confidence=0.8, priority=7,
+                        action="switch_to_tou", metrics=metrics,
+                    )
+
+            # Already in SC during solar hours with SOC rising — hold SC.
+            #
+            # When the system committed to SC earlier and SOC has been climbing,
+            # a momentary dip in solar (cloud, HVAC spike) doesn't warrant
+            # switching to TOU. The risk of staying in SC is tiny (lose ~1% SOC
+            # per 30 min if solar < load) while the risk of switching to TOU is
+            # pushing SOC toward 99% faster than needed, especially on no-peak days.
+            #
+            # Only break SC if: solar has genuinely ended (near sunset), SOC is
+            # dropping toward the floor, or solar has been gone for a sustained period.
+            if (state.current_mode == 'self_consumption'
+                    and solar_producing
+                    and now_hour < sunset_hour - 0.5):
+                # Check if SOC has been rising — compare to reading from ~1 hour ago
+                soc_was_rising = False
+                try:
+                    import sqlite3
+                    db_path = os.path.join(os.getenv('DATA_DIR', '/app/data'), 'franklin.db')
+                    conn = sqlite3.connect(db_path, timeout=5)
+                    cutoff = (state.timestamp - timedelta(minutes=90)).strftime('%Y-%m-%d %H:%M:%S')
+                    row = conn.execute(
+                        "SELECT MIN(soc_pct) FROM system_readings "
+                        "WHERE timestamp >= ? AND soc_pct IS NOT NULL",
+                        (cutoff,)
+                    ).fetchone()
+                    conn.close()
+                    if row and row[0] is not None:
+                        soc_was_rising = (soc > row[0])
+                except Exception:
+                    pass
+
+                if soc_was_rising and soc > floor_pct:
+                    return self._decide(
+                        state, "self_consumption",
+                        f"CT: SOC {soc:.0f}% < target {target_soc:.0f}%, "
+                        f"solar {state.solar_kw:.1f}kW ≤ load {state.home_load_kw:.1f}kW "
+                        f"but SC committed, SOC rising — hold SC",
+                        confidence=0.8, priority=7,
+                        action="hold", metrics=metrics,
+                    )
+
+            return self._decide(
+                state, "time_of_use",
+                f"CT: SOC {soc:.0f}% < target {target_soc:.0f}%, "
+                f"solar {state.solar_kw:.1f}kW ≤ load {state.home_load_kw:.1f}kW — TOU",
+                confidence=0.8, priority=7,
+                action="switch_to_tou", metrics=metrics,
+            )
+
+        # =====================================================================
+        # SOC AT TARGET — hold (dead band)
+        # =====================================================================
+        if at_target:
+            # If near peak and SOC covers peak need, ride SC into peak
+            if (hours_to_peak is not None and hours_to_peak <= 3.0
+                    and soc >= backup_reserve + peak_need_pct):
+                return self._decide(
+                    state, "self_consumption",
+                    f"CT: SOC {soc:.0f}% ≈ target {target_soc:.0f}%, "
+                    f"{hours_to_peak:.1f}h to peak — riding SC into peak",
+                    confidence=0.85, priority=7,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
+
+            # Otherwise hold current mode
+            hold_mode = state.current_mode if state.current_mode in (
+                'time_of_use', 'self_consumption') else 'time_of_use'
+            return self._decide(
+                state, hold_mode,
+                f"CT: SOC {soc:.0f}% ≈ target {target_soc:.0f}% "
+                f"(±{CT_TOLERANCE_PCT:.0f}%) — hold {hold_mode}",
+                confidence=0.8, priority=7,
+                action="hold", metrics=metrics,
+            )
+
+        return None  # Should not reach here
+
+    # ===================================================================
+    # EB Gap Charging
+    # ===================================================================
+
+    def _resolve_hours_to_next_peak(self, state: SystemState) -> Optional[float]:
+        """Resolve hours until the next peak period, even on weekends/holidays.
+
+        state.hours_to_peak may be None on non-peak days (weekends, holidays).
+        This helper falls through to next_peak_start() to find the actual next
+        peak, which might be Monday or the next weekday. Returns None only if
+        TOU is completely disabled.
+        """
+        if state.hours_to_peak is not None and state.hours_to_peak > 0:
+            return state.hours_to_peak
+
+        if state.is_peak:
+            return 0.0
+
+        next_peak = self.rates.next_peak_start(state.timestamp)
+        if next_peak is not None:
+            delta = (next_peak - state.timestamp).total_seconds() / 3600.0
+            return max(0.0, delta)
+
+        return None
+
+    def _evaluate_eb_gap(self, state: SystemState) -> Optional[Decision]:
+        """EB gap charging — grid charges only what solar can't provide.
+
+        Only relevant within 12 hours of peak. Uses last-responsible-moment
+        deferral to avoid premature grid charging. EB is aggressive (~8kW)
+        and charges fast, so there's never a reason to start hours early.
+
+        Falls through to legacy gap logic when forecast engine is unavailable.
+        """
+        if state.is_peak:
+            return None
+
+        hours_to_peak = self._resolve_hours_to_next_peak(state)
+        if hours_to_peak is None or hours_to_peak <= 0:
+            return None
+        if hours_to_peak > 12:
+            return None
+
         plan = self._get_morning_plan(state.soc_percent, state.timestamp)
         if plan is not None:
-            return self._evaluate_gap_with_plan(state, plan)
+            return self._evaluate_gap_with_plan(state, plan, hours_to_peak)
 
-        # --- Fallback: original learned-profile logic ---
         return self._evaluate_gap_legacy(state)
 
-    def _evaluate_gap_with_plan(self, state: SystemState, plan: 'MorningPlan') -> Optional[Decision]:
-        """P7 with forecast engine — uses morning_plan ceiling for smarter charging.
-        
+    def _evaluate_gap_with_plan(self, state: SystemState, plan: 'MorningPlan',
+                                 hours_to_peak: float) -> Optional[Decision]:
+        """P7 EB gap charging with forecast — grid charges only what solar can't provide.
+
         EB deferral philosophy: Emergency Backup is aggressive (~8kW grid charging).
         It charges fast — a typical gap takes under an hour. There is never a reason
         to trigger EB hours before peak. The engine recalculates every 30-minute cycle,
@@ -973,18 +1439,12 @@ class AdaptiveEngine:
         gap_kwh = plan.gap_kwh
         ceiling_pct = plan.morning_ceiling_pct
 
-        # --- Taper ceiling cap ---
-        # On non-export systems, battery charge rate tapers above a SOC knee,
-        # wasting solar that can't be absorbed. Cap the grid charging ceiling
-        # so EB doesn't push into the taper zone — let solar fill the rest
-        # during peak production hours when panels are strongest.
         taper_cap = TAPER_CEILING_PCT
         if not self.solar_export and ceiling_pct > taper_cap:
             logger.debug(
                 f"Taper ceiling cap: {ceiling_pct:.0f}% → {taper_cap:.0f}%"
             )
             ceiling_pct = taper_cap
-            # Recompute gap relative to capped ceiling
             battery_kwh = self.config.get(
                 'battery_capacity_kwh',
                 getattr(getattr(self.profile, 'capacity', None),
@@ -1004,26 +1464,10 @@ class AdaptiveEngine:
             'taper_ceiling_pct': round(taper_cap, 1),
             'forecast_source': plan.forecast_source,
             'weather_score': plan.weather_score,
-            'hours_to_peak': round(state.hours_to_peak, 1),
+            'hours_to_peak': round(hours_to_peak, 1),
         }
 
-        # Solar surplus — skip grid charging entirely
         if gap_kwh <= 0:
-            # If SOC is already above taper ceiling and solar is producing,
-            # use SC so home draws from battery+solar instead of grid.
-            # Prevents curtailment on non-export systems where solar has
-            # pushed SOC past the ceiling on its own.
-            if (not self.solar_export
-                    and state.soc_percent >= TAPER_CEILING_PCT
-                    and state.solar_kw >= MIN_SOLAR_PRODUCING_KW):
-                return self._decide(
-                    state, "self_consumption",
-                    f"Solar surplus but SOC {state.soc_percent:.0f}% >= taper ceiling "
-                    f"{TAPER_CEILING_PCT:.0f}% — SC to prevent curtailment. "
-                    f"{plan.recommendation}",
-                    confidence=0.85, priority=7,
-                    action="switch_to_self_consumption", metrics=metrics,
-                )
             return self._decide(
                 state, "time_of_use",
                 f"Solar surplus: {plan.recommendation}",
@@ -1031,74 +1475,42 @@ class AdaptiveEngine:
                 priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Tiny gap — not worth a mode switch
         if gap_kwh < 1.0:
-            # Same ceiling check — if above taper ceiling with solar, use SC
-            if (not self.solar_export
-                    and state.soc_percent >= TAPER_CEILING_PCT
-                    and state.solar_kw >= MIN_SOLAR_PRODUCING_KW):
-                return self._decide(
-                    state, "self_consumption",
-                    f"Tiny gap ({gap_kwh:.1f} kWh) but SOC {state.soc_percent:.0f}% >= "
-                    f"taper ceiling {TAPER_CEILING_PCT:.0f}% — SC to prevent curtailment",
-                    confidence=0.8, priority=7,
-                    action="switch_to_self_consumption", metrics=metrics,
-                )
             return self._decide(
                 state, "time_of_use",
                 f"Tiny gap ({gap_kwh:.1f} kWh) — solar/natural will cover. {plan.recommendation}",
                 confidence=0.8, priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Small gap with active solar and plenty of time
-        if gap_kwh < 2.0 and state.solar_kw > 0.3 and state.hours_to_peak > 4:
-            # Same ceiling check
-            if state.soc_percent >= TAPER_CEILING_PCT and not self.solar_export:
-                return self._decide(
-                    state, "self_consumption",
-                    f"Small gap ({gap_kwh:.1f} kWh) but SOC {state.soc_percent:.0f}% >= "
-                    f"taper ceiling {TAPER_CEILING_PCT:.0f}% — SC to prevent curtailment",
-                    confidence=0.8, priority=7,
-                    action="switch_to_self_consumption", metrics=metrics,
-                )
+        if gap_kwh < 2.0 and state.solar_kw > 0.3 and hours_to_peak > 4:
             return self._decide(
                 state, "time_of_use",
                 f"Small gap ({gap_kwh:.1f} kWh) with solar producing ({state.solar_kw:.1f} kW) "
-                f"and {state.hours_to_peak:.1f}h to peak — letting solar handle it",
+                f"and {hours_to_peak:.1f}h to peak — letting solar handle it",
                 confidence=0.75, priority=7, action="switch_to_tou", metrics=metrics,
             )
 
-        # Already at or above the forecast ceiling — solar takes it from here
         if state.soc_percent >= ceiling_pct:
             return self._decide(
-                state, "self_consumption",
+                state, "time_of_use",
                 f"SOC {state.soc_percent:.0f}% ≥ forecast ceiling {ceiling_pct:.0f}% — "
                 f"solar fills the rest. {plan.recommendation}",
-                confidence=0.85, priority=7, action="switch_to_self_consumption",
+                confidence=0.85, priority=7, action="switch_to_tou",
                 metrics=metrics,
             )
 
-        # Need to grid charge — but only to the ceiling, not target_soc
-        # Is now the cheapest time?
         cheapest_tier, cheapest_rate = self.rates.cheapest_rate_before_peak(state.timestamp)
         if state.current_rate_cents <= cheapest_rate:
             charge_time_hours = self.profile.time_to_charge_kwh(
                 state.soc_percent, ceiling_pct
             ) if hasattr(self.profile, 'time_to_charge_kwh') else gap_kwh / 5.0
 
-            # --- Pre-peak one-way gate (v4.0.6) ---
-            # Once within PRE_PEAK_GATE_HOURS of peak, if the engine is NOT
-            # already in EB, don't start a new EB burst. The reasoning:
-            # if the gap calc was satisfied at the previous cycle and moved
-            # to TOU/SC, a partial EB burst in the last 30 min adds minimal
-            # SOC and isn't worth the mode switch and grid cost.
-            # Exception: if already in EB from prior cycle, let it finish.
-            if state.hours_to_peak <= PRE_PEAK_GATE_HOURS:
+            if hours_to_peak <= PRE_PEAK_GATE_HOURS:
                 if state.current_mode != 'emergency_backup':
                     metrics['pre_peak_gate'] = True
                     return self._decide(
                         state, state.current_mode,
-                        f"Pre-peak gate: {state.hours_to_peak:.1f}h to peak, "
+                        f"Pre-peak gate: {hours_to_peak:.1f}h to peak, "
                         f"SOC {state.soc_percent:.0f}%, not in EB — "
                         f"holding {state.current_mode} (gap {gap_kwh:.1f} kWh "
                         f"not worth late EB switch)",
@@ -1106,7 +1518,6 @@ class AdaptiveEngine:
                         metrics=metrics,
                     )
                 else:
-                    # Already in EB — let it keep charging to ceiling
                     if state.soc_percent >= ceiling_pct:
                         return self._decide(
                             state, "self_consumption",
@@ -1116,28 +1527,15 @@ class AdaptiveEngine:
                             action="switch_to_self_consumption",
                             metrics=metrics,
                         )
-                    # else: fall through to normal EB logic below
 
-            # --- EB time deferral (v4.0.5) ---
-            # EB charges fast (~5.5 kW). Only trigger when we genuinely need
-            # to start now to finish before peak. The engine recalculates
-            # every 30-min cycle, so deferring is always safe.
-            #
-            # Simple rule: don't start EB until charge_time + small safety
-            # margin >= hours_to_peak. The margin gives one extra cycle for
-            # the engine to react if something changes.
-            safety_margin_hours = 0.5  # 30 min — one engine cycle
-            buffer_hours = state.hours_to_peak - charge_time_hours
+            safety_margin_hours = 0.5
+            buffer_hours = hours_to_peak - charge_time_hours
 
-            # Add timing metrics for log visibility
             metrics['charge_time_hours'] = round(charge_time_hours, 2)
             metrics['buffer_hours'] = round(buffer_hours, 1)
             metrics['min_buffer_hours'] = round(safety_margin_hours, 1)
 
-            # Plenty of time — defer EB, stay in TOU.
             if buffer_hours > safety_margin_hours + 1.0:
-                # More than 1.5h of slack — no rush at all.
-                # Solar and TOU drift may shrink the gap for free.
                 return self._decide(
                     state, "time_of_use",
                     f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
@@ -1147,19 +1545,10 @@ class AdaptiveEngine:
                     metrics=metrics,
                 )
 
-            # Buffer is getting tight but solar is actively producing —
-            # give solar a chance to close the gap before resorting to EB.
-            # Only defer if remaining solar is meaningful vs the gap (≥15%).
-            # On low-solar days, switching to self_consumption just drains
-            # the battery to power house load — staying in TOU is better
-            # since the grid covers the house while we wait.
             solar_contribution_pct = (plan.forecast_remaining_kwh / gap_kwh * 100) if gap_kwh > 0 else 0
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
                     and buffer_hours > safety_margin_hours
                     and solar_contribution_pct >= 15):
-                # Stay in current mode — if already TOU, keep letting solar charge
-                # the battery at full rate. Only switch to SC if already there.
-                # Either way this is "hold" — don't start EB, let solar fill.
                 hold_mode = state.current_mode if state.current_mode in ('time_of_use', 'self_consumption') else 'time_of_use'
                 hold_action = 'hold' if state.current_mode == hold_mode else 'switch_to_tou'
                 return self._decide(
@@ -1172,8 +1561,6 @@ class AdaptiveEngine:
                     metrics=metrics,
                 )
 
-            # Solar producing but contribution too small to justify
-            # self_consumption — stay in TOU so grid covers house load.
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
                     and buffer_hours > safety_margin_hours
                     and solar_contribution_pct < 15):
@@ -1186,8 +1573,7 @@ class AdaptiveEngine:
                     metrics=metrics,
                 )
 
-            # Time to charge — buffer is tight, need to act now
-            if charge_time_hours <= state.hours_to_peak:
+            if charge_time_hours <= hours_to_peak:
                 return self._decide(
                     state, "emergency_backup",
                     f"Forecast gap: {gap_kwh:.1f} kWh → charge to {ceiling_pct:.0f}% "
@@ -1199,7 +1585,7 @@ class AdaptiveEngine:
             else:
                 return self._decide(
                     state, "emergency_backup",
-                    f"Forecast gap: {gap_kwh:.1f} kWh, only {state.hours_to_peak:.1f}h to peak "
+                    f"Forecast gap: {gap_kwh:.1f} kWh, only {hours_to_peak:.1f}h to peak "
                     f"(need {charge_time_hours:.1f}h) — charging urgently to {ceiling_pct:.0f}%",
                     confidence=0.95, priority=7, action="switch_to_backup",
                     metrics=metrics,
@@ -1215,22 +1601,19 @@ class AdaptiveEngine:
 
     def _evaluate_gap_legacy(self, state: SystemState) -> Optional[Decision]:
         """P7 fallback — original learned-profile-based gap logic (no forecast engine).
-        
+
         Same EB deferral philosophy as _evaluate_gap_with_plan — never rush to EB
         when there's plenty of time. The engine recalculates every cycle.
         """
-
         cap = self.profile.capacity
         current_kwh = cap.kwh_at_soc(state.soc_percent)
         target_soc = self.target_soc
 
-        # Taper ceiling cap (non-export systems)
         if not self.solar_export and target_soc > TAPER_CEILING_PCT:
             target_soc = TAPER_CEILING_PCT
 
         target_kwh = cap.kwh_at_soc(target_soc)
 
-        # Expected consumption between now and peak
         peak_start = self.rates.next_peak_start(state.timestamp)
         if peak_start is None:
             return None
@@ -1238,17 +1621,10 @@ class AdaptiveEngine:
             state.timestamp, peak_start
         )
 
-        # Forecast solar contribution (already accounts for house array only)
         forecast_solar_kwh = state.forecast_solar_kwh
-
-        # Solar that actually charges battery = solar - consumption (when positive)
-        # Simplified: assume surplus solar goes to battery
         net_solar_to_battery = max(0, forecast_solar_kwh - expected_consumption_kwh)
-
-        # Gap calculation
         gap_kwh = target_kwh - current_kwh - net_solar_to_battery
 
-        # Time needed to charge the gap
         if gap_kwh > 0:
             charge_time_hours = self.profile.time_to_charge_kwh(
                 state.soc_percent, target_soc
@@ -1273,20 +1649,15 @@ class AdaptiveEngine:
                 f"No charging gap — solar forecast ({forecast_solar_kwh:.1f} kWh) covers "
                 f"the {target_kwh - current_kwh:.1f} kWh needed",
                 confidence=0.8, priority=7,
-                action="switch_to_tou",
-                metrics=metrics,
+                action="switch_to_tou", metrics=metrics,
             )
 
-        # Small gap guard: if gap is tiny and conditions are favorable, let solar handle it
-        # - Gap < 2 kWh AND solar currently producing AND plenty of time to peak
-        # - OR gap < 1 kWh regardless (not worth a mode switch for ~5 min of grid charging)
         if gap_kwh < 1.0:
             return self._decide(
                 state, "time_of_use",
-                f"Tiny charging gap ({gap_kwh:.1f} kWh) — not worth grid charging, solar/natural will cover",
+                f"Tiny charging gap ({gap_kwh:.1f} kWh) — not worth grid charging",
                 confidence=0.8, priority=7,
-                action="switch_to_tou",
-                metrics=metrics,
+                action="switch_to_tou", metrics=metrics,
             )
         if gap_kwh < 2.0 and state.solar_kw > 0.3 and state.hours_to_peak > 4:
             return self._decide(
@@ -1294,14 +1665,11 @@ class AdaptiveEngine:
                 f"Small gap ({gap_kwh:.1f} kWh) with solar producing ({state.solar_kw:.1f} kW) "
                 f"and {state.hours_to_peak:.1f}h to peak — letting solar handle it",
                 confidence=0.75, priority=7,
-                action="switch_to_tou",
-                metrics=metrics,
+                action="switch_to_tou", metrics=metrics,
             )
 
-        # Is now the cheapest time to charge before peak?
         cheapest_tier, cheapest_rate = self.rates.cheapest_rate_before_peak(state.timestamp)
         if state.current_rate_cents <= cheapest_rate:
-            # --- Pre-peak one-way gate (v4.0.6) ---
             if state.hours_to_peak <= PRE_PEAK_GATE_HOURS:
                 if state.current_mode != 'emergency_backup':
                     metrics['pre_peak_gate'] = True
@@ -1309,84 +1677,61 @@ class AdaptiveEngine:
                         state, state.current_mode,
                         f"Pre-peak gate: {state.hours_to_peak:.1f}h to peak, "
                         f"SOC {state.soc_percent:.0f}%, not in EB — "
-                        f"holding {state.current_mode} (gap {gap_kwh:.1f} kWh "
-                        f"not worth late EB switch)",
-                        confidence=0.85, priority=7, action="hold",
-                        metrics=metrics,
+                        f"holding {state.current_mode}",
+                        confidence=0.85, priority=7, action="hold", metrics=metrics,
                     )
                 elif state.soc_percent >= target_soc:
                     return self._decide(
                         state, "self_consumption",
-                        f"Pre-peak gate: EB reached target {target_soc:.0f}% "
-                        f"(SOC {state.soc_percent:.0f}%) — switching to SC for peak",
+                        f"Pre-peak gate: EB reached target {target_soc:.0f}% — SC for peak",
                         confidence=0.9, priority=7,
-                        action="switch_to_self_consumption",
-                        metrics=metrics,
+                        action="switch_to_self_consumption", metrics=metrics,
                     )
 
-            # --- EB time deferral (v4.0.5) ---
-            # Same logic as _evaluate_gap_with_plan — don't rush to EB.
             safety_margin_hours = 0.5
             buffer_hours = state.hours_to_peak - charge_time_hours
-
             metrics['buffer_hours'] = round(buffer_hours, 1)
-            metrics['min_buffer_hours'] = round(safety_margin_hours, 1)
 
-            # Plenty of time — defer EB, stay in TOU
             if buffer_hours > safety_margin_hours + 1.0:
                 return self._decide(
                     state, "time_of_use",
                     f"Charging gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
-                    f"but {buffer_hours:.1f}h buffer — "
-                    f"no rush, deferring EB. Reassess next cycle.",
-                    confidence=0.8, priority=7, action="switch_to_tou",
-                    metrics=metrics,
+                    f"but {buffer_hours:.1f}h buffer — deferring EB.",
+                    confidence=0.8, priority=7, action="switch_to_tou", metrics=metrics,
                 )
 
-            # Solar-aware deferral — tighter buffer but solar still helping
             if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
                     and buffer_hours > safety_margin_hours):
                 return self._decide(
                     state, "self_consumption",
-                    f"Charging gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
-                    f"but solar producing ({state.solar_kw:.1f} kW) with "
-                    f"{buffer_hours:.1f}h buffer — deferring to let solar fill",
-                    confidence=0.75, priority=7, action="hold",
-                    metrics=metrics,
+                    f"Charging gap ({gap_kwh:.1f} kWh) but solar producing "
+                    f"({state.solar_kw:.1f} kW) with {buffer_hours:.1f}h buffer — deferring",
+                    confidence=0.75, priority=7, action="hold", metrics=metrics,
                 )
 
-            # Verify we have enough time
             if charge_time_hours <= state.hours_to_peak:
                 return self._decide(
                     state, "emergency_backup",
-                    f"Charging gap: {gap_kwh:.1f} kWh needed, "
-                    f"{charge_time_hours:.1f}h to charge, "
-                    f"{state.hours_to_peak:.1f}h until peak — "
-                    f"buffer tight ({buffer_hours:.1f}h), charging at {state.current_rate_cents}¢/kWh",
+                    f"Charging gap: {gap_kwh:.1f} kWh, buffer tight ({buffer_hours:.1f}h) "
+                    f"— charging at {state.current_rate_cents}¢/kWh",
                     confidence=0.85, priority=7,
-                    action="switch_to_backup",
-                    metrics=metrics,
+                    action="switch_to_backup", metrics=metrics,
                 )
             else:
-                # Not enough time even at max rate — charge urgently
                 return self._decide(
                     state, "emergency_backup",
-                    f"Charging gap: {gap_kwh:.1f} kWh needed but only "
-                    f"{state.hours_to_peak:.1f}h until peak (need {charge_time_hours:.1f}h) — "
-                    f"charging urgently",
+                    f"Charging gap: {gap_kwh:.1f} kWh, only {state.hours_to_peak:.1f}h to peak "
+                    f"(need {charge_time_hours:.1f}h) — charging urgently",
                     confidence=0.95, priority=7,
-                    action="switch_to_backup",
-                    metrics=metrics,
+                    action="switch_to_backup", metrics=metrics,
                 )
         else:
-            # There's a cheaper window coming — wait
             return self._decide(
                 state, "self_consumption",
-                f"Charging gap exists ({gap_kwh:.1f} kWh) but waiting for cheaper rate "
+                f"Charging gap ({gap_kwh:.1f} kWh) but waiting for cheaper rate "
                 f"({cheapest_tier} @ {cheapest_rate}¢ vs current {state.current_rate_cents}¢)",
                 confidence=0.7, priority=7,
-                action="switch_to_self_consumption",
-                metrics=metrics,
+                action="switch_to_self_consumption", metrics=metrics,
             )
 
     def _track_curtailment(self, state: SystemState) -> float:
@@ -1475,10 +1820,7 @@ class AdaptiveEngine:
             'forecast_engine': self.forecast_engine is not None,
             'solar_export': self.solar_export,
             'tou_drift': self.tou_drift.to_dict(),
-            'overnight_drain': {
-                'target_soc': self._overnight_drain_target,
-                'low_solar_cycles': self._low_solar_cycles,
-            },
+            'load_profile_avg_kw': round(sum(self._hourly_load_kw) / 24.0, 2),
         }
         if self._morning_plan:
             status['morning_plan'] = {

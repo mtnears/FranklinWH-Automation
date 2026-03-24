@@ -60,11 +60,12 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 # Import config to check enabled features
 try:
-    from config import config, configure_logging
+    from config import config, configure_logging, VERSION
     CONFIG_LOADED = True
 except ImportError:
     print("Warning: Could not load config, using defaults")
     CONFIG_LOADED = False
+    VERSION = '0.0.0'
 
 
 def log(message: str):
@@ -365,7 +366,7 @@ def _register(name, schedule_str):
 def setup_schedule():
     """Configure all scheduled tasks."""
     log("=" * 60)
-    log("FranklinWH Automation Scheduler v4.0")
+    log("FranklinWH Automation Scheduler v" + VERSION)
     log("=" * 60)
     
     # Get scheduling config
@@ -711,6 +712,8 @@ class APIHandler(BaseHTTPRequestHandler):
             self._get_db_stats()
         elif path == '/api/docker-start':
             self._json_response(200, {'docker_start': DOCKER_START_TIME})
+        elif path == '/api/version':
+            self._json_response(200, {'version': VERSION})
         elif path == '/api/scheduler-tasks':
             self._json_response(200, {'tasks': REGISTERED_TASKS})
         elif path.startswith('/api/scheduler-logs'):
