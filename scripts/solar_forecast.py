@@ -143,7 +143,7 @@ class DayForecast:
             'raw_api_kwh': round(self.raw_api_kwh, 2),
             'source': self.source,
             'calibration_factor': round(self.calibration_factor, 3),
-            'weather_score': round(self.weather_score, 3) if self.weather_score >= 0 else None,
+            'weather_score': round(self.weather_score, 3) if self.weather_score is not None and self.weather_score >= 0 else -1,
             'fetched_at': self.fetched_at,
             'hourly': [{'hour': h.hour, 'watts': round(h.watts, 1),
                         'watt_hours': round(h.watt_hours, 1), 'source': h.source}
@@ -161,7 +161,7 @@ class DayForecast:
             raw_api_kwh=data.get('raw_api_kwh', 0),
             source=data.get('source', 'cached'),
             calibration_factor=data.get('calibration_factor', 1.0),
-            weather_score=data.get('weather_score', -1),
+            weather_score=data.get('weather_score') if data.get('weather_score') is not None else -1,
             fetched_at=data.get('fetched_at'),
         )
 
