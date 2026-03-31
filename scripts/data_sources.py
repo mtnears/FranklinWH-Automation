@@ -420,6 +420,11 @@ class ModbusDataSource(DataSource):
         6: "Self Consumption", 7: "Grid Export", 8: "Grid Charge",
     }
 
+    # Sanity bounds (watts). Values near 0xFFFF (e.g. 65531) pass the
+    # != 0xFFFF check but are clearly erroneous for residential systems.
+    MAX_PLAUSIBLE_SOLAR_W = 25000   # 25 kW
+    MAX_PLAUSIBLE_LOAD_W = 50000    # 50 kW
+
     def __init__(self):
         super().__init__()
         self.name = "Modbus TCP"
@@ -537,20 +542,22 @@ class ModbusDataSource(DataSource):
             if ext and len(ext) >= 10:
                 # Home load (15506) - watts
                 load_val = ext[self.EXT_HOME_LOAD_OFFSET]
-                if load_val != 0xFFFF:
+                load_valid = load_val != 0xFFFF and load_val < self.MAX_PLAUSIBLE_LOAD_W
+                if load_valid:
                     battery_data.home_load_kw = load_val / 1000.0
 
                 # PV/solar from Franklin (15502) - watts
                 # Store as ext_solar for cross-check; Enphase will override in merge
                 pv_val = ext[self.EXT_PV_OFFSET]
-                if pv_val != 0xFFFF:
+                pv_valid = pv_val != 0xFFFF and pv_val < self.MAX_PLAUSIBLE_SOLAR_W
+                if pv_valid:
                     battery_data._ext_solar_kw = pv_val / 1000.0
 
                 # Derive battery power from energy balance:
                 # solar + grid + battery = home_load
                 # battery = home_load - solar - grid
-                if load_val != 0xFFFF:
-                    ext_solar_w = pv_val if pv_val != 0xFFFF else 0
+                if load_valid:
+                    ext_solar_w = pv_val if pv_valid else 0
                     battery_data.battery_power_kw = (load_val - ext_solar_w - (battery_data.grid_power_kw * 1000)) / 1000.0
 
                 # Mode from 15507 - direct hardware state

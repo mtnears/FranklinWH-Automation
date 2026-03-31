@@ -66,6 +66,36 @@ except ImportError:
     print("Warning: franklinwh not available, using CSV data only")
     FRANKLIN_AVAILABLE = False
 
+# Import rate schedule for peak window awareness
+try:
+    from rate_schedule import load_rate_schedule
+    RATE_SCHEDULE_AVAILABLE = True
+except ImportError:
+    RATE_SCHEDULE_AVAILABLE = False
+
+_cached_schedule = None
+_schedule_loaded_at = None
+
+
+def _get_rate_schedule():
+    """Load rate schedule with 5-minute caching."""
+    global _cached_schedule, _schedule_loaded_at
+    now = datetime.now()
+    if (_cached_schedule and _schedule_loaded_at
+            and (now - _schedule_loaded_at).total_seconds() < 300):
+        return _cached_schedule
+    if not RATE_SCHEDULE_AVAILABLE:
+        return None
+    try:
+        json_path = config.DATA_DIR / 'rate_schedule.json'
+        if json_path.exists():
+            _cached_schedule = load_rate_schedule(str(json_path))
+            _schedule_loaded_at = now
+            return _cached_schedule
+    except Exception as e:
+        print(f"Warning: Could not load rate schedule: {e}")
+    return None
+
 
 # =============================================================================
 # Franklin API data collection
@@ -266,35 +296,54 @@ def get_battery_status():
 
 
 def get_peak_countdown():
-    """Calculate time until peak period starts."""
+    """Calculate time until peak period starts, using rate_schedule.json if available."""
     now = datetime.now()
-    
-    # No peak on non-peak days (weekends for E-TOU-D)
+
+    schedule = _get_rate_schedule()
+    if schedule:
+        if schedule.is_peak(now):
+            peak_end = schedule.next_peak_end(now)
+            end_str = peak_end.strftime('%I:%M %p') if peak_end else ''
+            return {
+                'minutes': 0,
+                'time': f'In peak until {end_str}' if end_str else 'In peak'
+            }
+
+        next_peak = schedule.next_peak_start(now)
+        if next_peak is None:
+            return {'minutes': -1, 'time': 'No peak today'}
+
+        delta = next_peak - now
+        minutes = int(delta.total_seconds() / 60)
+        return {
+            'minutes': minutes,
+            'time': next_peak.strftime('%I:%M %p')
+        }
+
+    # Fallback to config.py values if rate_schedule unavailable
     peak_days = getattr(config, 'PEAK_DAYS', 'all')
     if peak_days == 'weekdays' and now.weekday() >= 5:
         return {'minutes': -1, 'time': 'No peak today'}
     elif peak_days == 'weekends' and now.weekday() < 5:
         return {'minutes': -1, 'time': 'No peak today'}
-    
+
     peak_hour = getattr(config, 'PEAK_START_HOUR', 17)
     peak_end_hour = getattr(config, 'PEAK_END_HOUR', 20)
     peak_start = now.replace(hour=peak_hour, minute=0, second=0, microsecond=0)
     peak_end = now.replace(hour=peak_end_hour, minute=0, second=0, microsecond=0)
-    
-    # Currently in peak
+
     if peak_start <= now < peak_end:
         return {
             'minutes': 0,
             'time': peak_start.strftime('%I:%M %p')
         }
-    
-    # Past today's peak, calculate to tomorrow
+
     if now >= peak_end:
         peak_start = peak_start + timedelta(days=1)
-    
+
     delta = peak_start - now
     minutes = int(delta.total_seconds() / 60)
-    
+
     return {
         'minutes': minutes,
         'time': peak_start.strftime('%I:%M %p')
@@ -452,18 +501,37 @@ def get_system_health():
 
 def get_config_info():
     """Export relevant config settings for the dashboard Settings tab."""
-    return {
+    info = {
         'peak_soc_target': getattr(config, 'TARGET_SOC', 95),
         'min_soc_reserve': getattr(config, 'MIN_SOC_RESERVE', 20),
         'charge_rate_kw': getattr(config, 'CHARGE_RATE_PER_HOUR', 10),
-        'peak_start_hour': getattr(config, 'PEAK_START_HOUR', 17),
-        'peak_end_hour': getattr(config, 'PEAK_END_HOUR', 20),
         'battery_capacity_kwh': config.BATTERY_CAPACITY_KWH,
         'tou_enabled': getattr(config, 'TOU_ENABLED', True),
         'solar_enabled': getattr(config, 'SOLAR_ENABLED', True),
         'dynamic_pricing_enabled': getattr(config, 'DYNAMIC_PRICING_ENABLED', False),
         'home_mode': getattr(config, 'HOME_MODE', 'tou'),
     }
+
+    schedule = _get_rate_schedule()
+    if schedule:
+        info['rate_schedule_name'] = schedule.name
+        peak_windows = [w for w in schedule.windows if w.tier == 'peak']
+        info['peak_windows'] = [
+            {'start': w.start.strftime('%H:%M'), 'end': w.end.strftime('%H:%M'),
+             'days': w.days}
+            for w in peak_windows
+        ]
+        if peak_windows:
+            info['peak_start_hour'] = peak_windows[0].start.hour
+            info['peak_end_hour'] = peak_windows[0].end.hour
+        else:
+            info['peak_start_hour'] = getattr(config, 'PEAK_START_HOUR', 17)
+            info['peak_end_hour'] = getattr(config, 'PEAK_END_HOUR', 20)
+    else:
+        info['peak_start_hour'] = getattr(config, 'PEAK_START_HOUR', 17)
+        info['peak_end_hour'] = getattr(config, 'PEAK_END_HOUR', 20)
+
+    return info
 
 
 def get_today_from_api_or_csv(current_data, today_stats):

@@ -863,7 +863,7 @@
                 <span class="an-mode-chip" style="background:rgba(79,143,255,0.25);color:#4f8fff;border:1px solid rgba(79,143,255,0.4)">TOU</span>
                 <span class="an-mode-chip" style="background:rgba(248,113,113,0.30);color:#f87171;border:1px solid rgba(248,113,113,0.4)">EB</span>
                 <span class="an-mode-chip" style="background:rgba(34,211,238,0.25);color:#22d3ee;border:1px solid rgba(34,211,238,0.4)">SC</span>
-                <span class="an-mode-chip" style="background:rgba(251,191,36,0.12);color:#d4a017;border:1px solid rgba(251,191,36,0.3)">Peak 5-8pm</span>
+                <span class="an-mode-chip" id="an-peak-legend" style="background:rgba(251,191,36,0.12);color:#d4a017;border:1px solid rgba(251,191,36,0.3)">Peak</span>
             </div>
             <button class="an-carousel-btn an-fs-btn" onclick="anToggleFS()" id="an-fs-btn" title="Fullscreen">⛶</button>
         </div>
@@ -922,7 +922,7 @@
                 <div class="setting-group"><label>Peak SOC Target (%)</label><input type="number" class="setting-input" id="s-psoc" value="100" disabled><div class="setting-note">.env: PEAK_SOC_TARGET</div></div>
                 <div class="setting-group"><label>Min SOC Reserve (%)</label><input type="number" class="setting-input" id="s-msoc" value="10" disabled><div class="setting-note">.env: MIN_SOC_RESERVE</div></div>
                 <div class="setting-group"><label>Charge Rate (kW)</label><input type="number" class="setting-input" id="s-rate" value="3.3" step="0.1" disabled><div class="setting-note">.env: CHARGE_RATE_KW</div></div>
-                <div class="setting-group"><label>Peak Start / End</label><input type="text" class="setting-input" id="s-peak" value="17:00 - 20:00" disabled><div class="setting-note">.env: PEAK_START_HOUR / PEAK_END_HOUR</div></div>
+                <div class="setting-group"><label>Peak Window(s)</label><input type="text" class="setting-input" id="s-peak" value="--" disabled><div class="setting-note">From rate_schedule.json</div></div>
             </div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">About</div>
@@ -1903,6 +1903,17 @@ function renderLive(d){
     else if(mins==0){pc.classList.add('peak-active');document.getElementById('peak-text').textContent='🔴 PEAK ACTIVE';document.getElementById('peak-time').textContent=b.peak_time||''}
     else{pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='Peak starts at '+(b.peak_time||'--:--');document.getElementById('peak-time').textContent=(Math.floor(mins/60)>0?Math.floor(mins/60)+'h ':'')+mins%60+'m'}}
 
+    // Rate plan card — populate from config data
+    const cfg=d.config||{};
+    if(cfg.rate_schedule_name){document.getElementById('rate-plan').textContent=cfg.rate_schedule_name}
+    if(cfg.peak_windows&&cfg.peak_windows.length){
+        const fmt=w=>{const sh=parseInt(w.start),eh=parseInt(w.end);const sf=sh>12?(sh-12)+'PM':sh+'AM';const ef=eh>12?(eh-12)+'PM':eh+'AM';return sf.replace(':00','')+'-'+ef.replace(':00','')};
+        document.getElementById('rate-peak').textContent=cfg.peak_windows.map(w=>fmt(w)).join(', ')
+    }else if(cfg.peak_start_hour&&cfg.peak_end_hour){
+        const sh=cfg.peak_start_hour,eh=cfg.peak_end_hour;
+        document.getElementById('rate-peak').textContent=(sh>12?sh-12:sh)+'-'+(eh>12?eh-12:eh)+' PM'
+    }
+
     // Health
     if(h){const items=[{k:'battery_api',l:'Battery API'},{k:'automation_script',l:'Automation'},{k:'solar',l:'Solar'},{k:'grid_connection',l:'Grid'},{k:'generator',l:'Generator'}];
     document.getElementById('health-grid').innerHTML=items.map(i=>{
@@ -1959,7 +1970,7 @@ function renderSI(d){
     const gw=d.gateways;if(gw&&gw.length>1){document.getElementById('gateway-selector').style.display='block';document.getElementById('gateway-tabs').innerHTML=gw.map((g,i)=>'<button class="gateway-tab '+(i===0?'active':'')+'" onclick="selGW('+i+')">'+(g.nickname||'System '+(i+1))+'</button>').join('')}
 }
 function selGW(i){document.querySelectorAll('.gateway-tab').forEach((t,j)=>t.classList.toggle('active',j===i))}
-function loadThresh(d){const c=d.config||{};if(c.peak_soc_target)document.getElementById('s-psoc').value=c.peak_soc_target;if(c.min_soc_reserve)document.getElementById('s-msoc').value=c.min_soc_reserve;if(c.charge_rate_kw)document.getElementById('s-rate').value=c.charge_rate_kw;if(c.peak_start_hour&&c.peak_end_hour)document.getElementById('s-peak').value=c.peak_start_hour+' - '+c.peak_end_hour}
+function loadThresh(d){const c=d.config||{};if(c.peak_soc_target)document.getElementById('s-psoc').value=c.peak_soc_target;if(c.min_soc_reserve)document.getElementById('s-msoc').value=c.min_soc_reserve;if(c.charge_rate_kw)document.getElementById('s-rate').value=c.charge_rate_kw;if(c.peak_windows&&c.peak_windows.length){document.getElementById('s-peak').value=c.peak_windows.map(w=>w.start+' - '+w.end).join(' / ')}else if(c.peak_start_hour&&c.peak_end_hour)document.getElementById('s-peak').value=c.peak_start_hour+':00 - '+c.peak_end_hour+':00'}
 
 // ===== LOGS =====
 let logAR=null;
@@ -2766,6 +2777,21 @@ async function anLoadAvailableDates() {
         const d = await datesRes.json();
         anAvailDates = (d.dates || []).map(x => x.date);
         anPeakConfig = await peakRes.json();
+        // Update peak legend chip with actual windows
+        var peakLeg = document.getElementById('an-peak-legend');
+        if (peakLeg && anPeakConfig) {
+            var pw = anPeakConfig.peak_windows || [];
+            if (pw.length) {
+                var parts = pw.map(function(w) {
+                    var sh = w.start_hour, eh = w.end_hour;
+                    return (sh > 12 ? sh-12 : sh) + '-' + (eh > 12 ? eh-12 : eh) + (eh >= 12 ? 'pm' : 'am');
+                });
+                peakLeg.textContent = 'Peak ' + parts.join(', ');
+            } else {
+                var sh = anPeakConfig.peak_start_hour || 17, eh = anPeakConfig.peak_end_hour || 20;
+                peakLeg.textContent = 'Peak ' + (sh > 12 ? sh-12 : sh) + '-' + (eh > 12 ? eh-12 : eh) + 'pm';
+            }
+        }
         anPopulateCompare();
     } catch (e) { console.log('Failed to load chart dates/peak config:', e); }
 }
@@ -3062,37 +3088,71 @@ function anModeShapes(sr) {
 function anPeakShapes(dateStr) {
     if (!anPeakConfig || !anPeakConfig.tou_enabled) return [];
 
-    const startH = anPeakConfig.peak_start_hour || 17;
-    const endH = anPeakConfig.peak_end_hour || 20;
-    const peakDays = anPeakConfig.peak_days || 'weekdays';
-    const pad = n => String(n).padStart(2, '0');
-    const startTime = pad(startH) + ':00:00';
-    const endTime = pad(endH) + ':00:00';
+    var pw = anPeakConfig.peak_windows || [];
+    var peakDays = anPeakConfig.peak_days || 'weekdays';
 
-    function isPeakDay(ds) {
-        const dt = new Date(ds + 'T12:00:00');
-        const dow = dt.getDay();
+    // Build window list: prefer peak_windows array, fall back to single start/end
+    var windowDefs = [];
+    if (pw.length) {
+        pw.forEach(function(w) {
+            windowDefs.push({
+                startH: w.start_hour, startM: w.start_minute || 0,
+                endH: w.end_hour, endM: w.end_minute || 0,
+                days: w.days || null
+            });
+        });
+    } else {
+        windowDefs.push({
+            startH: anPeakConfig.peak_start_hour || 17, startM: 0,
+            endH: anPeakConfig.peak_end_hour || 20, endM: 0,
+            days: null
+        });
+    }
+
+    var pad = function(n) { return String(n).padStart(2, '0'); };
+
+    function isPeakDay(ds, days) {
+        var dt = new Date(ds + 'T12:00:00');
+        var dow = dt.getDay();
+        if (days) {
+            var dayMap = {sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
+            return days.some(function(d) { return dayMap[d] === dow; });
+        }
         if (peakDays === 'weekdays') return dow >= 1 && dow <= 5;
         if (peakDays === 'all' || peakDays === 'everyday') return true;
         if (peakDays === 'weekends') return dow === 0 || dow === 6;
         return dow >= 1 && dow <= 5;
     }
 
-    function makeShape(ds) {
-        return { type: 'rect', xref: 'x', yref: 'paper', x0: ds + ' ' + startTime, x1: ds + ' ' + endTime, y0: 0, y1: 1, fillcolor: 'rgba(251,191,36,0.08)', line: { width: 1.5, color: 'rgba(251,191,36,0.5)', dash: 'dot' }, layer: 'above' };
+    function makeShape(ds, w) {
+        var st = pad(w.startH) + ':' + pad(w.startM) + ':00';
+        var et = pad(w.endH) + ':' + pad(w.endM) + ':00';
+        return {
+            type: 'rect', xref: 'x', yref: 'paper',
+            x0: ds + ' ' + st, x1: ds + ' ' + et, y0: 0, y1: 1,
+            fillcolor: 'rgba(251,191,36,0.08)',
+            line: { width: 1.5, color: 'rgba(251,191,36,0.5)', dash: 'dot' },
+            layer: 'above'
+        };
+    }
+
+    var shapes = [];
+    function addShapesForDate(ds) {
+        windowDefs.forEach(function(w) {
+            if (isPeakDay(ds, w.days)) shapes.push(makeShape(ds, w));
+        });
     }
 
     if (dateStr.includes('..')) {
-        const [start, end] = dateStr.split('..');
-        const shapes = [];
-        const s = new Date(start + 'T12:00:00'), e = new Date(end + 'T12:00:00');
-        for (let d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
-            const ds = d.toISOString().split('T')[0];
-            if (isPeakDay(ds)) shapes.push(makeShape(ds));
+        var parts = dateStr.split('..');
+        var s = new Date(parts[0] + 'T12:00:00'), e = new Date(parts[1] + 'T12:00:00');
+        for (var d = new Date(s); d <= e; d.setDate(d.getDate() + 1)) {
+            addShapesForDate(d.toISOString().split('T')[0]);
         }
-        return shapes;
+    } else {
+        addShapesForDate(dateStr);
     }
-    return isPeakDay(dateStr) ? [makeShape(dateStr)] : [];
+    return shapes;
 }
 
 function anXaxisFormat() {

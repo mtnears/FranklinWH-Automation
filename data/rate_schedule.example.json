@@ -82,6 +82,40 @@
         "holidays": [],
         "holiday_tier": "off_peak"
       }
+    },
+    "pepco_r_tou_p_seasonal": {
+      "_comment": "Pepco R-TOU-P with seasonal window switching. Winter has dual peak (Oct-May), summer has single peak (Jun-Sep). Rates auto-switch via rate_history DB.",
+      "rate_schedule": {
+        "name": "Pepco R-TOU-P",
+        "export": {"capable": true, "net_metering": "NEM 1:1", "export_rates": null},
+        "tiers": {
+          "peak": {"rate_cents": 18.5},
+          "off_peak": {"rate_cents": 10.2}
+        },
+        "seasons": [
+          {
+            "name": "winter",
+            "months": [10, 11, 12, 1, 2, 3, 4, 5],
+            "windows": [
+              {"tier": "peak", "days": ["mon","tue","wed","thu","fri"], "start": "06:00", "end": "09:00"},
+              {"tier": "peak", "days": ["mon","tue","wed","thu","fri"], "start": "17:00", "end": "21:00"}
+            ]
+          },
+          {
+            "name": "summer",
+            "months": [6, 7, 8, 9],
+            "windows": [
+              {"tier": "peak", "days": ["mon","tue","wed","thu","fri"], "start": "14:00", "end": "19:00"}
+            ]
+          }
+        ],
+        "windows": [
+          {"tier": "peak", "days": ["mon","tue","wed","thu","fri"], "start": "17:00", "end": "21:00"}
+        ],
+        "default_tier": "off_peak",
+        "holidays": ["2026-01-01","2026-01-19","2026-02-16","2026-05-25","2026-07-04","2026-09-07","2026-11-11","2026-11-26","2026-12-25"],
+        "holiday_tier": "off_peak"
+      }
     }
   }
 }

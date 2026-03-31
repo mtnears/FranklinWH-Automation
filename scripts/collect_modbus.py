@@ -80,6 +80,12 @@ EXT_MODE_MAP = {
     3: ('time_of_use', 'Time of Use'),
 }
 
+# Sanity bounds for Modbus register values (watts).
+# Values near 0xFFFF (e.g. 65531) are not exact sentinel matches but are
+# clearly erroneous for residential systems. Discard anything above these.
+MAX_PLAUSIBLE_SOLAR_W = 25000   # 25 kW — well above any residential array
+MAX_PLAUSIBLE_LOAD_W = 50000    # 50 kW — well above any residential load
+
 TOU_DISPATCH_MAP = {
     0: 'Idle', 1: 'Home Loads', 2: 'Standby',
     3: 'Solar Charging', 4: 'Grid Charging', 5: 'Grid Discharge',
@@ -259,13 +265,15 @@ class ModbusCollector:
         if ext and len(ext) >= 10:
             pv_w = ext[2]
             load_w = ext[6]
-            if pv_w != 0xFFFF:
+            pv_valid = pv_w != 0xFFFF and pv_w < MAX_PLAUSIBLE_SOLAR_W
+            load_valid = load_w != 0xFFFF and load_w < MAX_PLAUSIBLE_LOAD_W
+            if pv_valid:
                 d['solar_kw'] = pv_w / 1000.0
-            if load_w != 0xFFFF:
+            if load_valid:
                 d['home_load_kw'] = load_w / 1000.0
 
-            if load_w != 0xFFFF:
-                ext_solar_w = pv_w if pv_w != 0xFFFF else 0
+            if load_valid:
+                ext_solar_w = pv_w if pv_valid else 0
                 grid_w = d.get('grid_kw', 0) * 1000
                 d['battery_kw'] = (load_w - ext_solar_w - grid_w) / 1000.0
 

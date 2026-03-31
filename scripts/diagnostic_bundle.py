@@ -197,11 +197,51 @@ def get_system_info() -> dict:
     """Collect non-sensitive system information."""
     info = {
         'timestamp': datetime.now().isoformat(),
+        'engine_version': None,
+        'git_commit': None,
+        'rate_schedule_name': None,
         'python_version': None,
         'os_info': None,
         'uptime': None,
         'disk_usage': None,
     }
+
+    # Engine version from VERSION file
+    try:
+        from config import VERSION
+        info['engine_version'] = VERSION
+    except Exception:
+        for candidate in [BASE_DIR / 'VERSION', BASE_DIR.parent / 'VERSION']:
+            try:
+                if candidate.exists():
+                    info['engine_version'] = candidate.read_text().strip()
+                    break
+            except Exception:
+                pass
+
+    # Git short commit hash
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(BASE_DIR)
+        )
+        if result.returncode == 0:
+            info['git_commit'] = result.stdout.strip()
+    except Exception:
+        pass
+
+    # Rate schedule name
+    try:
+        rate_path = DATA_DIR / 'rate_schedule.json'
+        if rate_path.exists():
+            with open(rate_path) as f:
+                rs = json.load(f)
+            info['rate_schedule_name'] = rs.get('rate_schedule', rs).get('name', 'Unknown')
+    except Exception:
+        pass
+
     try:
         import sys
         info['python_version'] = sys.version
@@ -295,6 +335,14 @@ def build_summary(hours: int = 24) -> str:
     # System info
     info = get_system_info()
     summary_parts.append("**System:**")
+    ver = info.get('engine_version', 'unknown')
+    commit = info.get('git_commit')
+    if commit:
+        summary_parts.append(f"- Engine: v{ver} ({commit})")
+    else:
+        summary_parts.append(f"- Engine: v{ver}")
+    if info.get('rate_schedule_name'):
+        summary_parts.append(f"- Rate Schedule: {info['rate_schedule_name']}")
     summary_parts.append(f"- Python: {info.get('python_version', 'unknown')}")
     summary_parts.append(f"- OS: {info.get('os_info', 'unknown')}")
     if info.get('disk_usage'):

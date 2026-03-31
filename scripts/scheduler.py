@@ -67,6 +67,12 @@ except ImportError:
     CONFIG_LOADED = False
     VERSION = '0.0.0'
 
+try:
+    from rate_schedule import load_rate_schedule
+    RATE_SCHEDULE_AVAILABLE = True
+except ImportError:
+    RATE_SCHEDULE_AVAILABLE = False
+
 
 def log(message: str):
     """Print timestamped log message and store in DB."""
@@ -1197,19 +1203,46 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json_response(500, {'error': str(e)})
 
     def _get_peak_config(self):
-        """Return TOU peak configuration for chart rendering."""
+        """Return TOU peak configuration for chart rendering.
+
+        Loads from rate_schedule.json for multi-window support.
+        Falls back to config.py single-window values.
+        """
         try:
             tou_enabled = getattr(config, 'TOU_ENABLED', False) if CONFIG_LOADED else False
-            peak_start = getattr(config, 'PEAK_START_HOUR', 17) if CONFIG_LOADED else 17
-            peak_end = getattr(config, 'PEAK_END_HOUR', 20) if CONFIG_LOADED else 20
-            peak_days = getattr(config, 'PEAK_DAYS', 'weekdays') if CONFIG_LOADED else 'weekdays'
-
-            self._json_response(200, {
+            result = {
                 'tou_enabled': tou_enabled,
-                'peak_start_hour': peak_start,
-                'peak_end_hour': peak_end,
-                'peak_days': peak_days,
-            })
+                'peak_start_hour': getattr(config, 'PEAK_START_HOUR', 17) if CONFIG_LOADED else 17,
+                'peak_end_hour': getattr(config, 'PEAK_END_HOUR', 20) if CONFIG_LOADED else 20,
+                'peak_days': getattr(config, 'PEAK_DAYS', 'weekdays') if CONFIG_LOADED else 'weekdays',
+                'peak_windows': [],
+                'rate_schedule_name': '',
+            }
+
+            if RATE_SCHEDULE_AVAILABLE:
+                try:
+                    json_path = DATA_DIR / 'rate_schedule.json'
+                    if json_path.exists():
+                        schedule = load_rate_schedule(str(json_path))
+                        result['rate_schedule_name'] = schedule.name
+                        peak_windows = [w for w in schedule.windows if w.tier == 'peak']
+                        result['peak_windows'] = [
+                            {
+                                'start_hour': w.start.hour,
+                                'start_minute': w.start.minute,
+                                'end_hour': w.end.hour,
+                                'end_minute': w.end.minute,
+                                'days': w.days,
+                            }
+                            for w in peak_windows
+                        ]
+                        if peak_windows:
+                            result['peak_start_hour'] = peak_windows[0].start.hour
+                            result['peak_end_hour'] = peak_windows[0].end.hour
+                except Exception as e:
+                    print(f"Warning: Rate schedule load for peak-config failed: {e}")
+
+            self._json_response(200, result)
         except Exception as e:
             self._json_response(500, {'error': str(e)})
 

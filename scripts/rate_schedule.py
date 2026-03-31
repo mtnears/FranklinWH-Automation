@@ -398,9 +398,26 @@ def load_rate_schedule(json_path: str) -> RateSchedule:
         logger.info("Using JSON rates: peak=%.3f¢  off_peak=%.3f¢",
                     tier_rates.get('peak', 0), tier_rates.get('off_peak', 0))
 
+    # Seasonal window selection: if 'seasons' is defined, pick the active
+    # season by current month.  Falls back to top-level 'windows' when no
+    # seasons key exists or no season matches (backward-compatible).
+    raw_windows = rs.get('windows', [])
+    active_season_name = None
+    seasons = rs.get('seasons')
+    if seasons:
+        current_month = datetime.now().month
+        for season in seasons:
+            if current_month in season.get('months', []):
+                raw_windows = season.get('windows', raw_windows)
+                active_season_name = season.get('name', 'unnamed')
+                logger.info("Active season: %s (month %d)", active_season_name, current_month)
+                break
+        if not active_season_name:
+            logger.info("No season matched month %d — using top-level windows", datetime.now().month)
+
     # Parse windows (rates updated to match resolved tier_rates)
     windows = []
-    for w in rs.get('windows', []):
+    for w in raw_windows:
         tier = w['tier']
         rate = tier_rates.get(tier, 0)
         windows.append(RateWindow(
@@ -429,8 +446,9 @@ def load_rate_schedule(json_path: str) -> RateSchedule:
         holiday_tier=rs.get('holiday_tier', 'off_peak'),
     )
 
+    season_info = f", season={active_season_name}" if active_season_name else ""
     logger.info(f"Loaded rate schedule: {schedule.name} "
-                f"({len(schedule.tiers)} tiers, {len(schedule.windows)} windows)")
+                f"({len(schedule.tiers)} tiers, {len(schedule.windows)} windows{season_info})")
     return schedule
 
 

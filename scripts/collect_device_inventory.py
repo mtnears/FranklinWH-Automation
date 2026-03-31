@@ -58,6 +58,20 @@ def load_env():
                         os.environ[key] = value
 
 
+VOLATILE_INVENTORY_KEYS = {'current_soc', 'current_power_kw'}
+
+
+def _strip_volatile(json_str):
+    """Parse extra_json and remove keys that change every cycle."""
+    if not json_str:
+        return {}
+    try:
+        d = json.loads(json_str) if isinstance(json_str, str) else json_str
+        return {k: v for k, v in d.items() if k not in VOLATILE_INVENTORY_KEYS}
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return json_str
+
+
 def has_changed(system, serial_number, model, firmware, extra_json):
     """Check if device info differs from last stored entry."""
     last = get_latest_device_firmware(system, serial_number)
@@ -67,7 +81,7 @@ def has_changed(system, serial_number, model, firmware, extra_json):
         return True
     if last.get('model') != model:
         return True
-    if last.get('extra_json') != extra_json:
+    if _strip_volatile(last.get('extra_json')) != _strip_volatile(extra_json):
         return True
     return False
 
