@@ -1913,6 +1913,14 @@ function renderLive(d){
         const sh=cfg.peak_start_hour,eh=cfg.peak_end_hour;
         document.getElementById('rate-peak').textContent=(sh>12?sh-12:sh)+'-'+(eh>12?eh-12:eh)+' PM'
     }
+    if(cfg.current_rate_cents!=null){
+        const tier=cfg.current_tier||'';
+        const label=tier==='peak'?'Peak':'Off-Peak';
+        const color=tier==='peak'?'var(--accent-red)':'var(--accent-green)';
+        const el=document.getElementById('rate-current');
+        el.textContent=cfg.current_rate_cents.toFixed(1)+'\u00a2/kWh ('+label+')';
+        el.style.color=color
+    }
 
     // Health
     if(h){const items=[{k:'battery_api',l:'Battery API'},{k:'automation_script',l:'Automation'},{k:'solar',l:'Solar'},{k:'grid_connection',l:'Grid'},{k:'generator',l:'Generator'}];

@@ -515,6 +515,9 @@ def get_config_info():
     schedule = _get_rate_schedule()
     if schedule:
         info['rate_schedule_name'] = schedule.name
+        tier_name, rate_cents = schedule.current_tier()
+        info['current_rate_cents'] = round(rate_cents, 1)
+        info['current_tier'] = tier_name
         peak_windows = [w for w in schedule.windows if w.tier == 'peak']
         info['peak_windows'] = [
             {'start': w.start.strftime('%H:%M'), 'end': w.end.strftime('%H:%M'),
