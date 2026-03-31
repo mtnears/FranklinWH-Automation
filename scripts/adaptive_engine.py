@@ -708,14 +708,24 @@ class AdaptiveEngine:
             )
 
         # --- Priority 7: Continuous Target Tracking + EB Gap Charging ---
-        # Two sub-concerns evaluated in order:
+        # Two sub-concerns evaluated together:
         #   A) Continuous target (non-export only): compute target_soc from
         #      forecast solar, compare to current SOC, drain or charge.
         #   B) EB gap charging: if solar can't fill the gap to peak, grid charge
         #      using last-responsible-moment timing.
+        #
+        # When CT returns SC or hold, those are active decisions — use them.
+        # When CT returns TOU (parking the battery), EB gets a chance to
+        # override: TOU just idles, but EB actively closes the gap via grid
+        # charging when time-to-peak is tight. Without this, CT's TOU blocks
+        # EB from ever evaluating on low-solar days.
         if not self.solar_export:
             ct_decision = self._evaluate_continuous_target(state)
             if ct_decision:
+                if ct_decision.action == "switch_to_tou":
+                    eb_decision = self._evaluate_eb_gap(state)
+                    if eb_decision:
+                        return eb_decision
                 return ct_decision
 
         eb_decision = self._evaluate_eb_gap(state)
@@ -1561,17 +1571,10 @@ class AdaptiveEngine:
                     metrics=metrics,
                 )
 
-            if (state.solar_kw > MIN_SOLAR_PRODUCING_KW
-                    and buffer_hours > safety_margin_hours
-                    and solar_contribution_pct < 15):
-                return self._decide(
-                    state, "time_of_use",
-                    f"Forecast gap ({gap_kwh:.1f} kWh, {charge_time_hours:.1f}h to charge) "
-                    f"but solar contribution minimal ({solar_contribution_pct:.0f}% of gap) "
-                    f"with {buffer_hours:.1f}h buffer — staying in TOU, deferring EB.",
-                    confidence=0.8, priority=7, action="switch_to_tou",
-                    metrics=metrics,
-                )
+            # Solar producing but negligible contribution (<15% of gap):
+            # Don't defer EB — fall through to EB trigger below.
+            # On low-solar days (rainy/overcast), 0.2 kW against a 13 kWh gap
+            # should not prevent grid charging when the buffer is tight.
 
             if charge_time_hours <= hours_to_peak:
                 return self._decide(
