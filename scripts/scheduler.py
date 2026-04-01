@@ -53,6 +53,8 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import csv
+import io
 
 # Add script directory to path for imports
 SCRIPT_DIR = Path(__file__).parent
@@ -734,6 +736,10 @@ class APIHandler(BaseHTTPRequestHandler):
             self._get_chart_dates()
         elif path.startswith('/api/peak-config'):
             self._get_peak_config()
+        elif path.startswith('/api/data-export/available'):
+            self._get_data_export_available()
+        elif path.startswith('/api/data-export'):
+            self._get_data_export()
         else:
             self._json_response(404, {'error': 'Not found'})
 
@@ -1245,6 +1251,299 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json_response(200, result)
         except Exception as e:
             self._json_response(500, {'error': str(e)})
+
+    def _get_data_export_available(self):
+        """Return which data categories have rows + billing period presets."""
+        try:
+            import db as db_mod
+
+            categories = {}
+            checks = {
+                'energy': [
+                    ('daily_energy_summary', 'SELECT COUNT(*) as c FROM daily_energy_summary'),
+                    ('daily_savings', 'SELECT COUNT(*) as c FROM daily_savings'),
+                ],
+                'solar': [
+                    ('enphase_readings', 'SELECT COUNT(*) as c FROM enphase_readings'),
+                    ('solaredge_readings', 'SELECT COUNT(*) as c FROM solaredge_readings'),
+                ],
+                'weather': [
+                    ('weather_daily', 'SELECT COUNT(*) as c FROM weather_daily'),
+                ],
+                'system': [
+                    ('system_readings', 'SELECT COUNT(*) as c FROM system_readings'),
+                ],
+            }
+
+            for cat, tables in checks.items():
+                total = 0
+                table_counts = {}
+                for tbl, sql in tables:
+                    try:
+                        row = db_mod.query(sql)
+                        cnt = row[0]['c'] if row else 0
+                        table_counts[tbl] = cnt
+                        total += cnt
+                    except Exception:
+                        table_counts[tbl] = 0
+                if total > 0:
+                    categories[cat] = {'row_count': total, 'tables': table_counts}
+
+            date_range = {}
+            try:
+                r = db_mod.query(
+                    "SELECT MIN(date) as min_d, MAX(date) as max_d "
+                    "FROM daily_energy_summary"
+                )
+                if r and r[0]['min_d']:
+                    date_range = {'min': r[0]['min_d'], 'max': r[0]['max_d']}
+            except Exception:
+                pass
+
+            billing_presets = []
+            try:
+                rows = db_mod.query(
+                    "SELECT period_start, period_end, billing_period "
+                    "FROM billing_periods ORDER BY period_start DESC LIMIT 24"
+                )
+                if rows:
+                    billing_presets = [dict(r) for r in rows]
+            except Exception:
+                pass
+
+            self._json_response(200, {
+                'categories': categories,
+                'date_range': date_range,
+                'billing_presets': billing_presets,
+            })
+        except ImportError:
+            self._json_response(503, {'error': 'Database not available'})
+        except Exception as e:
+            self._json_response(500, {'error': str(e)})
+
+    def _get_data_export(self):
+        """Return summary JSON or CSV for a date range and category.
+
+        Query params:
+          ?category=energy|solar|weather|system
+          ?start=YYYY-MM-DD&end=YYYY-MM-DD
+          ?format=summary|csv
+        """
+        try:
+            import db as db_mod
+            from urllib.parse import urlparse, parse_qs
+
+            params = parse_qs(urlparse(self.path).query)
+            category = params.get('category', ['energy'])[0]
+            start_str = params.get('start', [None])[0]
+            end_str = params.get('end', [None])[0]
+            fmt = params.get('format', ['summary'])[0]
+
+            if not start_str or not end_str:
+                self._json_response(400, {'error': 'Missing ?start=&end='})
+                return
+
+            if category == 'energy':
+                self._export_energy(db_mod, start_str, end_str, fmt)
+            else:
+                self._json_response(400, {'error': f'Category "{category}" not yet implemented'})
+
+        except ImportError:
+            self._json_response(503, {'error': 'Database not available'})
+        except Exception as e:
+            self._json_response(500, {'error': str(e)})
+
+    def _export_energy(self, db_mod, start_str, end_str, fmt):
+        """Energy & Billing data export — summary JSON or CSV."""
+        energy_rows = db_mod.query(
+            "SELECT date, device_id, solar_kwh, grid_import_kwh, grid_export_kwh, "
+            "battery_charge_kwh, battery_discharge_kwh, home_load_kwh, generator_kwh, "
+            "peak_solar_kw, peak_load_kw, peak_grid_kw, peak_battery_kw, "
+            "soc_min, soc_max, soc_avg, soc_end, reading_count "
+            "FROM daily_energy_summary "
+            "WHERE date BETWEEN ? AND ? ORDER BY date",
+            (start_str, end_str)
+        )
+        energy = [dict(r) for r in energy_rows] if energy_rows else []
+
+        savings_rows = db_mod.query(
+            "SELECT date, solar_ratio, total_charged_kwh, solar_charged_kwh, "
+            "grid_charged_kwh, peak_discharge_kwh, post_peak_discharge_kwh, "
+            "peak_savings, post_peak_savings, total_savings, "
+            "rate_type, peak_rate, off_peak_rate "
+            "FROM daily_savings "
+            "WHERE date BETWEEN ? AND ? ORDER BY date",
+            (start_str, end_str)
+        )
+        savings = [dict(r) for r in savings_rows] if savings_rows else []
+        savings_by_date = {s['date']: s for s in savings}
+
+        billing_rows = db_mod.query(
+            "SELECT period_start, period_end, billing_period, billing_days, "
+            "total_usage_kwh, total_generation_kwh, total_net_kwh, total_charges "
+            "FROM billing_periods "
+            "WHERE period_end >= ? AND period_start <= ? ORDER BY period_start",
+            (start_str, end_str)
+        )
+        billing = [dict(r) for r in billing_rows] if billing_rows else []
+
+        if fmt == 'csv':
+            self._export_energy_csv(energy, savings_by_date, start_str, end_str)
+            return
+
+        totals = {
+            'days': len(energy),
+            'solar_kwh': 0, 'grid_import_kwh': 0, 'grid_export_kwh': 0,
+            'battery_charge_kwh': 0, 'battery_discharge_kwh': 0,
+            'home_load_kwh': 0, 'generator_kwh': 0,
+            'total_savings': 0, 'peak_savings': 0,
+            'solar_charged_kwh': 0, 'grid_charged_kwh': 0,
+            'peak_discharge_kwh': 0,
+            'soc_min': None, 'soc_max': None,
+        }
+
+        weekly = {}
+        monthly = {}
+
+        for row in energy:
+            d = row['date']
+            totals['solar_kwh'] += row.get('solar_kwh') or 0
+            totals['grid_import_kwh'] += row.get('grid_import_kwh') or 0
+            totals['grid_export_kwh'] += row.get('grid_export_kwh') or 0
+            totals['battery_charge_kwh'] += row.get('battery_charge_kwh') or 0
+            totals['battery_discharge_kwh'] += row.get('battery_discharge_kwh') or 0
+            totals['home_load_kwh'] += row.get('home_load_kwh') or 0
+            totals['generator_kwh'] += row.get('generator_kwh') or 0
+
+            smin = row.get('soc_min')
+            smax = row.get('soc_max')
+            if smin is not None:
+                if totals['soc_min'] is None or smin < totals['soc_min']:
+                    totals['soc_min'] = smin
+            if smax is not None:
+                if totals['soc_max'] is None or smax > totals['soc_max']:
+                    totals['soc_max'] = smax
+
+            sav = savings_by_date.get(d, {})
+            totals['total_savings'] += sav.get('total_savings') or 0
+            totals['peak_savings'] += sav.get('peak_savings') or 0
+            totals['solar_charged_kwh'] += sav.get('solar_charged_kwh') or 0
+            totals['grid_charged_kwh'] += sav.get('grid_charged_kwh') or 0
+            totals['peak_discharge_kwh'] += sav.get('peak_discharge_kwh') or 0
+
+            try:
+                dt = datetime.strptime(d, '%Y-%m-%d')
+                iso_week = dt.strftime('%Y-W%V')
+                mo = dt.strftime('%Y-%m')
+            except Exception:
+                iso_week = 'unknown'
+                mo = 'unknown'
+
+            for bucket, key in [(weekly, iso_week), (monthly, mo)]:
+                if key not in bucket:
+                    bucket[key] = {
+                        'days': 0, 'solar_kwh': 0, 'grid_import_kwh': 0,
+                        'grid_export_kwh': 0, 'home_load_kwh': 0,
+                        'battery_charge_kwh': 0, 'battery_discharge_kwh': 0,
+                        'total_savings': 0,
+                    }
+                b = bucket[key]
+                b['days'] += 1
+                b['solar_kwh'] += row.get('solar_kwh') or 0
+                b['grid_import_kwh'] += row.get('grid_import_kwh') or 0
+                b['grid_export_kwh'] += row.get('grid_export_kwh') or 0
+                b['home_load_kwh'] += row.get('home_load_kwh') or 0
+                b['battery_charge_kwh'] += row.get('battery_charge_kwh') or 0
+                b['battery_discharge_kwh'] += row.get('battery_discharge_kwh') or 0
+                b['total_savings'] += sav.get('total_savings') or 0
+
+        totals = {k: round(v, 2) if isinstance(v, float) else v for k, v in totals.items()}
+        for bk in [weekly, monthly]:
+            for key in bk:
+                bk[key] = {k: round(v, 2) if isinstance(v, float) else v for k, v in bk[key].items()}
+
+        avg_daily = {}
+        if totals['days'] > 0:
+            n = totals['days']
+            avg_daily = {
+                'solar_kwh': round(totals['solar_kwh'] / n, 2),
+                'grid_import_kwh': round(totals['grid_import_kwh'] / n, 2),
+                'home_load_kwh': round(totals['home_load_kwh'] / n, 2),
+                'total_savings': round(totals['total_savings'] / n, 2),
+            }
+
+        self._json_response(200, {
+            'category': 'energy',
+            'start': start_str,
+            'end': end_str,
+            'totals': totals,
+            'avg_daily': avg_daily,
+            'weekly': weekly,
+            'monthly': monthly,
+            'billing': billing,
+            'daily': energy[:500],
+            'daily_savings': savings[:500],
+        })
+
+    def _export_energy_csv(self, energy, savings_by_date, start_str, end_str):
+        """Stream merged energy + savings CSV."""
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        header = [
+            'date', 'solar_kwh', 'grid_import_kwh', 'grid_export_kwh',
+            'battery_charge_kwh', 'battery_discharge_kwh', 'home_load_kwh',
+            'generator_kwh', 'peak_solar_kw', 'peak_load_kw',
+            'soc_min', 'soc_max', 'soc_avg', 'soc_end', 'reading_count',
+            'solar_ratio', 'solar_charged_kwh', 'grid_charged_kwh',
+            'peak_discharge_kwh', 'post_peak_discharge_kwh',
+            'peak_savings', 'post_peak_savings', 'total_savings',
+            'rate_type', 'peak_rate', 'off_peak_rate',
+        ]
+        writer.writerow(header)
+
+        for row in energy:
+            d = row['date']
+            sav = savings_by_date.get(d, {})
+            writer.writerow([
+                d,
+                row.get('solar_kwh', ''),
+                row.get('grid_import_kwh', ''),
+                row.get('grid_export_kwh', ''),
+                row.get('battery_charge_kwh', ''),
+                row.get('battery_discharge_kwh', ''),
+                row.get('home_load_kwh', ''),
+                row.get('generator_kwh', ''),
+                row.get('peak_solar_kw', ''),
+                row.get('peak_load_kw', ''),
+                row.get('soc_min', ''),
+                row.get('soc_max', ''),
+                row.get('soc_avg', ''),
+                row.get('soc_end', ''),
+                row.get('reading_count', ''),
+                sav.get('solar_ratio', ''),
+                sav.get('solar_charged_kwh', ''),
+                sav.get('grid_charged_kwh', ''),
+                sav.get('peak_discharge_kwh', ''),
+                sav.get('post_peak_discharge_kwh', ''),
+                sav.get('peak_savings', ''),
+                sav.get('post_peak_savings', ''),
+                sav.get('total_savings', ''),
+                sav.get('rate_type', ''),
+                sav.get('peak_rate', ''),
+                sav.get('off_peak_rate', ''),
+            ])
+
+        csv_data = output.getvalue().encode('utf-8')
+        filename = f"energy_export_{start_str}_to_{end_str}.csv"
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv')
+        self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+        self.send_header('Content-Length', str(len(csv_data)))
+        self._cors_headers()
+        self.end_headers()
+        self.wfile.write(csv_data)
 
     def _save_layout(self):
         try:
