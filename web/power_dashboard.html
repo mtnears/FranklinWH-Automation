@@ -3726,7 +3726,7 @@ async function deLoadAvailable() {
             deAvailable.billing_presets.forEach(bp => {
                 const opt = document.createElement('option');
                 opt.value = bp.period_start + '|' + bp.period_end;
-                opt.textContent = bp.billing_period || (bp.period_start + ' → ' + bp.period_end);
+                opt.textContent = bp.period_start + ' → ' + bp.period_end + (bp.billing_period ? '  (Period ' + bp.billing_period + ')' : '');
                 sel.appendChild(opt);
             });
         }
@@ -3785,7 +3785,22 @@ function deRenderSummary(data, start, end) {
     const container = document.getElementById('de-content');
 
     if (!t || t.days === 0) {
-        container.innerHTML = '<div class="de-empty">No data found for this date range.</div>';
+        if (!data.billing || data.billing.length === 0) {
+            container.innerHTML = '<div class="de-empty">No daily energy data for this date range.</div>';
+            return;
+        }
+        let html = '<div class="de-empty" style="padding:20px">No daily energy data for this range — showing billing records only.</div>';
+        html += '<div class="card" style="margin-bottom:var(--gap)"><div class="card-label">Billing Periods</div><div class="de-billing-cards">';
+        data.billing.forEach(bp => {
+            html += '<div class="de-billing-card">';
+            html += '<div class="de-stat-label">' + bp.period_start + ' → ' + bp.period_end + (bp.billing_period ? '  (Period ' + bp.billing_period + ')' : '') + '</div>';
+            html += deBillingRow('Net Usage', (bp.total_net_kwh || 0).toFixed(1) + ' kWh');
+            html += deBillingRow('Charges', '$' + (bp.total_charges || 0).toFixed(2));
+            html += deBillingRow('Days', bp.billing_days || '—');
+            html += '</div>';
+        });
+        html += '</div></div>';
+        container.innerHTML = html;
         return;
     }
 
@@ -3813,7 +3828,7 @@ function deRenderSummary(data, start, end) {
         html += '<div class="de-billing-cards">';
         data.billing.forEach(bp => {
             html += '<div class="de-billing-card">';
-            html += '<div class="de-stat-label">' + (bp.billing_period || bp.period_start + ' → ' + bp.period_end) + '</div>';
+            html += '<div class="de-stat-label">' + bp.period_start + ' → ' + bp.period_end + (bp.billing_period ? '  (Period ' + bp.billing_period + ')' : '') + '</div>';
             html += deBillingRow('Usage', (bp.total_usage_kwh || 0).toFixed(1) + ' kWh');
             html += deBillingRow('Generation', (bp.total_generation_kwh || 0).toFixed(1) + ' kWh');
             html += deBillingRow('Net', (bp.total_net_kwh || 0).toFixed(1) + ' kWh');
