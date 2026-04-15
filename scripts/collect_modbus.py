@@ -216,9 +216,9 @@ class ModbusCollector:
 
         log.info(
             f"SOC={parsed.get('soc_pct', '?')}% "
-            f"Grid={parsed.get('grid_kw', '?'):.3f}kW "
-            f"Solar={parsed.get('solar_kw', '?'):.3f}kW "
-            f"Load={parsed.get('home_load_kw', '?'):.3f}kW "
+            f"Grid={parsed.get('grid_kw') or 0:.3f}kW "
+            f"Solar={parsed.get('solar_kw') or 0:.3f}kW "
+            f"Load={parsed.get('home_load_kw') or 0:.3f}kW "
             f"Mode={parsed.get('mode_detail', '?')} "
             f"[{elapsed_ms:.0f}ms] "
             f"Blocks={len(raw_blocks)}/{len(REGISTER_BLOCKS)}"
