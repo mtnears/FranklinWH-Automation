@@ -590,7 +590,8 @@ class AdaptiveEngine:
 
     def enrich_state(self, state: SystemState) -> SystemState:
         """Populate rate and forecast fields on the system state."""
-        state.current_tier, state.current_rate_cents = self.rates.current_tier(state.timestamp)
+        state.current_tier, rate_cents = self.rates.current_tier(state.timestamp)
+        state.current_rate_cents = round(rate_cents, 3)  # avoid float noise in display
         state.is_peak = self.rates.is_peak(state.timestamp)
         state.hours_to_peak = self.rates.hours_to_peak(state.timestamp)
         state.peak_duration_hours = self.rates.peak_duration_hours(state.timestamp)
@@ -1776,17 +1777,21 @@ class AdaptiveEngine:
             else:
                 action = "switch_to_self_consumption"
 
-        # Check cooldown
+        # Check cooldown (only meaningful for real mode changes)
         if action in ("switch_to_backup", "switch_to_self_consumption", "switch_to_tou"):
-            if self.last_mode_switch and self.last_decision:
+            if self.last_mode_switch and self.last_decision and mode != state.current_mode:
                 elapsed = (state.timestamp - self.last_mode_switch).total_seconds()
-                if elapsed < MODE_SWITCH_COOLDOWN_S and mode != state.current_mode:
+                if elapsed < MODE_SWITCH_COOLDOWN_S:
                     action = "hold"
                     reason += f" (cooldown: {int(MODE_SWITCH_COOLDOWN_S - elapsed)}s remaining)"
 
-        # Track mode switches
+        # Track mode switches — only record when the mode actually changes.
+        # Recording noop switches (target == current) poisoned cooldown state
+        # for subsequent _decide() calls within the same cycle, blocking
+        # legitimate follow-up evaluations (e.g. SC branch running before EB branch).
         if action in ("switch_to_backup", "switch_to_self_consumption", "switch_to_tou"):
-            self.last_mode_switch = state.timestamp
+            if mode != state.current_mode:
+                self.last_mode_switch = state.timestamp
 
         decision = Decision(
             mode=mode,
