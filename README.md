@@ -10,6 +10,32 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
+## What's New in v4.3
+
+### Cloud-Only Data Persistence Fix
+A long-standing bug affecting every cloud-only user: `system_readings` rows from the cloud collector were inserting with NULL for the primary fields (SOC, solar, grid, battery, load, mode, grid_status). This silently broke load profile learning on cloud-only systems and prevented SOC-target manual overrides from ever exiting. v4.3 populates these fields correctly while preserving Modbus as the source of truth on hybrid systems via `COALESCE` semantics in the UPDATE branch.
+
+### Manual Override UI Redesign
+The override modal replaces six time-based chips with four outcome-oriented options:
+- **Until SOC reached** — charge up or drain down to a target percentage
+- **For duration** — hours + minutes inputs, custom durations up to 24 hours, last entry remembered
+- **Until specific time** — HH:MM picker, rolls to tomorrow if past, today/tomorrow indicator
+- **Until canceled** — no automatic expiry
+
+The banner now shows "until 18:30 (2h 15m remaining)" for time-based overrides.
+
+### Override Resilience
+`_read_latest_soc()` (used by override SOC-target exit) now looks back 30 minutes for non-NULL SOC and falls back to a direct Franklin cloud API call (30-second cache) if the database has no recent SOC. Defends override exit against future regressions and any data collection gap.
+
+### Other Fixes
+- Modbus collection job guarded by `MODBUS_ENABLED` — no more timeout-error noise in `scheduler_log` on cloud-only deployments
+- Dashboard config display now correctly reads `BACKUP_RESERVE_PCT` (was reading a non-existent variable and always showing 20%)
+- `solar_forecast.py` — house array tilt and azimuth corrected; calibration validated at R²=0.835
+
+For v4.2 (Data Export tab, multi-window peaks, seasonal rate windows) and v4.1.1, see [CHANGELOG.md](CHANGELOG.md).
+
+---
+
 ## What's New in v4.1
 
 ### SQLite Database (Breaking Change)
@@ -281,15 +307,35 @@ The dashboard is optimized for a **Fire HD 10 tablet** running Fully Kiosk Brows
 
 ### Override System
 
-Quick-access mode overrides from the dashboard or API:
+Quick-access mode overrides from the dashboard or API. Four outcome-oriented options:
+
+- **Until SOC reached** — charge up or drain down to a target percentage
+- **For duration** — custom hours + minutes (up to 24 h)
+- **Until specific time** — HH:MM, rolls to tomorrow if past
+- **Until canceled** — runs until manually cancelled
 
 ```bash
-# Emergency backup for 4 hours
+# Emergency backup until SOC reaches 90%
 curl -X POST http://your-server:8100/api/override \
   -H "Content-Type: application/json" \
-  -d '{"mode": "emergency_backup", "duration": "4h"}'
+  -d '{"mode": "emergency_backup", "duration": "until_soc", "exit_soc_pct": 90}'
 
-# Cancel override (engine resumes)
+# Self-consumption for 2 hours 30 minutes
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "self_consumption", "duration": "custom", "duration_minutes": 150}'
+
+# Emergency backup until 18:30 (rolls to tomorrow if already past)
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "emergency_backup", "duration": "until_time", "until_time": "18:30"}'
+
+# Self-consumption until manually cancelled
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "self_consumption", "duration": "until_cancel"}'
+
+# Cancel active override (engine resumes)
 curl -X DELETE http://your-server:8100/api/override
 ```
 

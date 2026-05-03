@@ -4,6 +4,103 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.3.0 — May 2026
+
+### Cloud-Only Data Persistence (Bug Fix — Affects All Cloud-Only Users)
+- **Root cause fix:** `system_readings` rows from `collect_franklin_cloud.py` were inserting with NULL for the primary fields (`soc_pct`, `solar_kw`, `grid_kw`, `battery_kw`, `home_load_kw`, `mode`, `grid_status`). Cloud-only systems were running with no usable history in the database
+- Two downstream symptoms resolved:
+  - Engine load profile learning was operating on default 1.8 kW assumptions instead of measured load — produced bad SC vs TOU projections on cloud-only systems
+  - SOC-target manual overrides never exited because `_read_latest_soc()` reads `soc_pct` from `system_readings`, which was NULL
+- `db.py system_reading_update_cloud()` — primary fields added to signature. UPDATE branch uses `COALESCE(col, ?)` so Modbus values are preserved when both data sources populate the same row. Cloud-only INSERT branch populates everything
+- `collect_franklin_cloud.py` — extracts `soc_pct/solar_kw/grid_kw/battery_kw/home_load_kw/grid_status` from `stats.current` (mirrors `data_sources.CloudDataSource`). `grid_status` mapping handles the franklinwh enum (`NORMAL`, `OFFGRID`, etc.) in addition to Modbus-style strings (`Connected`/`Disconnected`)
+
+### Override Resilience
+- `_read_latest_soc()` in both `scheduler.py` and `smart_decision.py` upgraded with a 30-minute DB freshness window plus Franklin cloud API fallback (30-second cache) when DB returns no recent SOC. Defends override SOC-target exit against future regressions and against any data collection gap
+- `adaptive_engine.py` — `override_path` default aligned to `logs/override.json` (was `data/override.json`), matching what `smart_decision.py` actually passes
+
+### Manual Override UI Redesign
+- Override modal: 6 chips replaced with 4 outcome-oriented options:
+  - **Until SOC reached** — existing slider, charge up or drain down to target
+  - **For duration** — hours + minutes inputs, custom durations up to 24 h, last entry remembered in localStorage so 2h 10m pre-fills next time
+  - **Until specific time** — HH:MM picker, defaults to current time + 1 h rounded to nearest 15 min, rolls to tomorrow if past, today/tomorrow indicator
+  - **Until canceled** — no expiry, exits only on manual cancel
+- Banner now shows "until 18:30 (2h 15m remaining)" for time-based overrides
+- POST `/api/override` accepts new payload shapes:
+  - `{duration: 'until_soc', exit_soc_pct}`
+  - `{duration: 'custom', duration_minutes}` (1–1440 validated)
+  - `{duration: 'until_time', until_time: 'HH:MM'}` (regex-validated)
+  - `{duration: 'until_cancel'}`
+- Old chip values (`1h`/`2h`/`4h`/`8h`) removed from `dur_map`
+
+### Other Changes
+- Modbus collection job now guarded by `MODBUS_ENABLED` — eliminates timeout-error noise in `scheduler_log` on cloud-only deployments
+- Dashboard config display: `min_soc_reserve` field now reads from `BACKUP_RESERVE_PCT` (was reading non-existent `MIN_SOC_RESERVE`, defaulted to 20 regardless of `.env` value). Settings tab env-var label corrected to match
+- `solar_forecast.py` — house array tilt 22°→18°, azimuth -65°→0°, removed WNW penalty multiplier and noon-shift correction. Yesterday correction factor now passes today's weather to `correction_factor()`. Calibration model `ratio = 0.520·score + −0.040 (R²=0.835)` validated against measured production
+
+### Credits
+Investigation triggered by community user **miztahsparklez** (NEM 3.0, SCE TOU-D-PRIME, cloud-only). Root cause and downstream effects confirmed across `db.py`, `collect_franklin_cloud.py`, `scheduler.py`, `smart_decision.py`, and `generate_dashboard_data.py`.
+
+---
+
+## v4.2.2 — April 2026
+
+### Adaptive Engine Cooldown Fix
+- **Root cause fix:** `adaptive_engine.py` `_decide()` updated `self.last_mode_switch` even on no-op transitions (target == current_mode). Subsequent decisions in the same cycle saw a phantom 300-second cooldown and were blocked
+- Fix: only update `last_mode_switch` when the target differs from current mode
+
+### State Logging
+- `enrich_state()` now rounds `current_rate_cents` to 3 decimal places — eliminates floating-point noise in intelligence_log entries
+
+---
+
+## v4.2.1 — April 2026
+
+### Data Export Tab (Energy & Billing)
+- New dashboard tab providing CSV export of historical data
+- Three API endpoints: available date ranges, billing-period selection, range export
+- Date picker with billing-period dropdown for quick selection of utility billing windows
+- Summary cards display total usage, generation, net, and charges for the selected range
+- CSV download with all relevant fields for the selected period
+
+### Bug Fixes
+- Billing period dropdown label fix (was showing internal IDs instead of human-readable labels)
+- Fallback render path for older billing periods that pre-date the `daily_energy_summary` table
+
+---
+
+## v4.2.0 — April 2026
+
+### Multi-Window Peak Support
+- `rate_schedule.json` now supports multiple peak windows per rate plan (peak + partial-peak + off-peak), driven from the schedule definition rather than hardcoded peak start/end hours
+- Peak bar and engine logic both consume the multi-window structure
+
+### Seasonal Window Selection
+- Rate windows can specify a `months` array — automatic seasonal switching as PG&E and other utilities define different summer vs winter peak periods within the same plan
+
+### Modbus Sanity Bounds
+- Near-`0xFFFF` register values (e.g., 65531, 65532) slipped through exact-sentinel checks and showed up as 65 MW solar production etc.
+- Added explicit upper bounds: `MAX_PLAUSIBLE_SOLAR_W = 25,000`, `MAX_PLAUSIBLE_LOAD_W = 50,000`. Values above these are treated as Modbus errors and discarded
+- Fixed `collect_modbus.py` `ValueError` from `:.3f` format applied to the `'?'` string fallback when fields were unavailable
+
+### Inventory Dedup
+- `collect_device_inventory.py` snapshot logic deduplicates within a write — prior versions could create duplicate device records on repeated firmware probes
+
+### Dynamic Dashboard Rate Plan Card
+- Rate Plan card on dashboard now reflects the current schedule's name, current tier, and current rate live from `rate_schedule.py` instead of hardcoded `E-TOU-D` text
+
+### Diagnostic Bundle Enhancements
+- `system_info.json` in the bundle now includes `engine_version`, `git_commit`, and `rate_schedule_name` so issue triage can quickly identify what version produced the bundle
+
+---
+
+## v4.1.1 — March 2026
+
+### Bug Fixes
+- `collect_modbus.py` — `ValueError` raised when register values were unavailable and substituted with the `'?'` sentinel string, then passed through `f'{val:.3f}'` formatting. Format expression now guarded against non-numeric fallback
+- Inventory dedup race condition where rapid firmware-probe cycles could write duplicate `device_inventory` rows
+
+---
+
 ## v4.1.0 — March 2026
 
 ### SQLite Database Migration (Breaking Change)

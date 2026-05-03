@@ -1,7 +1,7 @@
 # FranklinWH aGate — Modbus TCP Register Reference
 
-> **Last updated:** March 24, 2026
-> **Project:** [FranklinWH Battery Automation](https://github.com/MTNEARS/FranklinWH-Battery-Automation)
+> **Last updated:** May 3, 2026
+> **Project:** [FranklinWH Automation](https://github.com/mtnears/FranklinWH-Automation)
 
 ---
 
@@ -80,6 +80,8 @@ These registers have been validated against simultaneous cloud API reads across 
 | **80** | **8** | **Grid active power** | **direct** | **W** | **Signed 16-bit. Positive = importing from grid, negative = exporting. Correlation r=0.998 vs cloud API, ±84W accuracy.** |
 | 81 | 9 | Apparent power | direct | VA | Total apparent power |
 | 82 | 10 | Reactive power | direct | VAr | Signed |
+
+> **Note (v4.2.0+):** Some register values occasionally return near-`0xFFFF` numbers (e.g., 65531, 65532) instead of the exact `0xFFFF` sentinel. These slip through naive sentinel checks and produce nonsensical readings (65 MW solar, 65 MW load). The collector now applies sanity bounds — `MAX_PLAUSIBLE_SOLAR_W = 25,000` and `MAX_PLAUSIBLE_LOAD_W = 50,000` — and discards values above these thresholds as Modbus errors.
 
 #### Voltage & Frequency
 

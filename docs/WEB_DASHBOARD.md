@@ -36,7 +36,7 @@ The FranklinWH Automation includes a web-based dashboard for real-time monitorin
 - **Lifetime Totals**: Cumulative energy by source (battery, grid, solar, generator)
 - **Charging Breakdown**: Grid-to-battery vs solar-to-battery rates
 - **Hardware Status**: BMS, power electronics, main switch, generator, V2L mode
-- **Mode Override Controls**: Manual Self Consumption / Emergency Backup with duration selection
+- **Mode Override Controls**: Manual Self Consumption / Emergency Backup with four exit conditions — until SOC reached, for custom duration (h/m), until specific time, or until manually canceled
 - **About Card**: Version display with "Update Available" badge (checks GitHub releases daily)
 - **Diagnostic Bundle**: One-click sanitized diagnostic report for issue reporting
 
@@ -163,19 +163,41 @@ Features: color-coded entries, auto-refresh, manual refresh button, Report Issue
 
 ## Override System
 
-Quick-access mode overrides from the dashboard or API:
+Quick-access mode overrides from the dashboard or API. Four outcome-oriented options:
+
+- **Until SOC reached** — charge up or drain down to a target percentage
+- **For duration** — custom hours + minutes (up to 24 h)
+- **Until specific time** — HH:MM, rolls to tomorrow if past
+- **Until canceled** — runs until manually cancelled
 
 ```bash
-# Emergency backup for 4 hours
+# Emergency backup until SOC reaches 90%
 curl -X POST http://your-server:8100/api/override \
   -H "Content-Type: application/json" \
-  -d '{"mode": "emergency_backup", "duration": "4h"}'
+  -d '{"mode": "emergency_backup", "duration": "until_soc", "exit_soc_pct": 90}'
 
-# Cancel override (engine resumes)
+# Self-consumption for 2 hours 30 minutes
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "self_consumption", "duration": "custom", "duration_minutes": 150}'
+
+# Emergency backup until 18:30 (rolls to tomorrow if already past)
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "emergency_backup", "duration": "until_time", "until_time": "18:30"}'
+
+# Self-consumption until manually cancelled
+curl -X POST http://your-server:8100/api/override \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "self_consumption", "duration": "until_cancel"}'
+
+# Cancel active override (engine resumes)
 curl -X DELETE http://your-server:8100/api/override
 ```
 
-Overrides auto-expire after the configured duration. The override status is displayed as a banner on the dashboard. The engine resumes normal operation when the override expires or is cancelled.
+For "until SOC" overrides, the engine reads the latest SOC from the database (with a 30-second cloud API fallback if the database has no recent reading). The override exits when SOC crosses the target — no expiration timer needed.
+
+The override status is displayed as a banner on the dashboard. Time-based overrides show remaining time; SOC-based overrides show the target threshold. The engine resumes normal operation when the override expires, the SOC target is reached, or it's manually cancelled.
 
 ---
 
@@ -264,5 +286,5 @@ For remote access, consider: VPN, Tailscale, or a reverse proxy with authenticat
 
 ---
 
-**Last Updated:** March 2026
-**Version:** 4.1.0
+**Last Updated:** May 2026
+**Version:** 4.3.0

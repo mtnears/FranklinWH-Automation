@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-**Common issues and solutions for FranklinWH Battery Automation v4.1**
+**Common issues and solutions for FranklinWH Battery Automation v4.3**
 
 ---
 
@@ -91,6 +91,16 @@ If all attempts consistently fail: check Franklin WH system status in the mobile
 ### Cloud API — zero attempts (expected with Modbus)
 
 With Modbus enabled and working, the cloud API should show zero or near-zero `total_attempts` in the health stats. Cloud API calls only happen for actual mode switches (2-4 per day). This is by design — Modbus handles all monitoring.
+
+### Cloud-only systems showing NULL data fields
+
+If you're running with `MODBUS_ENABLED=false` and `system_readings` rows have `NULL` values for `soc_pct`, `solar_kw`, `grid_kw`, `battery_kw`, `home_load_kw`, or `mode`, you're on a pre-v4.3 release. v4.3.0 fixed a long-standing bug where the cloud collector inserted these rows with NULL primary fields. Symptoms include load profile learning operating on default 1.8 kW assumptions and SOC-target manual overrides never exiting.
+
+```bash
+docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, soc_pct, solar_kw, mode, source FROM system_readings WHERE source='cloud' ORDER BY id DESC LIMIT 5\").fetchall(); [print(r) for r in rows]"
+```
+
+If recent cloud-source rows show NULL primary fields, upgrade to v4.3.0 or newer.
 
 ### Authentication failed
 
@@ -302,5 +312,5 @@ GitHub Issues: https://github.com/mtnears/FranklinWH-Automation/issues
 
 ---
 
-**Last Updated:** March 2026
-**Version:** 4.1.0
+**Last Updated:** May 2026
+**Version:** 4.3.0

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-**Complete guide to configuring FranklinWH Battery Automation v4.1**
+**Complete guide to configuring FranklinWH Battery Automation v4.3**
 
 All configuration is done via the `.env` file. You never need to edit Python scripts directly.
 
@@ -386,5 +386,5 @@ docker exec -w /app/scripts franklin-automation python3 -c "from config import V
 
 ---
 
-**Last Updated:** March 2026
-**Version:** 4.1.0
+**Last Updated:** May 2026
+**Version:** 4.3.0

@@ -193,5 +193,5 @@ Check the [CHANGELOG.md](../CHANGELOG.md) for any new `.env` settings to add.
 
 ---
 
-**Last Updated:** March 2026
-**Version:** 4.1.0
+**Last Updated:** May 2026
+**Version:** 4.3.0

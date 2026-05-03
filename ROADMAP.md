@@ -80,6 +80,33 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 
 ## ✅ Recently Completed
 
+### v4.3.0 — Cloud Persistence + Override Bundle (May 2026)
+- **Cloud-only data persistence fix** — `system_readings` rows from the cloud collector now populate primary fields (SOC, solar, grid, battery, load, mode, grid_status). Previously these were NULL on cloud-only systems, breaking load profile learning and SOC-target override exit. Modbus remains source of truth on hybrid systems via `COALESCE` semantics in the UPDATE branch.
+- **Manual override UI redesign** — six time-based chips replaced with four outcome-oriented options: until SOC reached, for duration (custom h/m), until specific time (HH:MM), until canceled. Last custom duration remembered in localStorage. Banner shows time-remaining for time-based overrides.
+- **Override resilience** — `_read_latest_soc()` looks back 30 minutes for non-NULL SOC and falls back to direct cloud API call (30s cache) if DB unavailable. Defends override exit against future regressions.
+- **Modbus job guard** — `MODBUS_ENABLED=false` now actually disables the Modbus collection job, eliminating timeout-error noise on cloud-only systems.
+- **Dashboard config display fix** — backup reserve now correctly reads `BACKUP_RESERVE_PCT` (was reading non-existent `MIN_SOC_RESERVE`, defaulted to 20 regardless of `.env`).
+- **Solar forecast calibration** — house array tilt corrected (22°→18°), azimuth (-65°→0°), removed WNW penalty and noon-shift. R²=0.835 against measured production.
+
+### v4.2.2 — Adaptive Engine Cooldown Fix (April 2026)
+- **No-op switch poisoning fix** — `last_mode_switch` was being updated even when the engine decided to stay in the current mode, causing subsequent decisions in the same cycle to be blocked by a phantom 300-second cooldown. Fix: only update on actual mode transitions.
+- `enrich_state()` rounds `current_rate_cents` to 3 decimal places to remove floating-point noise from intelligence_log.
+
+### v4.2.1 — Data Export Tab (April 2026)
+- New Energy & Billing Data Export tab with three API endpoints, date picker, billing-period dropdown, summary cards, and CSV download.
+- Billing period dropdown label fix and fallback render path for older periods that pre-date `daily_energy_summary`.
+
+### v4.2.0 — Multi-Window Peaks + Modbus Hardening (April 2026)
+- **Multi-window peak support** — `rate_schedule.json` accepts multiple peak windows per rate plan (peak + partial-peak + off-peak), with seasonal selection via a `months` array on each window. Engine and peak bar both consume the multi-window structure.
+- **Modbus sanity bounds** — near-`0xFFFF` register values that previously slipped through exact-sentinel checks now trip explicit upper bounds (`MAX_PLAUSIBLE_SOLAR_W=25000`, `MAX_PLAUSIBLE_LOAD_W=50000`) and are discarded as Modbus errors.
+- **Inventory dedup** — `collect_device_inventory.py` deduplicates within a write to prevent duplicate rows from rapid firmware-probe cycles.
+- **Dynamic dashboard rate plan card** — reflects current schedule, tier, and rate from `rate_schedule.py` instead of hardcoded `E-TOU-D`.
+- **Diagnostic bundle enhancements** — `system_info.json` now includes engine_version, git_commit, and rate_schedule_name.
+
+### v4.1.1 — Bug Fixes (March 2026)
+- `collect_modbus.py` — `ValueError` raised when register values were unavailable and substituted with `'?'` then formatted with `:.3f`. Format expression now guarded against non-numeric fallback.
+- Inventory dedup race condition where rapid firmware probes could write duplicate `device_inventory` rows.
+
 ### v4.1.0 — SQLite Migration, Engine Hardening, Analytics Dashboard (March 2026)
 - **SQLite database layer** (`db.py`): All data storage migrated from CSV to SQLite. 17 tables cover system readings, solar data, weather, device inventory, billing, and engine decisions. DB initializes automatically on first run.
 - **New collectors**: `collect_franklin_cloud.py`, `collect_modbus.py`, `collect_solar_enphase.py`, `collect_weather_db.py`, `collect_pv_output.py`, `collect_device_inventory.py`, `rollup_daily_energy.py` — all write directly to SQLite

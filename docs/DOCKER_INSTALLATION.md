@@ -112,7 +112,7 @@ All tasks run automatically inside the container:
 | Smart Decision | Every 10-30 min (auto) | Core battery management (v4 adaptive engine) |
 | Pre-peak Check | Daily (e.g., 16:55) | Guaranteed check before peak |
 | Post-peak Check | Daily (e.g., 20:01) | Resume normal mode after peak |
-| Modbus Collection | Every 5 min | Local hardware data (if Modbus enabled) |
+| Modbus Collection | Every 5 min | Local hardware data (only if `MODBUS_ENABLED=true`) |
 | Enphase Collection | Every 5 min | House solar production (if configured) |
 | Dashboard Data | Every 1 min | Updates live dashboard |
 | Weather Collection | Every 15 min | Weather data logging (if enabled) |
@@ -421,5 +421,5 @@ Open: `http://YOUR-PI-IP:8100`
 
 ---
 
-**Last Updated:** March 2026
-**Version:** 4.1.0
+**Last Updated:** May 2026
+**Version:** 4.3.0
