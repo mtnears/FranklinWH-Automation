@@ -101,6 +101,34 @@ async def collect_cloud_data(test_mode=False):
         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         response_ms = (time.time() - start_time) * 1000
 
+        # Primary live fields — extracted from stats.current. These mirror
+        # what data_sources.CloudDataSource builds for live engine decisions.
+        # Required for cloud-only systems so system_readings rows aren't NULL
+        # (which breaks load profile learning + override SOC-target exit).
+        soc_pct = getattr(stats.current, 'battery_soc', None)
+        solar_kw = getattr(stats.current, 'solar_production', None)
+        grid_kw = getattr(stats.current, 'grid_use', None)
+        battery_kw = getattr(stats.current, 'battery_use', None)
+        home_load_kw = getattr(stats.current, 'home_load', None)
+        grid_status_str = None
+        try:
+            gs = getattr(stats.current, 'grid_status', None)
+            if gs is not None:
+                grid_status_str = gs.name if hasattr(gs, 'name') else str(gs)
+        except Exception:
+            pass
+        grid_connected = None
+        if grid_status_str:
+            # Cloud API enum (NORMAL, OFFGRID, etc.) and Modbus string
+            # ("Connected"/"Disconnected") disagree on naming — handle both.
+            s = grid_status_str.upper()
+            if s in ('NORMAL', 'CONNECTED', 'ON_GRID', 'GRID_TIE', 'GRID'):
+                grid_connected = 1
+            elif s in ('OFFGRID', 'OFF_GRID', 'DISCONNECTED', 'ISLAND',
+                       'EMERGENCY', 'FAULT'):
+                grid_connected = 0
+            # else: leave None for unrecognized statuses
+
         per_battery_soc = None
         per_battery_power = None
         cell_signal = None
@@ -146,6 +174,9 @@ async def collect_cloud_data(test_mode=False):
         if test_mode:
             log.info(f"Cloud API response in {response_ms:.0f}ms")
             log.info(f"  SOC: {stats.current.battery_soc:.1f}%")
+            log.info(f"  Power flows: solar={solar_kw}kW, grid={grid_kw}kW, "
+                     f"battery={battery_kw}kW, load={home_load_kw}kW")
+            log.info(f"  Grid status: {grid_status_str} (connected={grid_connected})")
             log.info(f"  Per-battery SOC: {per_battery_soc}")
             log.info(f"  Energy totals: solar={kwh_solar}, grid_in={kwh_grid_import}, "
                      f"grid_out={kwh_grid_export}, load={kwh_load}, "
@@ -160,6 +191,13 @@ async def collect_cloud_data(test_mode=False):
             init_db()
             store.system_reading_update_cloud(
                 timestamp=ts,
+                soc_pct=soc_pct,
+                solar_kw=solar_kw,
+                grid_kw=grid_kw,
+                battery_kw=battery_kw,
+                home_load_kw=home_load_kw,
+                grid_status=grid_status_str,
+                grid_connected=grid_connected,
                 per_battery_soc_json=per_battery_soc,
                 per_battery_power_json=per_battery_power,
                 kwh_solar=kwh_solar,
@@ -171,12 +209,18 @@ async def collect_cloud_data(test_mode=False):
                 kwh_generator=kwh_generator,
                 cell_signal=cell_signal,
                 wifi_signal=wifi_signal,
+                ambient_temp_c=ambient_temp,
                 solar_to_battery_kw=solar_to_bat,
                 grid_to_battery_kw=grid_to_bat,
+                run_status=run_status_val,
+                mode=mode_name,
+                mode_detail=mode_detail,
             )
+            soc_str = f"{soc_pct:.1f}" if soc_pct is not None else "?"
             log.info(f"Cloud data stored ({response_ms:.0f}ms): "
-                     f"per_bat_soc={per_battery_soc}, "
-                     f"kwh_solar={kwh_solar}, cell={cell_signal}")
+                     f"soc={soc_str}%, solar={solar_kw}kW, "
+                     f"per_bat_soc={per_battery_soc}, kwh_solar={kwh_solar}, "
+                     f"cell={cell_signal}")
         else:
             log.warning("DB not available, data not stored")
 

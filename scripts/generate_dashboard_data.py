@@ -41,7 +41,7 @@ except ImportError:
         TARGET_SOC = 95.0
         PEAK_START_HOUR = 17
         PEAK_END_HOUR = 20
-        MIN_SOC_RESERVE = 20
+        BACKUP_RESERVE_PCT = 20
         CHARGE_RATE_PER_HOUR = 10.0
         TOU_ENABLED = True
         SOLAR_ENABLED = True
@@ -503,7 +503,7 @@ def get_config_info():
     """Export relevant config settings for the dashboard Settings tab."""
     info = {
         'peak_soc_target': getattr(config, 'TARGET_SOC', 95),
-        'min_soc_reserve': getattr(config, 'MIN_SOC_RESERVE', 20),
+        'min_soc_reserve': getattr(config, 'BACKUP_RESERVE_PCT', 20),
         'charge_rate_kw': getattr(config, 'CHARGE_RATE_PER_HOUR', 10),
         'battery_capacity_kwh': config.BATTERY_CAPACITY_KWH,
         'tou_enabled': getattr(config, 'TOU_ENABLED', True),

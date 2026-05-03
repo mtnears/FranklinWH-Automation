@@ -68,8 +68,8 @@ CALIBRATION_MIN_DAYS = 14               # Minimum paired data points
 
 # House array defaults (battery-connected — the ONLY array that matters)
 HOUSE_ARRAY_KWP = 6.96                  # 16x Hyundai 435W
-HOUSE_ARRAY_TILT = 22                   # Roof pitch estimate
-HOUSE_ARRAY_AZIMUTH = -65               # ~295° true → -65 (0=S, -90=E, 90=W)
+HOUSE_ARRAY_TILT = 18                   # 4:12 roof pitch (~18.4°)
+HOUSE_ARRAY_AZIMUTH = 0                 # Due south (180° true; 0=S, -90=E, 90=W)
 
 DEFAULT_LATITUDE = 38.91
 DEFAULT_LONGITUDE = -120.84
@@ -565,11 +565,11 @@ class WeatherCalibration:
         return max(0.05, min(1.5, factor))
 
     def _clear_sky_kwh(self, dt: date) -> float:
-        """Clear-sky kWh for the house array. WNW azimuth reduces ~18%."""
+        """Clear-sky kWh budget for the house array (south-facing baseline)."""
         month = dt.month
         eff = CLEAR_SKY_EFFICIENCY.get(month, 0.65)
         sunrise, sunset = SUN_SCHEDULE.get(month, (7.0, 18.0))
-        return self.house_kwp * eff * (sunset - sunrise) * 0.82  # 0.82 = WNW penalty
+        return self.house_kwp * eff * (sunset - sunrise)
 
     def get_today_weather(self) -> Optional[dict]:
         """Get today's weather — from loaded data, DB observations, or live WU API."""
@@ -661,7 +661,7 @@ class ClearSkyFallback:
         month = dt.month
         eff = CLEAR_SKY_EFFICIENCY.get(month, 0.65)
         sunrise, sunset = SUN_SCHEDULE.get(month, (7.0, 18.0))
-        solar_noon = (sunrise + sunset) / 2.0 + 1.0  # +1h for WNW shift
+        solar_noon = (sunrise + sunset) / 2.0
         half_day = (sunset - sunrise) / 2.0
 
         hourly = []
@@ -877,19 +877,18 @@ class SolarForecastEngine:
             return 1.0
 
         # What the weather calibration alone would predict for today
-        # (this is what _apply_calibration will apply BEFORE our correction)
-        today_weather_factor = self._calibration.correction_factor()
+        # (this is what _apply_calibration will apply BEFORE our correction).
+        # Must pass today's weather; correction_factor() with no args defaults
+        # to weather_score=0.5 which produces a systematically low factor.
+        today_weather = self._calibration.get_today_weather()
+        today_weather_factor = self._calibration.correction_factor(today_weather)
         if today_weather_factor < 0.05:
             return 1.0
 
-        # What actually happened yesterday vs API raw
-        actual_ratio = actual_kwh / raw_api_kwh
-
-        # Our correction = actual_ratio / weather_factor
-        # So final calibration = weather_factor × (actual_ratio / weather_factor) = actual_ratio
-        factor = actual_ratio / today_weather_factor
-        forecast_kwh = raw_api_kwh * today_weather_factor  # for logging
-
+        # forecast_kwh = what we would predict for yesterday's raw API result
+        # using today's weather calibration. Compare yesterday's actual to
+        # that predicted value to get the correction needed today.
+        forecast_kwh = raw_api_kwh * today_weather_factor
         factor = actual_kwh / forecast_kwh
 
         # Bound to prevent wild corrections

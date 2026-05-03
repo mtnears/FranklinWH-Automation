@@ -523,7 +523,8 @@ def setup_schedule():
     
     # SQLite data collectors
     # Modbus + Enphase run back-to-back in a single job for time-aligned data
-    if Path(SCRIPT_DIR / "collect_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
+    modbus_enabled = getattr(config, 'MODBUS_ENABLED', False) if CONFIG_LOADED else False
+    if modbus_enabled and Path(SCRIPT_DIR / "collect_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every(5).minutes.do(job_collect_system_snapshot)
         _register("SQLite Modbus Collection", "Every 5 min")
     if Path(SCRIPT_DIR / "collect_weather_db.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
@@ -664,24 +665,72 @@ def read_override() -> dict:
 
 
 def _read_latest_soc() -> float:
-    """Read latest SOC from system_readings for override SOC checks.
+    """Read latest SOC for override SOC checks, with cloud fallback.
 
-    Returns SOC percentage or None if unavailable.
+    Resolution order:
+      1. Most recent system_readings row within last 30 minutes with non-NULL soc_pct
+      2. Direct Franklin cloud API call (cached for 30 sec to avoid hammering)
+
+    Returns SOC percentage or None if both sources unavailable.
     """
+    # Try DB first
     try:
         import sqlite3
         db_path = SCRIPT_DIR.parent / 'data' / 'franklin.db'
-        if not db_path.exists():
-            return None
-        conn = sqlite3.connect(str(db_path), timeout=5)
-        row = conn.execute(
-            "SELECT soc_pct FROM system_readings ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row and row[0] is not None:
-            return float(row[0])
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            # Container runs PST but SQLite date('now') is UTC — compute cutoff in Python
+            cutoff = (datetime.now() - timedelta(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+            row = conn.execute(
+                "SELECT soc_pct FROM system_readings "
+                "WHERE soc_pct IS NOT NULL AND timestamp >= ? "
+                "ORDER BY id DESC LIMIT 1",
+                (cutoff,)
+            ).fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                return float(row[0])
     except Exception:
         pass
+
+    # DB miss or stale — try cloud API with 30 sec cache
+    return _read_soc_from_cloud()
+
+
+# Module-level cache for cloud SOC fallback
+_soc_cloud_cache = {'value': None, 'ts': 0.0}
+_SOC_CLOUD_CACHE_TTL = 30.0
+
+
+def _read_soc_from_cloud() -> float:
+    """Cloud API fallback for SOC. Cached for 30 sec to avoid hammering."""
+    now_ts = time.time()
+    cached = _soc_cloud_cache.get('value')
+    if cached is not None and (now_ts - _soc_cloud_cache.get('ts', 0)) < _SOC_CLOUD_CACHE_TTL:
+        return cached
+
+    try:
+        username = getattr(config, 'FRANKLIN_USERNAME', '')
+        password = getattr(config, 'FRANKLIN_PASSWORD', '')
+        gateway_id = getattr(config, 'FRANKLIN_GATEWAY_ID', '')
+        if not all([username, password, gateway_id]):
+            return None
+
+        from franklinwh import Client, TokenFetcher
+
+        async def _fetch():
+            fetcher = TokenFetcher(username, password)
+            client = Client(fetcher, gateway_id)
+            return await client.get_stats()
+
+        stats = asyncio.run(_fetch())
+        if stats and hasattr(stats, 'current'):
+            soc = float(stats.current.battery_soc)
+            _soc_cloud_cache['value'] = soc
+            _soc_cloud_cache['ts'] = now_ts
+            return soc
+    except Exception as e:
+        log(f"  Cloud SOC fallback failed: {e}")
     return None
 
 
@@ -791,26 +840,59 @@ class APIHandler(BaseHTTPRequestHandler):
         self._json_response(200, ov)
 
     def _set_override(self):
-        """Activate a manual override."""
+        """Activate a manual override.
+
+        Supported `duration` values in payload:
+          - 'until_soc'      → no expires_at, exit on `exit_soc_pct` reached
+          - 'custom'         → expires_at from `duration_minutes` (1..1440)
+          - 'until_time'     → expires_at from `until_time` (HH:MM, today/tomorrow)
+          - 'until_cancel'   → no expires_at, exit only on manual cancel
+        """
         try:
             length = int(self.headers.get('Content-Length', 0))
             body = self.rfile.read(length)
             payload = json.loads(body)
 
             mode = payload.get('mode')
-            duration = payload.get('duration', '1h')
+            duration = payload.get('duration', 'until_cancel')
             exit_soc_pct = payload.get('exit_soc_pct')
 
             if mode not in ('emergency_backup', 'self_consumption', 'time_of_use'):
                 self._json_response(400, {'error': f'Invalid mode: {mode}'})
                 return
 
-            # Calculate expiry
-            dur_map = {'1h': 60, '2h': 120, '4h': 240, '8h': 480, 'until_cancel': None, 'until_soc': None}
-            minutes = dur_map.get(duration)
+            # Calculate expiry based on duration type
             expires_at = None
-            if minutes:
-                expires_at = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+            duration_minutes = None
+            until_time = None
+
+            if duration == 'until_soc' or duration == 'until_cancel':
+                # No expiry — exits on SOC condition or manual cancel
+                pass
+            elif duration == 'custom':
+                try:
+                    duration_minutes = int(payload.get('duration_minutes'))
+                except (TypeError, ValueError):
+                    self._json_response(400, {'error': 'duration_minutes must be an integer'})
+                    return
+                if not (1 <= duration_minutes <= 1440):
+                    self._json_response(400, {'error': 'duration_minutes must be 1-1440 (24h cap)'})
+                    return
+                expires_at = (datetime.now() + timedelta(minutes=duration_minutes)).isoformat()
+            elif duration == 'until_time':
+                until_time = payload.get('until_time', '')
+                import re as _re
+                if not _re.match(r'^([01]\d|2[0-3]):([0-5]\d)$', str(until_time)):
+                    self._json_response(400, {'error': 'until_time must be HH:MM (00-23:00-59)'})
+                    return
+                hh, mm = map(int, until_time.split(':'))
+                target = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
+                if target <= datetime.now():
+                    target += timedelta(days=1)
+                expires_at = target.isoformat()
+            else:
+                self._json_response(400, {'error': f'Invalid duration: {duration}'})
+                return
 
             # Write override state
             ov = {
@@ -820,6 +902,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 'started_at': datetime.now().isoformat(),
                 'expires_at': expires_at,
             }
+            if duration_minutes is not None:
+                ov['duration_minutes'] = duration_minutes
+            if until_time is not None:
+                ov['until_time'] = until_time
 
             # SOC-based exit condition
             if exit_soc_pct is not None:
@@ -831,7 +917,17 @@ class APIHandler(BaseHTTPRequestHandler):
                     pass
 
             write_override(ov)
-            label = f"{mode} for {duration}"
+
+            # Build human-readable label for log
+            if duration == 'custom':
+                hh = duration_minutes // 60
+                mm = duration_minutes % 60
+                dur_label = f"{hh}h {mm}m" if hh else f"{mm}m"
+            elif duration == 'until_time':
+                dur_label = f"until {until_time}"
+            else:
+                dur_label = duration
+            label = f"{mode} for {dur_label}"
             if ov.get('exit_soc_pct'):
                 label += f" or until SOC {'≥' if mode == 'emergency_backup' else '≤'} {ov['exit_soc_pct']:.0f}%"
             log(f"  Override activated: {label}")

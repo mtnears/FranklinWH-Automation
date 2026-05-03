@@ -987,7 +987,7 @@
             <div class="card"><div class="card-label">Automation Thresholds</div>
                 <div class="setting-note" style="margin-bottom:12px;color:var(--accent-amber)">⚠ Read from .env — edit .env file to change behavior</div>
                 <div class="setting-group"><label>Peak SOC Target (%)</label><input type="number" class="setting-input" id="s-psoc" value="100" disabled><div class="setting-note">.env: PEAK_SOC_TARGET</div></div>
-                <div class="setting-group"><label>Min SOC Reserve (%)</label><input type="number" class="setting-input" id="s-msoc" value="10" disabled><div class="setting-note">.env: MIN_SOC_RESERVE</div></div>
+                <div class="setting-group"><label>Min SOC Reserve (%)</label><input type="number" class="setting-input" id="s-msoc" value="10" disabled><div class="setting-note">.env: BACKUP_RESERVE_PCT</div></div>
                 <div class="setting-group"><label>Charge Rate (kW)</label><input type="number" class="setting-input" id="s-rate" value="3.3" step="0.1" disabled><div class="setting-note">.env: CHARGE_RATE_KW</div></div>
                 <div class="setting-group"><label>Peak Window(s)</label><input type="text" class="setting-input" id="s-peak" value="--" disabled><div class="setting-note">From rate_schedule.json</div></div>
             </div>
@@ -1069,17 +1069,27 @@
         <div class="modal-title" id="m-title">Override</div>
         <div class="modal-body" id="m-body">Override the automated schedule.</div>
         <div class="modal-options">
-            <div class="modal-opt sel" onclick="selDur(this,'1h')"><span class="modal-dot"></span><span>1 hour</span></div>
-            <div class="modal-opt" onclick="selDur(this,'2h')"><span class="modal-dot"></span><span>2 hours</span></div>
-            <div class="modal-opt" onclick="selDur(this,'4h')"><span class="modal-dot"></span><span>4 hours</span></div>
-            <div class="modal-opt" onclick="selDur(this,'8h')"><span class="modal-dot"></span><span>8 hours</span></div>
-            <div class="modal-opt" onclick="selDur(this,'until_cancel')"><span class="modal-dot"></span><span>Until cancelled</span></div>
-            <div class="modal-opt" onclick="selDur(this,'until_soc')"><span class="modal-dot"></span><span>Until SOC target</span></div>
+            <div class="modal-opt sel" onclick="selDur(this,'until_soc')"><span class="modal-dot"></span><span>Until SOC reached</span></div>
+            <div class="modal-opt" onclick="selDur(this,'custom')"><span class="modal-dot"></span><span>For duration</span></div>
+            <div class="modal-opt" onclick="selDur(this,'until_time')"><span class="modal-dot"></span><span>Until specific time</span></div>
+            <div class="modal-opt" onclick="selDur(this,'until_cancel')"><span class="modal-dot"></span><span>Until canceled</span></div>
         </div>
-        <div id="soc-target-row" style="display:none; margin:10px 0; padding:8px 12px; background:rgba(255,255,255,.04); border-radius:8px; align-items:center; gap:10px;">
+        <div id="soc-target-row" style="display:flex; margin:10px 0; padding:8px 12px; background:rgba(255,255,255,.04); border-radius:8px; align-items:center; gap:10px;">
             <label style="font-size:12px; color:var(--text-secondary); white-space:nowrap;" id="soc-target-label">Target SOC:</label>
             <input type="range" id="soc-target-slider" min="20" max="100" value="80" step="5" style="flex:1; accent-color:var(--accent-cyan);" oninput="document.getElementById('soc-target-val').textContent=this.value+'%'">
             <span id="soc-target-val" style="font-size:13px; font-weight:600; min-width:36px; text-align:right;">80%</span>
+        </div>
+        <div id="custom-dur-row" style="display:none; margin:10px 0; padding:8px 12px; background:rgba(255,255,255,.04); border-radius:8px; align-items:center; gap:10px;">
+            <label style="font-size:12px; color:var(--text-secondary); white-space:nowrap;">Duration:</label>
+            <input type="number" id="custom-dur-h" min="0" max="24" value="2" style="width:60px; padding:4px 6px; background:rgba(0,0,0,.2); border:1px solid rgba(255,255,255,.1); color:var(--text-primary); border-radius:4px; font-size:13px;">
+            <span style="font-size:12px; color:var(--text-secondary);">h</span>
+            <input type="number" id="custom-dur-m" min="0" max="59" value="0" style="width:60px; padding:4px 6px; background:rgba(0,0,0,.2); border:1px solid rgba(255,255,255,.1); color:var(--text-primary); border-radius:4px; font-size:13px;">
+            <span style="font-size:12px; color:var(--text-secondary);">m</span>
+        </div>
+        <div id="until-time-row" style="display:none; margin:10px 0; padding:8px 12px; background:rgba(255,255,255,.04); border-radius:8px; align-items:center; gap:10px;">
+            <label style="font-size:12px; color:var(--text-secondary); white-space:nowrap;">Until:</label>
+            <input type="time" id="until-time-input" value="18:00" style="padding:4px 6px; background:rgba(0,0,0,.2); border:1px solid rgba(255,255,255,.1); color:var(--text-primary); border-radius:4px; font-size:13px;">
+            <span id="until-time-note" style="font-size:11px; color:var(--text-secondary);"></span>
         </div>
         <div class="modal-actions">
             <button class="modal-btn mbtn-cancel" onclick="closeModal()">Cancel</button>
@@ -1188,7 +1198,7 @@
 
 <script>
 
-let D=null,S={},OV={active:false},ovMode=null,ovDur='1h',logTimer=null,dashTimer=null;
+let D=null,S={},OV={active:false},ovMode=null,ovDur='until_soc',logTimer=null,dashTimer=null;
 
 document.addEventListener('DOMContentLoaded',()=>{
     loadSettings(); tick(); setInterval(tick,1000);
@@ -2498,15 +2508,140 @@ async function loadLogs(){
 }
 
 // ===== OVERRIDE =====
-function showOverrideModal(m){ovMode=m;const t=document.getElementById('m-title'),b=document.getElementById('m-body'),btn=document.getElementById('m-confirm');if(m==='self_consumption'){t.textContent='🔄 Force Self Consumption';b.textContent='Switch to Self Consumption. No grid charging. Schedule paused.';btn.className='modal-btn mbtn-confirm';btn.textContent='Activate'}else{t.textContent='🛡️ Force Emergency Backup';b.textContent='Charge from grid ASAP. Schedule paused.';btn.className='modal-btn mbtn-confirm danger';btn.textContent='Activate'}document.getElementById('soc-target-row').style.display='none';document.getElementById('soc-target-slider').value=m==='emergency_backup'?95:40;document.getElementById('soc-target-val').textContent=(m==='emergency_backup'?'95':'40')+'%';selDur(document.querySelector('.modal-opt'),'1h');document.getElementById('ov-modal').classList.add('active')}
+function showOverrideModal(m){
+    ovMode=m;
+    const t=document.getElementById('m-title'),b=document.getElementById('m-body'),btn=document.getElementById('m-confirm');
+    if(m==='self_consumption'){t.textContent='🔄 Force Self Consumption';b.textContent='Switch to Self Consumption. No grid charging. Schedule paused.';btn.className='modal-btn mbtn-confirm';btn.textContent='Activate'}
+    else{t.textContent='🛡️ Force Emergency Backup';b.textContent='Charge from grid ASAP. Schedule paused.';btn.className='modal-btn mbtn-confirm danger';btn.textContent='Activate'}
+    // Default SOC slider value depends on direction (charge up vs drain down)
+    const defSoc=m==='emergency_backup'?95:40;
+    document.getElementById('soc-target-slider').value=defSoc;
+    document.getElementById('soc-target-val').textContent=defSoc+'%';
+    // Restore last custom duration from localStorage if present
+    try{
+        const last=localStorage.getItem('fwh_ov_last_duration');
+        if(last){const d=JSON.parse(last);
+            if(typeof d.hours==='number')document.getElementById('custom-dur-h').value=d.hours;
+            if(typeof d.minutes==='number')document.getElementById('custom-dur-m').value=d.minutes;
+        }
+    }catch(e){}
+    // Default until-time = now + 1h rounded to nearest 15 min
+    const now=new Date();
+    let target=new Date(now.getTime()+60*60*1000);
+    const mins=target.getMinutes();
+    target.setMinutes(Math.round(mins/15)*15,0,0);
+    const hh=String(target.getHours()).padStart(2,'0'),mm=String(target.getMinutes()).padStart(2,'0');
+    document.getElementById('until-time-input').value=hh+':'+mm;
+    // Default to "until SOC reached" option
+    selDur(document.querySelector('.modal-opt'),'until_soc');
+    document.getElementById('ov-modal').classList.add('active')
+}
 function closeModal(){document.getElementById('ov-modal').classList.remove('active')}
-function selDur(el,d){ovDur=d;document.querySelectorAll('.modal-opt').forEach(o=>o.classList.remove('sel'));el.classList.add('sel');const sr=document.getElementById('soc-target-row');if(d==='until_soc'){sr.style.display='flex';const lbl=document.getElementById('soc-target-label');lbl.textContent=ovMode==='emergency_backup'?'Charge to:':'Drain to:'}else{sr.style.display='none'}}
-function confirmOverride(){const dm={'1h':60,'2h':120,'4h':240,'8h':480,'until_cancel':null,'until_soc':null},mins=dm[ovDur];const socTarget=ovDur==='until_soc'?parseInt(document.getElementById('soc-target-slider').value):null;OV={active:true,mode:ovMode,dur:ovDur,start:Date.now(),exp:mins?Date.now()+mins*60000:null,exitSoc:socTarget};saveOV();updateOVBanner();closeModal();document.getElementById('cancel-ov-btn').style.display='block';const payload={mode:ovMode,duration:ovDur};if(socTarget)payload.exit_soc_pct=socTarget;fetch('/api/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(r=>r.json()).then(d=>{if(d.status==='ok')console.log('Override activated:',d.override);else console.error('Override failed:',d)}).catch(e=>console.error('Override API error:',e))}
+function selDur(el,d){
+    ovDur=d;
+    document.querySelectorAll('.modal-opt').forEach(o=>o.classList.remove('sel'));
+    el.classList.add('sel');
+    const sr=document.getElementById('soc-target-row');
+    const cr=document.getElementById('custom-dur-row');
+    const tr=document.getElementById('until-time-row');
+    sr.style.display='none';cr.style.display='none';tr.style.display='none';
+    if(d==='until_soc'){
+        sr.style.display='flex';
+        const lbl=document.getElementById('soc-target-label');
+        lbl.textContent=ovMode==='emergency_backup'?'Charge to:':'Drain to:'
+    }else if(d==='custom'){
+        cr.style.display='flex'
+    }else if(d==='until_time'){
+        tr.style.display='flex';
+        updateUntilTimeNote()
+    }
+}
+function updateUntilTimeNote(){
+    try{
+        const v=document.getElementById('until-time-input').value;
+        if(!v){document.getElementById('until-time-note').textContent='';return}
+        const [hh,mm]=v.split(':').map(Number);
+        const now=new Date();
+        const t=new Date(now);t.setHours(hh,mm,0,0);
+        if(t<=now)t.setDate(t.getDate()+1);
+        const sameDay=t.toDateString()===now.toDateString();
+        document.getElementById('until-time-note').textContent=sameDay?'(today)':'(tomorrow)'
+    }catch(e){}
+}
+document.addEventListener('input',function(e){if(e.target&&e.target.id==='until-time-input')updateUntilTimeNote()});
+function confirmOverride(){
+    const payload={mode:ovMode,duration:ovDur};
+    let socTarget=null,minutes=null,untilTime=null;
+    if(ovDur==='until_soc'){
+        socTarget=parseInt(document.getElementById('soc-target-slider').value);
+        payload.exit_soc_pct=socTarget;
+    }else if(ovDur==='custom'){
+        const h=parseInt(document.getElementById('custom-dur-h').value)||0;
+        const m=parseInt(document.getElementById('custom-dur-m').value)||0;
+        minutes=h*60+m;
+        if(minutes<1){alert('Duration must be at least 1 minute');return}
+        if(minutes>1440){alert('Duration cannot exceed 24 hours');return}
+        payload.duration_minutes=minutes;
+        try{localStorage.setItem('fwh_ov_last_duration',JSON.stringify({hours:h,minutes:m}))}catch(e){}
+    }else if(ovDur==='until_time'){
+        untilTime=document.getElementById('until-time-input').value;
+        if(!/^([01]\d|2[0-3]):([0-5]\d)$/.test(untilTime)){alert('Invalid time format');return}
+        payload.until_time=untilTime;
+    }
+    // Compute local expiry for client-side banner countdown
+    let exp=null;
+    if(minutes!==null){exp=Date.now()+minutes*60000}
+    else if(untilTime){
+        const [hh,mm]=untilTime.split(':').map(Number);
+        const now=new Date();const t=new Date(now);t.setHours(hh,mm,0,0);
+        if(t<=now)t.setDate(t.getDate()+1);
+        exp=t.getTime();
+    }
+    OV={active:true,mode:ovMode,dur:ovDur,start:Date.now(),exp:exp,exitSoc:socTarget,untilTime:untilTime};
+    saveOV();updateOVBanner();closeModal();
+    document.getElementById('cancel-ov-btn').style.display='block';
+    fetch('/api/override',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+        .then(r=>r.json()).then(d=>{
+            if(d.status==='ok')console.log('Override activated:',d.override);
+            else{console.error('Override failed:',d);if(d.error)alert('Override failed: '+d.error)}
+        }).catch(e=>console.error('Override API error:',e))
+}
 function cancelOverride(){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none';fetch('/api/override/cancel',{method:'POST'}).then(r=>r.json()).then(d=>console.log('Override cancelled:',d)).catch(e=>console.error('Cancel API error:',e))}
-function updateOVBanner(){const bn=document.getElementById('override-banner');if(!OV.active){bn.classList.remove('active');return}if(OV.exp&&Date.now()>OV.exp){cancelOverride();return}bn.classList.add('active');const nm=OV.mode==='self_consumption'?'Self Consumption':'Emergency Backup';if(OV.exitSoc){const dir=OV.mode==='emergency_backup'?'≥':'≤';document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — until SOC '+dir+' '+OV.exitSoc+'%'}else if(OV.exp){const r=Math.max(0,OV.exp-Date.now());document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — '+Math.floor(r/3600000)+'h '+Math.floor(r%3600000/60000)+'m remaining'}else document.getElementById('override-text').textContent='⚠️ Override: '+nm+' — until cancelled'}
+function updateOVBanner(){
+    const bn=document.getElementById('override-banner');
+    if(!OV.active){bn.classList.remove('active');return}
+    if(OV.exp&&Date.now()>OV.exp){cancelOverride();return}
+    bn.classList.add('active');
+    const nm=OV.mode==='self_consumption'?'Self Consumption':'Emergency Backup';
+    let txt;
+    if(OV.exitSoc){
+        const dir=OV.mode==='emergency_backup'?'≥':'≤';
+        txt='⚠️ Override: '+nm+' — until SOC '+dir+' '+OV.exitSoc+'%';
+    }else if(OV.untilTime&&OV.exp){
+        const r=Math.max(0,OV.exp-Date.now());
+        const h=Math.floor(r/3600000),m=Math.floor(r%3600000/60000);
+        txt='⚠️ Override: '+nm+' — until '+OV.untilTime+' ('+h+'h '+m+'m)';
+    }else if(OV.exp){
+        const r=Math.max(0,OV.exp-Date.now());
+        txt='⚠️ Override: '+nm+' — '+Math.floor(r/3600000)+'h '+Math.floor(r%3600000/60000)+'m remaining';
+    }else{
+        txt='⚠️ Override: '+nm+' — until cancelled';
+    }
+    document.getElementById('override-text').textContent=txt;
+}
 setInterval(updateOVBanner,60000);
 function saveOV(){try{localStorage.setItem('fwh_ov',JSON.stringify(OV))}catch(e){}}
-function loadOV(){try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}fetch('/api/override').then(r=>r.json()).then(srv=>{if(srv.active&&!OV.active){OV={active:true,mode:srv.mode,dur:srv.duration,start:new Date(srv.started_at).getTime(),exp:srv.expires_at?new Date(srv.expires_at).getTime():null,exitSoc:srv.exit_soc_pct||null};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='block'}else if(!srv.active&&OV.active){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'}}).catch(()=>{})}
+function loadOV(){
+    try{const s=localStorage.getItem('fwh_ov');if(s){OV=JSON.parse(s);updateOVBanner();if(OV.active)document.getElementById('cancel-ov-btn').style.display='block'}}catch(e){}
+    fetch('/api/override').then(r=>r.json()).then(srv=>{
+        if(srv.active&&!OV.active){
+            OV={active:true,mode:srv.mode,dur:srv.duration,start:srv.started_at?new Date(srv.started_at).getTime():Date.now(),exp:srv.expires_at?new Date(srv.expires_at).getTime():null,exitSoc:srv.exit_soc_pct||null,untilTime:srv.until_time||null};
+            saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='block'
+        }else if(!srv.active&&OV.active){
+            OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none'
+        }
+    }).catch(()=>{})
+}
 
 // ===== REPORT ISSUE =====
 let reportRange='24', reportBundleUrl=null, reportSummary='';

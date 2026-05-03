@@ -1808,7 +1808,7 @@ class AdaptiveEngine:
 
     def _load_override(self) -> Optional[dict]:
         """Load override.json for emergency preparedness etc."""
-        override_path = self.config.get('override_path', 'data/override.json')
+        override_path = self.config.get('override_path', 'logs/override.json')
         if os.path.exists(override_path):
             try:
                 with open(override_path, 'r') as f:

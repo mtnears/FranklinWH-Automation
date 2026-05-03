@@ -595,6 +595,20 @@ class _Store:
     def system_reading_update_cloud(self, *,
                                      timestamp: str,
                                      device_id: str = 'agate_main',
+                                     # Primary fields (Modbus is source of truth when both present;
+                                     # cloud fills only NULLs in UPDATE branch, inserts freely
+                                     # in cloud-only INSERT branch):
+                                     soc_pct: float = None,
+                                     solar_kw: float = None,
+                                     grid_kw: float = None,
+                                     battery_kw: float = None,
+                                     home_load_kw: float = None,
+                                     grid_voltage_v: float = None,
+                                     grid_frequency_hz: float = None,
+                                     grid_status: str = None,
+                                     grid_connected: int = None,
+                                     # Cloud-enrichment fields (always overwritten — Modbus
+                                     # doesn't populate these):
                                      per_battery_soc_json: str = None,
                                      per_battery_power_json: str = None,
                                      kwh_solar: float = None,
@@ -617,7 +631,47 @@ class _Store:
         Finds the nearest Modbus row within 5 minutes of the given timestamp
         and fills in the NULL cloud fields. If no matching row exists,
         inserts a new row with source='cloud'.
+
+        For PRIMARY fields (soc_pct, solar_kw, grid_kw, battery_kw, home_load_kw,
+        grid_voltage_v, grid_frequency_hz, grid_status, grid_connected) the
+        UPDATE branch uses COALESCE semantics — only fills the field if the
+        existing row has NULL. Modbus is the source of truth for these on
+        Modbus-enabled systems. The cloud-only INSERT path populates them
+        unconditionally so cloud-only users get a fully-populated row.
         """
+        # Columns where Modbus wins ties — cloud only fills NULLs in UPDATE branch
+        primary_fields = [
+            ('soc_pct', soc_pct),
+            ('solar_kw', solar_kw),
+            ('grid_kw', grid_kw),
+            ('battery_kw', battery_kw),
+            ('home_load_kw', home_load_kw),
+            ('grid_voltage_v', grid_voltage_v),
+            ('grid_frequency_hz', grid_frequency_hz),
+            ('grid_status', grid_status),
+            ('grid_connected', grid_connected),
+        ]
+        # Columns where cloud is authoritative — overwrite freely
+        enrichment_fields = [
+            ('per_battery_soc_json', per_battery_soc_json),
+            ('per_battery_power_json', per_battery_power_json),
+            ('kwh_solar', kwh_solar),
+            ('kwh_grid_import', kwh_grid_import),
+            ('kwh_grid_export', kwh_grid_export),
+            ('kwh_load', kwh_load),
+            ('kwh_battery_charge', kwh_battery_charge),
+            ('kwh_battery_discharge', kwh_battery_discharge),
+            ('kwh_generator', kwh_generator),
+            ('cell_signal', cell_signal),
+            ('wifi_signal', wifi_signal),
+            ('ambient_temp_c', ambient_temp_c),
+            ('solar_to_battery_kw', solar_to_battery_kw),
+            ('grid_to_battery_kw', grid_to_battery_kw),
+            ('run_status', run_status),
+            ('mode', mode),
+            ('mode_detail', mode_detail),
+        ]
+
         with _safe_write() as conn:
             row = conn.execute("""
                 SELECT timestamp FROM system_readings
@@ -631,25 +685,13 @@ class _Store:
                 target_ts = row[0]
                 sets = []
                 vals = []
-                for col, val in [
-                    ('per_battery_soc_json', per_battery_soc_json),
-                    ('per_battery_power_json', per_battery_power_json),
-                    ('kwh_solar', kwh_solar),
-                    ('kwh_grid_import', kwh_grid_import),
-                    ('kwh_grid_export', kwh_grid_export),
-                    ('kwh_load', kwh_load),
-                    ('kwh_battery_charge', kwh_battery_charge),
-                    ('kwh_battery_discharge', kwh_battery_discharge),
-                    ('kwh_generator', kwh_generator),
-                    ('cell_signal', cell_signal),
-                    ('wifi_signal', wifi_signal),
-                    ('ambient_temp_c', ambient_temp_c),
-                    ('solar_to_battery_kw', solar_to_battery_kw),
-                    ('grid_to_battery_kw', grid_to_battery_kw),
-                    ('run_status', run_status),
-                    ('mode', mode),
-                    ('mode_detail', mode_detail),
-                ]:
+                # Primary fields use COALESCE so existing Modbus values aren't clobbered
+                for col, val in primary_fields:
+                    if val is not None:
+                        sets.append(f"{col} = COALESCE({col}, ?)")
+                        vals.append(val)
+                # Enrichment fields overwrite directly
+                for col, val in enrichment_fields:
                     if val is not None:
                         sets.append(f"{col} = ?")
                         vals.append(val)
@@ -661,8 +703,14 @@ class _Store:
                         vals
                     )
             else:
+                # Cloud-only INSERT — populate everything we have
                 self.system_reading(
                     timestamp=timestamp, device_id=device_id, source='cloud',
+                    soc_pct=soc_pct, solar_kw=solar_kw, grid_kw=grid_kw,
+                    battery_kw=battery_kw, home_load_kw=home_load_kw,
+                    grid_voltage_v=grid_voltage_v,
+                    grid_frequency_hz=grid_frequency_hz,
+                    grid_status=grid_status, grid_connected=grid_connected,
                     per_battery_soc_json=per_battery_soc_json,
                     per_battery_power_json=per_battery_power_json,
                     kwh_solar=kwh_solar, kwh_grid_import=kwh_grid_import,

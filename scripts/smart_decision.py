@@ -539,21 +539,75 @@ async def check_grid_connected() -> bool:
 
 
 def _read_latest_soc() -> float:
-    """Read latest SOC from system_readings for override SOC checks."""
+    """Read latest SOC for override SOC checks, with cloud fallback.
+
+    Resolution order:
+      1. Most recent system_readings row within last 30 minutes with non-NULL soc_pct
+      2. Direct Franklin cloud API call (cached for 30 sec)
+
+    Returns SOC percentage or None if both sources unavailable.
+    """
     try:
         import sqlite3 as _sqlite3
+        from datetime import datetime as _dt, timedelta as _td
         db_path = config.DATA_DIR / 'franklin.db'
-        if not db_path.exists():
-            return None
-        conn = _sqlite3.connect(str(db_path), timeout=5)
-        row = conn.execute(
-            "SELECT soc_pct FROM system_readings ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row and row[0] is not None:
-            return float(row[0])
+        if db_path.exists():
+            conn = _sqlite3.connect(str(db_path), timeout=5)
+            cutoff = (_dt.now() - _td(minutes=30)).strftime('%Y-%m-%d %H:%M:%S')
+            row = conn.execute(
+                "SELECT soc_pct FROM system_readings "
+                "WHERE soc_pct IS NOT NULL AND timestamp >= ? "
+                "ORDER BY id DESC LIMIT 1",
+                (cutoff,)
+            ).fetchone()
+            conn.close()
+            if row and row[0] is not None:
+                return float(row[0])
     except Exception:
         pass
+
+    return _read_soc_from_cloud()
+
+
+# Module-level cache for cloud SOC fallback
+_soc_cloud_cache = {'value': None, 'ts': 0.0}
+_SOC_CLOUD_CACHE_TTL = 30.0
+
+
+def _read_soc_from_cloud() -> float:
+    """Cloud API fallback for SOC. Cached for 30 sec."""
+    import time as _time
+    now_ts = _time.time()
+    cached = _soc_cloud_cache.get('value')
+    if cached is not None and (now_ts - _soc_cloud_cache.get('ts', 0)) < _SOC_CLOUD_CACHE_TTL:
+        return cached
+
+    try:
+        import asyncio as _asyncio
+        username = getattr(config, 'FRANKLIN_USERNAME', '')
+        password = getattr(config, 'FRANKLIN_PASSWORD', '')
+        gateway_id = getattr(config, 'FRANKLIN_GATEWAY_ID', '')
+        if not all([username, password, gateway_id]):
+            return None
+
+        from franklinwh import Client, TokenFetcher
+
+        async def _fetch():
+            fetcher = TokenFetcher(username, password)
+            client = Client(fetcher, gateway_id)
+            return await client.get_stats()
+
+        stats = _asyncio.run(_fetch())
+        if stats and hasattr(stats, 'current'):
+            soc = float(stats.current.battery_soc)
+            _soc_cloud_cache['value'] = soc
+            _soc_cloud_cache['ts'] = now_ts
+            return soc
+    except Exception as e:
+        try:
+            log_intelligence(f"Cloud SOC fallback failed: {e}")
+        except Exception:
+            pass
     return None
 
 
