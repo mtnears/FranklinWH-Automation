@@ -131,6 +131,17 @@ CT_MIN_FLOOR_ABOVE_RESERVE = 5.0
 # Provides buffer for load variability (HVAC spikes, dryer, etc).
 CT_PEAK_SURVIVAL_MARGIN_PCT = 10.0
 
+# SC commit margin: how close projected SOC must come to the dynamic target
+# before SC is acceptable. Used in addition to survival floor. Survival floor
+# alone allows SC to commit when projection only "survives peak" but leaves
+# the battery well below target — on small-solar / large-battery / cloudy
+# scenarios this prevents EB from ever firing, since SC commit preempts the
+# gap evaluation. Comparing against target_soc - this margin means SC only
+# commits when it will land close to target; otherwise CT returns TOU and
+# the EB gap logic gets a chance to fire grid charging at the last
+# responsible moment.
+CT_SC_COMMIT_MARGIN_PCT = 3.0
+
 # Minimum forecast solar surplus (kWh) before target tracking engages.
 # Below this, the system just parks in TOU and lets solar/grid handle it.
 CT_MIN_FORECAST_SOLAR_KWH = 2.0
@@ -1289,13 +1300,28 @@ class AdaptiveEngine:
 
                 horizon = 'sunset' if hours_to_peak > 24 else 'peak'
 
-                if sc_projected_soc >= survival_floor:
+                # SC commit gate. The threshold is the higher of survival floor
+                # and (target_soc - small margin). Comparing only against survival
+                # floor causes SC to commit any time projection clears "survive
+                # peak" — even when projection is well below target. On small
+                # solar or cloudy days this locks the engine into SC for the rest
+                # of the day, preempting EB gap charging entirely. Using the
+                # target-aware threshold means SC commits when projection will
+                # land close to target; otherwise we return TOU and the chained
+                # EB gap evaluation gets to apply last-responsible-moment timing.
+                sc_commit_threshold = max(
+                    survival_floor,
+                    target_soc - CT_SC_COMMIT_MARGIN_PCT,
+                )
+                metrics['ct_sc_commit_threshold'] = round(sc_commit_threshold, 1)
+
+                if sc_projected_soc >= sc_commit_threshold:
                     return self._decide(
                         state, "self_consumption",
                         f"CT: SOC {soc:.0f}% < target {target_soc:.0f}%, "
                         f"solar {state.solar_kw:.1f}kW > load {state.home_load_kw:.1f}kW, "
                         f"SC projects to {sc_projected_soc:.0f}% by {horizon} "
-                        f"(need {survival_floor:.0f}%) — SC commit",
+                        f"(need {sc_commit_threshold:.0f}%) — SC commit",
                         confidence=0.85, priority=7,
                         action="switch_to_self_consumption", metrics=metrics,
                     )
@@ -1305,7 +1331,7 @@ class AdaptiveEngine:
                         state, "time_of_use",
                         f"CT: SOC {soc:.0f}% < target {target_soc:.0f}%, "
                         f"solar > load but SC projects only {sc_projected_soc:.0f}% by {horizon} "
-                        f"(need {survival_floor:.0f}%) — TOU for full charge",
+                        f"(need {sc_commit_threshold:.0f}%) — TOU for full charge",
                         confidence=0.8, priority=7,
                         action="switch_to_tou", metrics=metrics,
                     )

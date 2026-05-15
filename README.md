@@ -10,6 +10,21 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
+## What's New in v4.3.1
+
+### Adaptive Engine — Target-Aware SC Commit
+The Continuous Target Tracking strategy previously gated Self-Consumption commit on whether the projection would clear the *survival floor* (reserve + peak need + safety). On systems where solar can't realistically fill the battery to target — small solar relative to capacity, cloudy days, or any configuration where forecast solar falls short — projection would clear survival even when it landed well below target. The engine would commit to SC for the rest of the day, locking out the chained EB gap evaluation that would otherwise have grid-charged at the last responsible moment. End result: undercharged at peak, EB never firing despite a real shortfall.
+
+The fix introduces a target-aware threshold: SC commits only when projection lands within a small margin (default 3%) of the dynamic target. When projection falls short, CT returns TOU and the EB gap logic gets to apply last-responsible-moment timing as designed. Both small-solar and well-sized installs are now handled by the same logic — sunny days continue to commit to SC normally; cloudy or under-sized days fall through to EB gap evaluation.
+
+- New constant `CT_SC_COMMIT_MARGIN_PCT` (default 3.0%) controls how close projection must come to target before SC is acceptable
+- New `ct_sc_commit_threshold` metric is recorded in `intelligence_log` rows where CT is the winning decision, making the gate value visible in diagnostic bundles
+- Decision messages now reference the unified threshold instead of the bare survival floor
+
+Reported as Issue #21 by miztahsparklez. Diagnostic bundle analysis confirmed the SC commit gate as the root cause — projection consistently cleared survival floor (~59%) while landing well below configured target (95-100%), so EB never fired and battery sat at 60-65% going into peak.
+
+---
+
 ## What's New in v4.3
 
 ### Cloud-Only Data Persistence Fix
