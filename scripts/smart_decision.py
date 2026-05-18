@@ -59,6 +59,7 @@ from datetime import datetime, timedelta
 
 # Import configuration and data sources
 from config import config, configure_logging, is_peak_period
+from version import get_version
 from data_sources import get_battery_data, switch_battery_mode, data_manager
 
 # Optional imports for enabled features
@@ -668,7 +669,7 @@ async def main() -> int:
     
     try:
         log_intelligence("=" * 70)
-        engine_label = "v4.0 Adaptive" if ADAPTIVE_ENGINE_LOADED else "v3.5.1"
+        engine_label = f"v{get_version()} Adaptive" if ADAPTIVE_ENGINE_LOADED else "v3.5.1"
         log_intelligence(f"FranklinWH Smart Decision Engine {engine_label}")
         
         # Check for manual override first

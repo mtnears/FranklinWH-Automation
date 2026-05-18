@@ -142,6 +142,17 @@ CT_PEAK_SURVIVAL_MARGIN_PCT = 10.0
 # responsible moment.
 CT_SC_COMMIT_MARGIN_PCT = 3.0
 
+# Partial-peak protection (Priority 4.5) safety margin.
+# On three-tier rate plans (e.g., PG&E EV2-A) partial-peak windows wrap the
+# sacred peak. Battery may not cover the full expensive window, so P4.5 has
+# to decide: discharge through partial-peak (SC) or preserve battery for
+# peak (TOU, accepting partial-peak imports at the mid-tier rate).
+# Safety margin (kWh) is added to forecast peak demand when computing the
+# threshold. Higher = more conservative (favors TOU, more peak headroom).
+# Lower = more aggressive (favors SC, accepts risk of running out late
+# peak). 2.0 kWh ≈ 7% on a 27 kWh system.
+P45_SAFETY_MARGIN_KWH = float(os.environ.get('P45_SAFETY_MARGIN_KWH', '2.0'))
+
 # Minimum forecast solar surplus (kWh) before target tracking engages.
 # Below this, the system just parks in TOU and lets solar/grid handle it.
 CT_MIN_FORECAST_SOLAR_KWH = 2.0
@@ -374,6 +385,13 @@ class SystemState:
     hours_to_peak: Optional[float] = None
     peak_duration_hours: float = 0.0
     rate_spread_cents: float = 0.0
+
+    # Three-tier rate plan support (Priority 4.5)
+    # Populated by enrich_state() — see rate_schedule.is_partial_peak() etc.
+    is_partial_peak: bool = False
+    is_expensive: bool = False                    # peak OR partial_peak
+    peak_remaining_hours: float = 0.0             # peak h left in current expensive window
+    partial_peak_remaining_hours: float = 0.0     # partial h left in current expensive window
 
     # Forecast info (populated by engine when available)
     forecast_solar_kwh: float = 0.0    # Remaining solar before peak
@@ -608,6 +626,13 @@ class AdaptiveEngine:
         state.peak_duration_hours = self.rates.peak_duration_hours(state.timestamp)
         state.rate_spread_cents = self.rates.rate_spread(state.timestamp)
 
+        # Three-tier rate plan: partial-peak awareness for Priority 4.5
+        state.is_partial_peak = self.rates.is_partial_peak(state.timestamp)
+        state.is_expensive = state.is_peak or state.is_partial_peak
+        peak_h, partial_h = self.rates.expensive_window_remaining_hours(state.timestamp)
+        state.peak_remaining_hours = peak_h
+        state.partial_peak_remaining_hours = partial_h
+
         # Solar forecast: prefer forecast engine, fall back to learned profile
         if state.hours_to_peak is not None and state.hours_to_peak > 0:
             plan = self._get_morning_plan(state.soc_percent, state.timestamp)
@@ -691,6 +716,25 @@ class AdaptiveEngine:
                 confidence=1.0, priority=4,
                 action="switch_to_self_consumption",
             )
+
+        # --- Priority 4.5: Partial-Peak Conditional Protection ---
+        # Three-tier rate plans (e.g., PG&E EV2-A) wrap the sacred peak window
+        # with partial-peak windows at a mid-tier rate. Battery may not cover
+        # the full expensive window, so we prioritize peak coverage:
+        #   - Pre-peak partial + battery can cover peak → SC (discharge through)
+        #   - Pre-peak partial + battery can't cover peak → TOU (preserve battery),
+        #     then chain to EB gap eval which may grid-charge if time-to-peak
+        #     is tight enough
+        #   - Post-peak partial → SC (use remaining battery; tomorrow's peak
+        #     is recoverable via overnight + solar)
+        if state.is_partial_peak:
+            pp_decision = self._evaluate_partial_peak(state)
+            if pp_decision:
+                if pp_decision.action == "switch_to_tou":
+                    eb_decision = self._evaluate_eb_gap(state)
+                    if eb_decision:
+                        return eb_decision
+                return pp_decision
 
         # --- Priority 5: Solar Curtailment Prevention ---
         if (state.soc_percent >= CURTAILMENT_SOC_THRESHOLD
@@ -1412,6 +1456,142 @@ class AdaptiveEngine:
             )
 
         return None  # Should not reach here
+
+    # ===================================================================
+    # Partial-Peak Conditional Protection (Priority 4.5)
+    # ===================================================================
+
+    def _evaluate_partial_peak(self, state: SystemState) -> Optional[Decision]:
+        """Decide what to do during a partial-peak window.
+
+        On three-tier rate plans (e.g., PG&E EV2-A), partial-peak windows
+        wrap the sacred peak window — typically 3-4pm before peak and
+        9pm-midnight after peak. Mid-priced: avoid imports when possible
+        but accept gracefully when battery can't cover the full expensive
+        window. Peak coverage is prioritized over partial-peak coverage.
+
+        Returns:
+            Decision when in a partial-peak window (caller may chain to
+            EB gap eval on TOU action). Returns None if not in partial-peak
+            (caller should fall through to subsequent priorities).
+        """
+        if not state.is_partial_peak:
+            return None
+
+        battery_kwh = self.config.get(
+            'battery_capacity_kwh',
+            getattr(getattr(self.profile, 'capacity', None),
+                    'total_capacity_kwh', 27.2)
+        )
+        reserve_pct = self.config.get('backup_reserve_pct', 20.0)
+        available_kwh = max(
+            0.0,
+            (state.soc_percent - reserve_pct) / 100.0 * battery_kwh
+        )
+
+        metrics = {
+            'soc': round(state.soc_percent, 1),
+            'p45_available_kwh': round(available_kwh, 1),
+            'p45_peak_remaining_h': round(state.peak_remaining_hours, 1),
+            'p45_partial_remaining_h': round(state.partial_peak_remaining_hours, 1),
+        }
+
+        # Track curtailment when SOC is high with solar producing — matches
+        # the P4 / P5 pattern so partial-peak doesn't blind the curtailment log.
+        if (state.soc_percent >= CURTAILMENT_SOC_THRESHOLD
+                and state.solar_kw > MIN_SOLAR_PRODUCING_KW):
+            self._track_curtailment(state)
+
+        # --- Post-peak partial-peak (today's peak is already done) ---
+        # The next peak is tomorrow — overnight off-peak charging plus
+        # tomorrow's solar will refill the battery. No reason to preserve
+        # battery now. Discharging saves ~$0.10/kWh vs partial-peak imports.
+        if state.peak_remaining_hours <= 0:
+            if available_kwh > 0.5:
+                return self._decide(
+                    state, "self_consumption",
+                    f"Partial-peak (post-peak): SOC {state.soc_percent:.0f}% — "
+                    f"discharging {available_kwh:.1f}kWh remaining, "
+                    f"saves vs partial-peak imports",
+                    confidence=0.85, priority=4,
+                    action="switch_to_self_consumption", metrics=metrics,
+                )
+            return self._decide(
+                state, "time_of_use",
+                f"Partial-peak (post-peak): SOC {state.soc_percent:.0f}% at reserve — "
+                f"TOU, let grid power home",
+                confidence=0.85, priority=4,
+                action="switch_to_tou", metrics=metrics,
+            )
+
+        # --- Pre-peak partial-peak (sacred peak still ahead today) ---
+        # Forecast peak demand and decide whether battery can afford to
+        # discharge through this partial-peak window while still covering peak.
+        peak_demand_kwh = self._forecast_peak_demand(state)
+        threshold = peak_demand_kwh + P45_SAFETY_MARGIN_KWH
+        metrics['p45_peak_demand_kwh'] = round(peak_demand_kwh, 1)
+        metrics['p45_safety_margin_kwh'] = round(P45_SAFETY_MARGIN_KWH, 1)
+        metrics['p45_threshold_kwh'] = round(threshold, 1)
+
+        if available_kwh >= threshold:
+            return self._decide(
+                state, "self_consumption",
+                f"Partial-peak (pre-peak): {available_kwh:.1f}kWh available ≥ "
+                f"{peak_demand_kwh:.1f}kWh peak need + {P45_SAFETY_MARGIN_KWH:.1f}kWh margin — "
+                f"discharging through",
+                confidence=0.85, priority=4,
+                action="switch_to_self_consumption", metrics=metrics,
+            )
+
+        return self._decide(
+            state, "time_of_use",
+            f"Partial-peak (pre-peak): {available_kwh:.1f}kWh available < "
+            f"{peak_demand_kwh:.1f}kWh peak need + {P45_SAFETY_MARGIN_KWH:.1f}kWh margin — "
+            f"TOU to preserve battery for peak",
+            confidence=0.85, priority=4,
+            action="switch_to_tou", metrics=metrics,
+        )
+
+    def _forecast_peak_demand(self, state: SystemState) -> float:
+        """Estimate kWh battery draw during the upcoming peak window.
+
+        Walks hour-by-hour across the next peak window summing the learned
+        hourly load profile. Does not currently subtract expected solar
+        contribution — evening peaks (typical for PG&E and most CA utilities)
+        see minimal solar overlap, and v1 is intentionally conservative to
+        favor preserving battery for peak.
+
+        Returns 0.0 if no peak window is found in the schedule (e.g.,
+        weekends/holidays on rate plans without daily peak windows).
+        """
+        peak_start = self.rates.next_peak_start(state.timestamp)
+        if peak_start is None:
+            return 0.0
+
+        peak_end = self.rates.next_peak_end(state.timestamp)
+        if peak_end is None or peak_end <= peak_start:
+            # Fallback: use peak_duration_hours from state
+            peak_dur = state.peak_duration_hours if state.peak_duration_hours > 0 else 3.0
+            peak_end = peak_start + timedelta(hours=peak_dur)
+
+        total_kwh = 0.0
+        check = peak_start
+        safety_limit = peak_start + timedelta(hours=12)  # never walk past 12h
+
+        while check < peak_end and check < safety_limit:
+            # Walk to the top of the next hour (or to peak_end, whichever first)
+            next_hour = check.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            slot_end = min(next_hour, peak_end)
+            hours_in_slot = (slot_end - check).total_seconds() / 3600.0
+            hour_idx = check.hour
+            if 0 <= hour_idx < len(self._hourly_load_kw):
+                load_kw = self._hourly_load_kw[hour_idx]
+            else:
+                load_kw = 2.0  # safe default
+            total_kwh += load_kw * hours_in_slot
+            check = slot_end
+
+        return total_kwh
 
     # ===================================================================
     # EB Gap Charging

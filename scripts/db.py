@@ -493,6 +493,16 @@ def init_db():
         conn.executescript(BILLING_SCHEMA_SQL)
         conn.commit()
         logger.info(f"Database initialized: {_DB_PATH}")
+        # One-time historical data cleanup. Idempotent — re-runs are no-ops
+        # once the data is canonical. Wrapped in try/except so a migration
+        # hiccup never blocks startup.
+        try:
+            with _safe_write() as wconn:
+                n = _backfill_normalize_modes(wconn)
+            if n:
+                logger.info(f"Mode normalization migration: {n} rows updated")
+        except Exception as e:
+            logger.warning(f"Mode normalization migration failed: {e}")
     except Exception as e:
         logger.warning(f"Database init failed: {e}")
 
@@ -514,6 +524,106 @@ def close():
 def _now_iso() -> str:
     """Current time as ISO string."""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+# =============================================================================
+# Mode Normalization
+# =============================================================================
+#
+# system_readings.mode is written by multiple collectors:
+#   - collect_modbus.py writes canonical engine form: 'self_consumption',
+#     'time_of_use', 'emergency_backup', 'manual'
+#   - collect_franklin_cloud.py used to pass through the cloud API's raw
+#     display string ('Self-Consumption', 'TOU-B', 'Emergency Backup')
+#
+# When both collectors write to the same row (cloud UPDATEs an existing
+# Modbus row, which is the common case on hybrid systems), the mode value
+# flipped format every cycle. Analytics tab mode bands rendered as a
+# barcode of alternating per-cycle stripes instead of solid per-mode blocks.
+#
+# normalize_mode() collapses all known variants to the canonical engine form.
+# It is called automatically by system_reading() and system_reading_update_cloud()
+# so any caller writing to the mode column gets normalization for free.
+# Collectors may also call it explicitly (recommended) to self-document intent.
+
+_MODE_NORMALIZE_MAP = {
+    'self_consumption':  'self_consumption',
+    'Self-Consumption':  'self_consumption',
+    'Self Consumption':  'self_consumption',
+    'time_of_use':       'time_of_use',
+    'TOU':               'time_of_use',
+    'TOU-B':             'time_of_use',
+    'Time of Use':       'time_of_use',
+    'Time-of-Use':       'time_of_use',
+    'emergency_backup':  'emergency_backup',
+    'Emergency Backup':  'emergency_backup',
+    'Emergency-Backup':  'emergency_backup',
+    'Backup':            'emergency_backup',
+    'manual':            'manual',
+    'Manual':            'manual',
+}
+
+
+def normalize_mode(raw):
+    """Collapse known mode display strings to canonical engine form.
+
+    Returns None for empty / unrecognized values. Canonical forms pass through
+    unchanged. Unknown values fall through to a lower-snake-case best-effort
+    so future format drift degrades gracefully instead of barcoding.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    raw = raw.strip()
+    if not raw:
+        return None
+    if raw in _MODE_NORMALIZE_MAP:
+        return _MODE_NORMALIZE_MAP[raw]
+    # Best-effort fallback: 'Some New Mode' -> 'some_new_mode'
+    return raw.lower().replace('-', '_').replace(' ', '_') or None
+
+
+def _backfill_normalize_modes(conn) -> int:
+    """One-time migration that rewrites historical non-canonical mode values
+    to canonical form. Idempotent — re-running is a no-op.
+
+    Run automatically on init_db() if any non-canonical rows are present.
+    Returns the number of rows updated.
+    """
+    canonical = ('self_consumption', 'time_of_use', 'emergency_backup',
+                 'manual', None)
+    placeholders = ','.join(['?'] * (len(canonical) - 1))
+    # Find distinct non-canonical mode values to migrate
+    rows = conn.execute(
+        f"SELECT DISTINCT mode FROM system_readings "
+        f"WHERE mode NOT IN ({placeholders}) AND mode IS NOT NULL",
+        canonical[:-1]
+    ).fetchall()
+    if not rows:
+        return 0
+
+    total = 0
+    for r in rows:
+        raw = r[0]
+        normalized = normalize_mode(raw)
+        if normalized == raw:
+            continue
+        if normalized is None:
+            cur = conn.execute(
+                "UPDATE system_readings SET mode = NULL WHERE mode = ?",
+                (raw,)
+            )
+        else:
+            cur = conn.execute(
+                "UPDATE system_readings SET mode = ? WHERE mode = ?",
+                (normalized, raw)
+            )
+        n = cur.rowcount or 0
+        if n:
+            logger.info(f"Mode normalization: {raw!r} -> {normalized!r} ({n} rows)")
+        total += n
+    return total
 
 
 # =============================================================================
@@ -564,6 +674,9 @@ class _Store:
                        timestamp: str = None):
         """Store a parsed system reading."""
         ts = timestamp or _now_iso()
+        # Normalize mode at write time — defense in depth. Cleans any collector
+        # that forgot to normalize, guarantees the column stays canonical.
+        mode = normalize_mode(mode)
         with _safe_write() as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO system_readings
@@ -633,13 +746,29 @@ class _Store:
         inserts a new row with source='cloud'.
 
         For PRIMARY fields (soc_pct, solar_kw, grid_kw, battery_kw, home_load_kw,
-        grid_voltage_v, grid_frequency_hz, grid_status, grid_connected) the
-        UPDATE branch uses COALESCE semantics — only fills the field if the
-        existing row has NULL. Modbus is the source of truth for these on
-        Modbus-enabled systems. The cloud-only INSERT path populates them
-        unconditionally so cloud-only users get a fully-populated row.
+        grid_voltage_v, grid_frequency_hz, grid_status, grid_connected, mode,
+        mode_detail) the UPDATE branch uses COALESCE semantics — only fills the
+        field if the existing row has NULL. Modbus is the source of truth for
+        these on Modbus-enabled systems. The cloud-only INSERT path populates
+        them unconditionally so cloud-only users get a fully-populated row.
+
+        mode is normalized via normalize_mode() before storage regardless of
+        path — cloud API returns display strings like 'Self-Consumption' that
+        must collapse to canonical 'self_consumption' so historical analytics
+        and engine logic compare cleanly.
         """
-        # Columns where Modbus wins ties — cloud only fills NULLs in UPDATE branch
+        # Normalize cloud-API mode strings to canonical engine form.
+        # Cloud returns 'Self-Consumption' / 'TOU-B' / 'Emergency Backup';
+        # Modbus and engine write 'self_consumption' / 'time_of_use' /
+        # 'emergency_backup'. Without normalization, alternating Modbus and
+        # cloud writes to the same row produce a barcode mode column.
+        mode = normalize_mode(mode)
+
+        # Columns where Modbus wins ties — cloud only fills NULLs in UPDATE branch.
+        # mode and mode_detail are Modbus-authoritative: the engine reads register
+        # 15507 (instant, local) and writes canonical form. Cloud mode arrives as
+        # a display string ~15 min later and would overwrite the live value if
+        # treated as enrichment.
         primary_fields = [
             ('soc_pct', soc_pct),
             ('solar_kw', solar_kw),
@@ -650,6 +779,8 @@ class _Store:
             ('grid_frequency_hz', grid_frequency_hz),
             ('grid_status', grid_status),
             ('grid_connected', grid_connected),
+            ('mode', mode),
+            ('mode_detail', mode_detail),
         ]
         # Columns where cloud is authoritative — overwrite freely
         enrichment_fields = [
@@ -668,8 +799,6 @@ class _Store:
             ('solar_to_battery_kw', solar_to_battery_kw),
             ('grid_to_battery_kw', grid_to_battery_kw),
             ('run_status', run_status),
-            ('mode', mode),
-            ('mode_detail', mode_detail),
         ]
 
         with _safe_write() as conn:

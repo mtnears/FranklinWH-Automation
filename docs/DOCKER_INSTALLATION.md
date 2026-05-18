@@ -61,6 +61,8 @@ HOME_MODE=tou
 
 If you run Self Consumption as your normal mode instead of TOU, set `HOME_MODE=self_consumption`.
 
+> **For three-tier rate plans (peak / partial-peak / off-peak) or plans with seasonal rate switching**, configure `data/rate_schedule.json` instead of (or in addition to) the `.env` PEAK_* vars. The shipped `rate_schedule.json` is pre-configured for PG&E EV2-A; copy from `data/rate_schedule.example.json` for other plans (E-TOU-D, SMUD, SCE, Pepco, ComEd). See [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md#rate-schedule-rate_schedulejson) for full details.
+
 ### 3. Create Data Directories
 
 ```bash
@@ -383,6 +385,20 @@ If you previously used native installation, disable those tasks:
 2. Uncheck all Franklin-related tasks
 3. Docker's internal scheduler handles everything now
 
+### DSM Firewall — Allow Docker Bridge Subnets
+
+If the build fails with DNS or network errors, or the container starts but cannot reach external APIs, your DSM Firewall is likely blocking Docker's bridge network. Add an allow rule:
+
+1. Control Panel → Security → Firewall → Edit Rules
+2. Add a new rule **above** any "Allow LAN only" or deny rules:
+   - Ports: All
+   - Source IP: Specific IP / Subnet
+   - IP: `172.16.0.0`, Subnet mask: `255.240.0.0`
+   - Action: Allow
+3. Save and apply
+
+This covers all Docker bridge subnets (172.16.0.0 through 172.31.255.255). See [TROUBLESHOOTING.md](TROUBLESHOOTING.md#synology--docker-bridge-subnet-blocked-by-dsm-firewall) for related DNS daemon config if the build still fails after the firewall rule is in place.
+
 ---
 
 ## Raspberry Pi Notes
@@ -422,4 +438,4 @@ Open: `http://YOUR-PI-IP:8100`
 ---
 
 **Last Updated:** May 2026
-**Version:** 4.3.0
+**Version:** 4.4.1

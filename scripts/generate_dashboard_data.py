@@ -524,6 +524,16 @@ def get_config_info():
              'days': w.days}
             for w in peak_windows
         ]
+        # Three-tier rate plan support (EV2-A, E-ELEC, etc.) — emit
+        # partial-peak windows alongside peak windows so the dashboard
+        # can render them. Older two-tier plans simply produce an
+        # empty list, which the frontend hides gracefully.
+        partial_peak_windows = [w for w in schedule.windows if w.tier == 'partial_peak']
+        info['partial_peak_windows'] = [
+            {'start': w.start.strftime('%H:%M'), 'end': w.end.strftime('%H:%M'),
+             'days': w.days}
+            for w in partial_peak_windows
+        ]
         if peak_windows:
             info['peak_start_hour'] = peak_windows[0].start.hour
             info['peak_end_hour'] = peak_windows[0].end.hour

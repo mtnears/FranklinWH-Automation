@@ -1,6 +1,6 @@
 # Configuration Reference
 
-**Complete guide to configuring FranklinWH Battery Automation v4.3**
+**Complete guide to configuring FranklinWH Battery Automation v4.4**
 
 All configuration is done via the `.env` file. You never need to edit Python scripts directly.
 
@@ -41,7 +41,7 @@ The Gateway ID is a 20-character alphanumeric string (e.g., `10060005A02X2447043
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BATTERY_CAPACITY_KWH` | `30` | Total battery capacity in kWh (all batteries combined) |
+| `BATTERY_CAPACITY_KWH` | `13.6` | Total battery capacity in kWh (all batteries combined). aPower 2: 13.6 kWh per unit, sum for multi-battery installs (e.g., 27.2 for 2× aPower 2). aPower 1: ~13.6 kWh per unit. |
 | `CHARGE_RATE_PER_HOUR` | `32.0` | Charge rate as % per hour (see testing instructions below) |
 
 **Testing your charge rate:** Switch to backup mode at night, note starting SOC and time, wait 30-60 minutes, check SOC again. Calculate: `(ending_soc - starting_soc) / hours_elapsed`. Typical values: ~35-40%/hr for 13.6 kWh, ~30-35%/hr for 30 kWh, ~15-18%/hr for 60 kWh.
@@ -116,7 +116,139 @@ The forecast engine predicts daily solar production to optimize grid charging de
 
 ---
 
-## TOU Settings
+## Rate Schedule (rate_schedule.json)
+
+The rate schedule file at `data/rate_schedule.json` describes your utility rate plan — tiers (peak, partial-peak, off-peak), time-of-day windows, day-of-week applicability, seasonal rate switching, and holidays. This is the modern way to configure the engine's understanding of your rates.
+
+**Use rate_schedule.json when** you have a three-tier plan (e.g., PG&E EV2-A with peak + partial-peak + off-peak), seasonal rate differences (most TOU plans), multiple peak windows in a day, or want the dashboard to display correct rates and windows.
+
+**The simple TOU settings below (`PEAK_START_HOUR`/`PEAK_END_HOUR`) still work for basic single-peak two-tier plans** — they're the legacy path and remain supported.
+
+### Simplest Case — Single Peak, Two Tiers
+
+This covers most common TOU plans (PG&E E-TOU-D, etc.). Define two tiers, one peak window, and the default tier:
+
+```json
+{
+  "rate_schedule": {
+    "name": "PG&E E-TOU-D with CARE",
+    "tiers": {
+      "peak": {"rate_cents": 39.0},
+      "off_peak": {"rate_cents": 27.0}
+    },
+    "windows": [
+      {"tier": "peak", "days": ["mon","tue","wed","thu","fri"],
+       "start": "17:00", "end": "20:00"}
+    ],
+    "default_tier": "off_peak",
+    "holidays": ["2026-01-01","2026-07-04","2026-12-25"],
+    "holiday_tier": "off_peak",
+    "export": {"capable": false, "net_metering": "NEM 2.0", "export_rates": null}
+  }
+}
+```
+
+When no window matches the current time, the engine falls back to `default_tier`. The example above is a complete working config — no further sections required.
+
+### Three-Tier Plan with Partial-Peak
+
+For plans like PG&E EV2-A that include partial-peak windows surrounding a sacred peak. Add a `partial_peak` tier and additional windows. The engine treats `partial_peak` as a distinct mid-priced tier (see Priority 4.5 in the engine).
+
+```json
+"tiers": {
+  "peak": {"rate_cents": 26.714},
+  "partial_peak": {"rate_cents": 25.628},
+  "off_peak": {"rate_cents": 14.663}
+},
+"windows": [
+  {"tier": "peak", "days": ["mon","tue","wed","thu","fri","sat","sun"],
+   "start": "16:00", "end": "21:00"},
+  {"tier": "partial_peak", "days": ["mon","tue","wed","thu","fri","sat","sun"],
+   "start": "15:00", "end": "16:00"},
+  {"tier": "partial_peak", "days": ["mon","tue","wed","thu","fri","sat","sun"],
+   "start": "21:00", "end": "00:00"}
+]
+```
+
+List windows in priority order — first match wins. Day codes: `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`. Windows that cross midnight are supported (`start` > `end`).
+
+### Seasonal Rate Switching (v4.4.1+)
+
+For plans where rates differ by season (most California TOU plans, many others), add a `seasons` array that overrides `tier_rates` and/or `windows` based on calendar month. The engine picks the right season automatically at startup — no manual JSON edits on June 1 / October 1.
+
+```json
+"seasons": [
+  {
+    "name": "summer",
+    "months": [6, 7, 8, 9],
+    "tier_rates": {"peak": 34.976, "partial_peak": 27.794, "off_peak": 14.663}
+  },
+  {
+    "name": "winter",
+    "months": [10, 11, 12, 1, 2, 3, 4, 5],
+    "tier_rates": {"peak": 26.714, "partial_peak": 25.628, "off_peak": 14.663}
+  }
+]
+```
+
+Each season can also override `windows` if your plan changes time windows seasonally (e.g., Pepco R-TOU-P has different summer/winter peak hours). Configs without a `seasons` block behave exactly as before — fully backward compatible.
+
+**Precedence (later wins):**
+1. JSON base `tier_rates` and `windows`
+2. Season `tier_rates` and `windows` (matched by current month)
+3. DB `rate_history` table override for peak/off_peak (when row exists with `effective_date <= today`)
+
+Validation warnings at startup catch common misconfig: overlapping months between seasons, missing month coverage, invalid month values, unknown tier names in `tier_rates`.
+
+### Holidays
+
+List dates (YYYY-MM-DD) when normal peak windows don't apply. The engine treats holiday dates as the `holiday_tier` (default `off_peak`).
+
+```json
+"holidays": ["2026-01-01", "2026-07-04", "2026-12-25"],
+"holiday_tier": "off_peak"
+```
+
+For plans with no holiday exception (e.g., PG&E EV2-A applies peak every day including holidays), leave `holidays` as `[]`.
+
+### Export Configuration
+
+For users with grid-export systems (NEM 2.0, NEM 3.0, etc.).
+
+```json
+"export": {
+  "capable": true,
+  "net_metering": "NEM 2.0",
+  "export_rates": {"peak": 8.0, "off_peak": 4.0}
+}
+```
+
+For non-export systems, set `capable: false` and `export_rates: null`. The engine skips post-peak self-consumption discharge logic on export systems since surplus goes to the grid for credit.
+
+### Where to Find Examples
+
+`data/rate_schedule.example.json` ships with complete examples for common plans:
+- `pge_e_tou_d_care` — PG&E E-TOU-D with CARE
+- `pge_e_tou_d_standard` — PG&E E-TOU-D standard rate
+- `pge_ev2_a_care` — PG&E EV2-A with CARE (three-tier with seasonal switching)
+- `sce_tou_d_prime` — SCE TOU-D-PRIME
+- `smud_tou` — SMUD Time-of-Use
+- `pepco_r_tou_p_seasonal` — Pepco R-TOU-P with seasonal window switching
+- `comed_real_time_pricing` — ComEd dynamic pricing fallback
+
+Copy the relevant block into your `rate_schedule.json` (drop the wrapping `examples` and example-name keys) and adjust rates to match your bill.
+
+### Authoritative Rate Source: rate_history Table
+
+The SQLite `rate_history` table stores rate-plan history with effective dates. When populated, the engine reads the most-recent row with `effective_date <= today` and uses those rates for peak and off-peak, overriding the JSON values. This lets you preserve historical accuracy across rate changes (PG&E rate updates effective March 1, etc.) by inserting new rows rather than editing JSON.
+
+For three-tier plans, `partial_peak` rates come from JSON `seasons` since `rate_history` has no `partial_peak` column. Two-tier plans can use either DB or JSON-only configuration.
+
+---
+
+## TOU Settings (Simple Single-Peak Plans)
+
+For simple two-tier rate plans with one peak window, peak hours can be configured directly via `.env` vars without a `rate_schedule.json`. **For three-tier plans, seasonal rate switching, or multiple peak windows per day, configure `data/rate_schedule.json` instead** — see [Rate Schedule](#rate-schedule-rate_schedulejson) above.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -126,7 +258,7 @@ The forecast engine predicts daily solar production to optimize grid charging de
 | `PEAK2_START_HOUR` | (disabled) | Optional second peak start |
 | `PEAK2_END_HOUR` | (disabled) | Optional second peak end |
 
-**Common TOU schedules:**
+**Common single-peak TOU schedules:**
 - PG&E E-TOU-D: `PEAK_START_HOUR=17`, `PEAK_END_HOUR=20`
 - SCE TOU-D-4-9PM: `PEAK_START_HOUR=16`, `PEAK_END_HOUR=21`
 - SDG&E TOU-DR1: `PEAK_START_HOUR=16`, `PEAK_END_HOUR=21`
@@ -167,6 +299,7 @@ The forecast engine predicts daily solar production to optimize grid charging de
 | `CHARGING_STRATEGY` | `balanced` | `conservative`, `balanced`, or `aggressive` |
 | `MIN_SOLAR_FOR_WAIT` | `0.5` | Minimum solar kW to delay grid charging |
 | `TAPER_CEILING_PCT` | `95` | Grid charging ceiling for non-export systems (see below) |
+| `CT_SC_COMMIT_MARGIN_PCT` | `3.0` | How close projection must come to target before Self-Consumption commits in Continuous Target Tracking. Lower values force the engine to grid-charge harder on small-solar / cloudy days; higher values commit to SC earlier. Added in v4.3.1 to fix under-target peak entry on small-solar systems |
 
 **Taper ceiling tuning (`TAPER_CEILING_PCT`):** On non-export systems, battery charge rate tapers at high SOC, which means solar production that exceeds the reduced charge rate gets curtailed (wasted). By capping grid charging below the taper knee, the engine leaves room for solar to fill during peak production hours. Start at 95 and check your curtailment data after each sunny day. Lower by 5 until curtailment drops to near zero. Typical sweet spot is 75-90 depending on your battery size and solar output. Export systems can leave this at 95 since surplus goes to the grid for credit.
 
@@ -387,4 +520,4 @@ docker exec -w /app/scripts franklin-automation python3 -c "from config import V
 ---
 
 **Last Updated:** May 2026
-**Version:** 4.3.0
+**Version:** 4.4.1

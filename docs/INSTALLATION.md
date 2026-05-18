@@ -156,6 +156,8 @@ PEAK_DAYS=weekdays
 HOME_MODE=tou
 ```
 
+The `PEAK_*` vars above work for simple single-peak two-tier plans. **For three-tier plans (e.g., PG&E EV2-A) or plans with seasonal rate switching**, configure `data/rate_schedule.json` instead — see [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md#rate-schedule-rate_schedulejson).
+
 ---
 
 ## Verification
@@ -194,4 +196,4 @@ Check the [CHANGELOG.md](../CHANGELOG.md) for any new `.env` settings to add.
 ---
 
 **Last Updated:** May 2026
-**Version:** 4.3.0
+**Version:** 4.4.1

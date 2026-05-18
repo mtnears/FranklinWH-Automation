@@ -1338,6 +1338,22 @@ class APIHandler(BaseHTTPRequestHandler):
                             }
                             for w in peak_windows
                         ]
+                        # Three-tier rate plan support — emit partial-peak
+                        # windows alongside peak windows so analytics graphs
+                        # can render them as a distinct band. Older two-tier
+                        # plans produce an empty list, which the frontend
+                        # hides gracefully.
+                        partial_peak_windows = [w for w in schedule.windows if w.tier == 'partial_peak']
+                        result['partial_peak_windows'] = [
+                            {
+                                'start_hour': w.start.hour,
+                                'start_minute': w.start.minute,
+                                'end_hour': w.end.hour,
+                                'end_minute': w.end.minute,
+                                'days': w.days,
+                            }
+                            for w in partial_peak_windows
+                        ]
                         if peak_windows:
                             result['peak_start_hour'] = peak_windows[0].start.hour
                             result['peak_end_hour'] = peak_windows[0].end.hour

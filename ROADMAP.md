@@ -80,6 +80,26 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 
 ## ✅ Recently Completed
 
+### v4.4.1 — Per-Season Rate Auto-Switching (May 2026)
+- **Per-season tier_rates override** — `rate_schedule.json` `seasons` block now supports `tier_rates` overrides in addition to the existing `windows` overrides. Plans with summer/winter rate differences (PG&E EV2-A, etc.) flip automatically on the seasonal boundary without manual JSON edits
+- Three-tier plans previously had a silent gap: `rate_history` DB only stored peak/off_peak, so `partial_peak` stayed frozen across season changes. JSON-level seasons block closes that gap; DB precedence preserved for peak/off_peak
+- **Version banner from VERSION file** — new `scripts/version.py` helper; engine banner now reads dynamically from `/app/VERSION` instead of hardcoded `v4.0`
+- Validation warnings for season misconfig (overlap, missing months, invalid types, unknown tier names)
+- Backward compatible — configs without `seasons` block unchanged
+
+### v4.4.0 — Three-Tier Rate Support (May 2026)
+- **Priority 4.5 partial-peak protection** — new decision priority between peak (P4) and curtailment (P5). Pre-peak partial-peak preserves battery for sacred peak; post-peak partial-peak discharges freely
+- New `is_partial_peak()`, `is_expensive()`, and `expensive_window_remaining_hours()` helpers in `rate_schedule.py`
+- Reference `rate_schedule.json` updated to PG&E EV2-A with CARE; existing plan examples (E-TOU-D, SMUD, SCE, Pepco, ComEd) remain in `data/rate_schedule.example.json`
+- Dashboard rate plan card displays all three tiers; analytics tab amber bands distinguish peak (darker) and partial-peak (lighter)
+- Two-tier plans unchanged — P4.5 is a no-op when no `partial_peak` tier is defined
+
+### v4.3.1 — Target-Aware SC Commit (May 2026)
+- **Root cause fix** for under-target peak entry on small-solar / cloudy-day systems. CT strategy was committing to SC when projection cleared survival floor (~59%) even when landing well below configured target (95-100%), locking out EB gap evaluation
+- Fix: new `CT_SC_COMMIT_MARGIN_PCT` constant (default 3.0%) — SC commits only when projection lands within margin of target. Cloudy / under-sized days fall through to EB gap logic as designed
+- New `ct_sc_commit_threshold` metric in `intelligence_log` rows where CT wins
+- Reported by **miztahsparklez** (Issue #21). Issue #22 and additional related community reports addressed in the same release
+
 ### v4.3.0 — Cloud Persistence + Override Bundle (May 2026)
 - **Cloud-only data persistence fix** — `system_readings` rows from the cloud collector now populate primary fields (SOC, solar, grid, battery, load, mode, grid_status). Previously these were NULL on cloud-only systems, breaking load profile learning and SOC-target override exit. Modbus remains source of truth on hybrid systems via `COALESCE` semantics in the UPDATE branch.
 - **Manual override UI redesign** — six time-based chips replaced with four outcome-oriented options: until SOC reached, for duration (custom h/m), until specific time (HH:MM), until canceled. Last custom duration remembered in localStorage. Banner shows time-remaining for time-based overrides.

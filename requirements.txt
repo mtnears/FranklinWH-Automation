@@ -1,5 +1,5 @@
 # ==============================================================================
-# FranklinWH Battery Automation - Python Dependencies v3.5.0
+# FranklinWH Battery Automation - Python Dependencies v4.4.1
 # ==============================================================================
 
 # Core Franklin WH API
@@ -19,7 +19,7 @@ matplotlib>=3.7.0
 schedule>=1.2.0
 
 # ==============================================================================
-# NEW v3.5.0 Dependencies
+# Modbus & Async Dependencies (added in v3.5.0)
 # ==============================================================================
 
 # Modbus TCP integration for local data collection

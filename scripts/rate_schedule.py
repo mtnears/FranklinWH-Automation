@@ -8,6 +8,7 @@ Replaces simple peak_start/peak_end with full multi-tier rate schedule:
   - Weekday/weekend/holiday rules
   - Export rates for NEM 3.0 users
   - Rate lookups: current_rate(), next_rate_change(), is_peak(), cheapest_before_peak()
+  - Seasonal switching: per-season tier_rates and/or windows overrides
 
 Reads from data/rate_schedule.json (user-configured).
 
@@ -110,6 +111,63 @@ class RateSchedule:
         """Is the current time in a peak rate window?"""
         tier, _ = self.current_tier(dt)
         return tier == 'peak'
+
+    def is_partial_peak(self, dt: Optional[datetime] = None) -> bool:
+        """Is the current time in a partial-peak rate window?
+
+        Partial-peak tiers exist on three-tier rate plans (e.g., PG&E EV2-A
+        with 4-9pm peak and 3-4pm / 9pm-midnight partial-peak). These windows
+        are mid-priced — the engine should avoid imports when possible but
+        accept them gracefully when battery can't cover the full expensive
+        window. See Priority 4.5 in adaptive_engine.py for the decision logic.
+        """
+        tier, _ = self.current_tier(dt)
+        return tier == 'partial_peak'
+
+    def is_expensive(self, dt: Optional[datetime] = None) -> bool:
+        """Is the current time in peak OR partial-peak — 'avoid imports if possible'."""
+        tier, _ = self.current_tier(dt)
+        return tier in ('peak', 'partial_peak')
+
+    def expensive_window_remaining_hours(
+            self, dt: Optional[datetime] = None) -> Tuple[float, float]:
+        """Hours of peak and partial-peak remaining in the current contiguous
+        expensive period (until the next off-peak transition).
+
+        Returns (peak_hours_remaining, partial_peak_hours_remaining).
+        Returns (0.0, 0.0) if not currently in an expensive window.
+
+        Used by Priority 4.5 to differentiate pre-peak partial-peak (peak
+        still ahead, preserve battery) from post-peak partial-peak (peak
+        already done, free to discharge).
+
+        Walks forward in 5-minute increments from dt until the first off-peak
+        tier transition (or 12-hour safety limit).
+        """
+        if dt is None:
+            dt = datetime.now()
+
+        if not self.is_expensive(dt):
+            return (0.0, 0.0)
+
+        peak_hours = 0.0
+        partial_hours = 0.0
+        step = timedelta(minutes=5)
+        step_hours = step.total_seconds() / 3600.0
+        check = dt
+        limit = dt + timedelta(hours=12)
+
+        while check < limit:
+            tier, _ = self.current_tier(check)
+            if tier == 'peak':
+                peak_hours += step_hours
+            elif tier == 'partial_peak':
+                partial_hours += step_hours
+            else:
+                break  # exited expensive window
+            check += step
+
+        return (peak_hours, partial_hours)
 
     def export_rate(self, dt: Optional[datetime] = None) -> float:
         """Current export rate in cents/kWh. Returns 0 if non-export."""
@@ -299,6 +357,56 @@ def _parse_time(s: str) -> dtime:
     return dtime(int(parts[0]), int(parts[1]))
 
 
+def _validate_seasons(seasons: list, tier_rates: dict) -> None:
+    """Sanity-check the seasons config and log warnings for likely misconfig.
+
+    Warnings only — config still loads with whatever was provided:
+      - Months that overlap between seasons (first match wins)
+      - Months not covered by any season (will fall back to JSON base)
+      - Invalid month values (not int 1-12)
+      - Season tier_rates references tier name not defined in JSON tiers
+      - Empty 'months' list (season will never match)
+    """
+    if not isinstance(seasons, list):
+        logger.warning("'seasons' must be a list — got %s, ignoring", type(seasons).__name__)
+        return
+
+    matched_months = {}
+    for season in seasons:
+        name = season.get('name', 'unnamed')
+        months = season.get('months', [])
+        if not months:
+            logger.warning("Season '%s' has empty 'months' list — will never match", name)
+            continue
+        for m in months:
+            if not isinstance(m, int) or not 1 <= m <= 12:
+                logger.warning(
+                    "Season '%s' has invalid month %r — must be int 1-12",
+                    name, m
+                )
+                continue
+            if m in matched_months:
+                logger.warning(
+                    "Month %d is in both season '%s' and season '%s' — first match wins",
+                    m, matched_months[m], name
+                )
+            else:
+                matched_months[m] = name
+        for tier_name in (season.get('tier_rates') or {}).keys():
+            if tier_name not in tier_rates:
+                logger.warning(
+                    "Season '%s' tier_rates references unknown tier '%s' — ignored",
+                    name, tier_name
+                )
+
+    missing = sorted(set(range(1, 13)) - matched_months.keys())
+    if missing:
+        logger.warning(
+            "Seasons config does not cover months %s — these months will use JSON base config",
+            missing
+        )
+
+
 def _load_rates_from_db(db_path: str, today: str) -> Optional[dict]:
     """Query rate_history for the most recent row effective on or before today.
 
@@ -362,23 +470,29 @@ def _load_rates_from_db(db_path: str, today: str) -> Optional[dict]:
 
 
 def load_rate_schedule(json_path: str) -> RateSchedule:
-    """Load rate schedule from JSON config file, with rates overridden from DB if available.
+    """Load rate schedule from JSON config, applying seasonal and DB overrides.
 
-    Structure (windows, holidays, export config) always comes from the JSON file.
-    Rates (peak / off_peak cents/kWh) are pulled from the rate_history DB table
-    so that seasonal changes and CARE adjustments take effect automatically on
-    their effective_date without any manual file edits.
+    Precedence (later wins on conflict):
+      1. JSON base tier_rates and windows
+      2. Seasonal overrides from seasons[].tier_rates and seasons[].windows
+         (matched by current month against seasons[].months)
+      3. DB rate_history override for peak/off_peak (most recent row with
+         effective_date <= today)
 
-    Fallback chain:
-      1. DB rate_history (most recent row with effective_date <= today)
-      2. JSON tiers (original behaviour — used if DB unavailable or empty)
+    The DB override only covers peak/off_peak because rate_history has no
+    partial_peak column. For 3-tier rate plans the seasons block handles
+    partial_peak switching across summer/winter; DB rate_history continues
+    to handle peak/off_peak for backward compat and mid-season rate changes.
+
+    A config without a 'seasons' block behaves exactly as before — fully
+    backward compatible with any existing user JSON.
     """
     with open(json_path, 'r') as f:
         data = json.load(f)
 
     rs = data.get('rate_schedule', data)  # Allow nested or flat
 
-    # Parse tiers from JSON (fallback baseline)
+    # --- Step 1: Parse JSON base tiers (fallback baseline) ---
     tiers = rs.get('tiers', {})
     tier_rates = {}
     for tier_name, tier_info in tiers.items():
@@ -387,35 +501,53 @@ def load_rate_schedule(json_path: str) -> RateSchedule:
         else:
             tier_rates[tier_name] = float(tier_info)
 
-    # Attempt to override rates from DB
+    # --- Step 2: Apply seasonal overrides (tier_rates and/or windows) ---
+    raw_windows = rs.get('windows', [])
+    active_season_name = None
+    seasons = rs.get('seasons')
+    if seasons:
+        _validate_seasons(seasons, tier_rates)
+        current_month = datetime.now().month
+        for season in seasons:
+            if current_month in season.get('months', []):
+                active_season_name = season.get('name', 'unnamed')
+                season_tier_rates = season.get('tier_rates') or {}
+                applied = []
+                for tier_name, rate in season_tier_rates.items():
+                    if tier_name in tier_rates:
+                        tier_rates[tier_name] = float(rate)
+                        applied.append(f"{tier_name}={float(rate):.3f}¢")
+                if season.get('windows'):
+                    raw_windows = season['windows']
+                logger.info(
+                    "Active season: %s (month %d) — tier overrides: [%s]%s",
+                    active_season_name, current_month,
+                    ', '.join(applied) if applied else 'none',
+                    ', windows: yes' if season.get('windows') else ''
+                )
+                break
+        if not active_season_name:
+            logger.warning(
+                "Seasons configured but no season matched month %d — falling back to JSON base config",
+                datetime.now().month
+            )
+
+    # --- Step 3: DB override for peak/off_peak (preserves existing behaviour) ---
     db_path = os.path.join(os.path.dirname(json_path), 'franklin.db')
     today = datetime.now().strftime('%Y-%m-%d')
     db_rates = _load_rates_from_db(db_path, today)
     if db_rates:
         tier_rates['peak'] = db_rates['peak']
         tier_rates['off_peak'] = db_rates['off_peak']
-    else:
-        logger.info("Using JSON rates: peak=%.3f¢  off_peak=%.3f¢",
-                    tier_rates.get('peak', 0), tier_rates.get('off_peak', 0))
+    elif not active_season_name:
+        # Only log JSON-rates banner when neither seasons nor DB applied
+        logger.info(
+            "Using JSON base rates: peak=%.3f¢  off_peak=%.3f¢  partial_peak=%.3f¢",
+            tier_rates.get('peak', 0), tier_rates.get('off_peak', 0),
+            tier_rates.get('partial_peak', 0)
+        )
 
-    # Seasonal window selection: if 'seasons' is defined, pick the active
-    # season by current month.  Falls back to top-level 'windows' when no
-    # seasons key exists or no season matches (backward-compatible).
-    raw_windows = rs.get('windows', [])
-    active_season_name = None
-    seasons = rs.get('seasons')
-    if seasons:
-        current_month = datetime.now().month
-        for season in seasons:
-            if current_month in season.get('months', []):
-                raw_windows = season.get('windows', raw_windows)
-                active_season_name = season.get('name', 'unnamed')
-                logger.info("Active season: %s (month %d)", active_season_name, current_month)
-                break
-        if not active_season_name:
-            logger.info("No season matched month %d — using top-level windows", datetime.now().month)
-
-    # Parse windows (rates updated to match resolved tier_rates)
+    # --- Parse windows with resolved tier_rates ---
     windows = []
     for w in raw_windows:
         tier = w['tier']
@@ -428,7 +560,7 @@ def load_rate_schedule(json_path: str) -> RateSchedule:
             rate_cents=rate,
         ))
 
-    # Parse export config
+    # --- Parse export config ---
     export_data = rs.get('export', {})
     export = ExportConfig(
         capable=export_data.get('capable', False),

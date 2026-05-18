@@ -10,91 +10,43 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
-## What's New in v4.3.1
+## What's New in v4.4
 
-### Adaptive Engine — Target-Aware SC Commit
-The Continuous Target Tracking strategy previously gated Self-Consumption commit on whether the projection would clear the *survival floor* (reserve + peak need + safety). On systems where solar can't realistically fill the battery to target — small solar relative to capacity, cloudy days, or any configuration where forecast solar falls short — projection would clear survival even when it landed well below target. The engine would commit to SC for the rest of the day, locking out the chained EB gap evaluation that would otherwise have grid-charged at the last responsible moment. End result: undercharged at peak, EB never firing despite a real shortfall.
+### Three-Tier Rate Support — Peak / Partial-Peak / Off-Peak (v4.4.0)
 
-The fix introduces a target-aware threshold: SC commits only when projection lands within a small margin (default 3%) of the dynamic target. When projection falls short, CT returns TOU and the EB gap logic gets to apply last-responsible-moment timing as designed. Both small-solar and well-sized installs are now handled by the same logic — sunny days continue to commit to SC normally; cloudy or under-sized days fall through to EB gap evaluation.
+First-class support for three-tier rate plans (e.g., PG&E EV2-A) where partial-peak windows surround a sacred peak. A new **Priority 4.5** sits between peak protection (P4) and curtailment protection (P5):
 
-- New constant `CT_SC_COMMIT_MARGIN_PCT` (default 3.0%) controls how close projection must come to target before SC is acceptable
-- New `ct_sc_commit_threshold` metric is recorded in `intelligence_log` rows where CT is the winning decision, making the gate value visible in diagnostic bundles
-- Decision messages now reference the unified threshold instead of the bare survival floor
+- **Pre-peak partial-peak** (peak still ahead) — preserve battery so it can recharge before sacred peak; Self-Consumption only when SOC is comfortable, fall through to TOU when low
+- **Post-peak partial-peak** (peak already done) — free to discharge via Self-Consumption, peak is behind so no SOC floor concern
 
-Reported as Issue #21 by miztahsparklez. Diagnostic bundle analysis confirmed the SC commit gate as the root cause — projection consistently cleared survival floor (~59%) while landing well below configured target (95-100%), so EB never fired and battery sat at 60-65% going into peak.
+The branch decision uses a new `expensive_window_remaining_hours()` helper in `rate_schedule.py` that walks forward to find the next off-peak transition, plus `is_partial_peak()` and `is_expensive()` helpers. Two-tier plans continue to work unchanged — P4.5 is a no-op when no `partial_peak` tier is defined.
 
----
+The reference `rate_schedule.json` shipped with the project is now configured for PG&E EV2-A with CARE. Other plan examples (E-TOU-D, SMUD, SCE TOU-D-PRIME, Pepco R-TOU-P, ComEd) live in `data/rate_schedule.example.json`.
 
-## What's New in v4.3
+### Per-Season Rate Auto-Switching (v4.4.1)
 
-### Cloud-Only Data Persistence Fix
-A long-standing bug affecting every cloud-only user: `system_readings` rows from the cloud collector were inserting with NULL for the primary fields (SOC, solar, grid, battery, load, mode, grid_status). This silently broke load profile learning on cloud-only systems and prevented SOC-target manual overrides from ever exiting. v4.3 populates these fields correctly while preserving Modbus as the source of truth on hybrid systems via `COALESCE` semantics in the UPDATE branch.
+`rate_schedule.json` gained an optional `seasons` block that overrides `tier_rates` and/or `windows` per calendar month:
 
-### Manual Override UI Redesign
-The override modal replaces six time-based chips with four outcome-oriented options:
-- **Until SOC reached** — charge up or drain down to a target percentage
-- **For duration** — hours + minutes inputs, custom durations up to 24 hours, last entry remembered
-- **Until specific time** — HH:MM picker, rolls to tomorrow if past, today/tomorrow indicator
-- **Until canceled** — no automatic expiry
+```json
+"seasons": [
+  {"name": "summer", "months": [6, 7, 8, 9],
+   "tier_rates": {"peak": 34.976, "partial_peak": 27.794, "off_peak": 14.663}},
+  {"name": "winter", "months": [10, 11, 12, 1, 2, 3, 4, 5],
+   "tier_rates": {"peak": 26.714, "partial_peak": 25.628, "off_peak": 14.663}}
+]
+```
 
-The banner now shows "until 18:30 (2h 15m remaining)" for time-based overrides.
+Plans where rates differ summer vs winter flip automatically on the seasonal boundary — no manual JSON edits required on June 1 / October 1. Closes a silent gap on three-tier plans: the existing `rate_history` DB-based switching only covered peak/off_peak, so `partial_peak` previously stayed frozen at whatever JSON last said when seasons changed. Backward compatible — configs without a `seasons` block work exactly as before.
 
-### Override Resilience
-`_read_latest_soc()` (used by override SOC-target exit) now looks back 30 minutes for non-NULL SOC and falls back to a direct Franklin cloud API call (30-second cache) if the database has no recent SOC. Defends override exit against future regressions and any data collection gap.
+Validation warnings at startup catch common misconfig: overlapping months between seasons, missing month coverage, invalid month values, unknown tier names in `tier_rates`.
 
-### Other Fixes
-- Modbus collection job guarded by `MODBUS_ENABLED` — no more timeout-error noise in `scheduler_log` on cloud-only deployments
-- Dashboard config display now correctly reads `BACKUP_RESERVE_PCT` (was reading a non-existent variable and always showing 20%)
-- `solar_forecast.py` — house array tilt and azimuth corrected; calibration validated at R²=0.835
+### Version Banner Reads From VERSION File (v4.4.1)
 
-For v4.2 (Data Export tab, multi-window peaks, seasonal rate windows) and v4.1.1, see [CHANGELOG.md](CHANGELOG.md).
+A new `scripts/version.py` helper reads from the repo-root `VERSION` file. The engine startup banner in `intelligence_log` now reads `FranklinWH Smart Decision Engine v4.4.1 Adaptive` dynamically — no more hardcoded version strings drifting from reality on release.
 
 ---
 
-## What's New in v4.1
-
-### SQLite Database (Breaking Change)
-All data collection has migrated from CSV files to a SQLite database (`data/franklin.db`). This is the largest structural change since the project began.
-
-- `db.py` — new unified database layer; all 17 tables initialized on first run
-- All collectors rewritten to write directly to SQLite: `collect_franklin_cloud.py`, `collect_modbus.py`, `collect_solar_enphase.py`, `collect_weather_db.py`, `collect_pv_output.py`, `collect_device_inventory.py`
-- `rollup_daily_energy.py` — new daily energy rollup replacing CSV-based summaries
-- Several old scripts removed: `collect_enphase.py`, `collect_pvoutput.py`, `collect_solaredge.py`, `collect_weather.py`, `capture_grid_status.py`, `daily_status_report.py`, `generate_weekly_charts.py`
-- The database file is created automatically on first container startup — no migration needed for new installs
-
-### Adaptive Engine Hardening
-- **Post-peak solar discharge** — after peak, engine burns free solar stored in the battery via Self-Consumption instead of defaulting back to TOU. Computes net solar excess, sets a target SOC drain point, returns to TOU once reached
-- **Taper ceiling** (`TAPER_CEILING_PCT`) — caps grid charging ceiling for non-export systems to prevent curtailment. Tunable via `.env`, default 85% (start at 95 and lower by 5 per sunny day until curtailment clears)
-- **Pre-peak gate** — within 30 min of peak, engine holds current mode rather than starting a new EB burst if not already charging. Prevents unnecessary late charging cycles
-- **Anchor drift fix** — `_get_soc_at_peak_end()` now pins to the first reading at-or-after peak end instead of `rows[-1]`, which drifted as float arithmetic shifted window edges
-- **Peak discharge fallback** — new `_compute_peak_discharge_kwh()` queries SOC at peak start and end from `system_readings` when `daily_savings` hasn't run yet. Fixes post-peak target SOC being too aggressive early in the evening
-- **Modbus-first mode verification** — routine cloud API mode checks replaced with Modbus register 15507 reads. Cloud API reserved for actual mode switches only
-
-### System Profile Overhaul
-- `system_profile.py` now reads from SQLite (`scan_db()`) instead of CSV, with CSV fallback
-- Solar interval calculation uses actual time intervals between readings instead of hardcoded 15-min CSV assumption (1-min Modbus rows were inflating solar totals by ~15×)
-- Capacity bug fixed — `BATTERY_CAPACITY_KWH` env var was being mapped to per-battery capacity, doubling the total
-- Weekly rebuild job added to scheduler (Sunday 3 AM), runs before first engine cycle on restart
-- Profile now shows 16 grid charge curve buckets with real taper data (80–85%: 12.2 kW, 85–90%: 7.7 kW, 90–95%: 4.9 kW, 95–100%: 4.7 kW)
-
-### Dashboard — Fire HD 10 Optimized
-- Layout validated and optimized for Fire HD 10 tablet (1507×943 CSS pixels) in Fully Kiosk Browser
-- **Plotly.js analytics tab** replaces static weekly PNG charts — interactive charts with zoom, pan, hover tooltips, and touch support. Date range selection, carousel navigation
-- All chart data now sourced from SQLite via `generate_dashboard_data.py`
-- Static PNG generation removed
-- Dynamic version display and "Update Available" badge via GitHub releases API
-
-### Version Management
-- Single `VERSION` file in repo root; read by `config.py`, `system_profile.py`, `scheduler.py`
-- `ENGINE_VERSION` env var deprecated — no longer needed
-- Dashboard About card and `/api/version` endpoint serve version dynamically
-
-### Other Changes
-- `collect_device_inventory.py` — tracks serial numbers and firmware versions across Enphase, SolarEdge, and Franklin devices; only writes on change. Gateway record enriched with hardware revision and protocol version
-- `collect_solaredge_panels.py` — panel-level optimizer data for barn array health monitoring
-- Telemetry v2 — expanded schema with 13 new config flags, 10 health signal queries, engine version reporting
-- `rate_schedule.py` — rate schedule management with JSON config
-- `diagnostic_bundle.py` — sanitized diagnostic bundle for issue reporting
+For older releases — v4.3.1 (target-aware SC commit fix), v4.3 (cloud-only persistence), v4.2 (multi-window peaks, Data Export tab), v4.1 (SQLite migration) — see [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -141,7 +93,7 @@ Your historical data from CSV logs will not be migrated to the new SQLite databa
 - **Post-Peak Solar Discharge** — Burns free solar stored in the battery after peak instead of importing from the grid overnight
 - **SQLite Data Layer** — All readings, decisions, weather, and solar data stored in a local SQLite database. Fast queries, no CSV parsing, dashboard analytics from real data
 - **Hybrid Data Collection** — Modbus TCP for fast local monitoring (26ms) with Franklin cloud API for mode switching. Falls back gracefully if Modbus isn't available
-- **Rate Schedule Flexibility** — Supports PG&E E-TOU-D, SMUD TOD, ComEd dynamic pricing, and custom schedules with multiple peak windows
+- **Rate Schedule Flexibility** — Supports two-tier (PG&E E-TOU-D, SCE TOU-D, etc.), three-tier with partial-peak (PG&E EV2-A), dynamic hourly pricing (ComEd), and custom schedules with multiple peak windows and per-season auto-switching for rates and windows
 - **Peak Safety Net** — Hardware mode verification during peak hours ensures the battery is never charging from the grid at peak rates, even if a mode switch fails
 - **Per-Battery Monitoring** — Individual SOC tracking for multi-battery systems
 - **Web Dashboard** — Real-time energy flow, Plotly.js interactive analytics, system health monitoring, one-click diagnostic reporting. Optimized for Fire HD 10 tablet kiosk display
@@ -156,14 +108,15 @@ Your historical data from CSV logs will not be migrated to the new SQLite databa
 The v4 adaptive engine runs every cycle and evaluates an 8-phase priority stack:
 
 ```
-P1  Emergency override (manual override active, grid disconnected)
-P2  Grid disconnect protection (skip mode switches during outages)
-P3  Peak imminent — ensure target SOC is met
-P4  Peak active — switch to Self-Consumption, battery powers home
-P5  Curtailment protection — battery full + solar producing = don't waste it
-P6  Forecast-aware gap analysis — calculate if solar can fill the gap before peak
-P7  Pre-peak charging — Emergency Backup burst only if solar can't cover the gap (defers if solar active)
-P8  Default — TOU mode, solar charges battery while grid covers home
+P1    Emergency override (manual override active, grid disconnected)
+P2    Grid disconnect protection (skip mode switches during outages)
+P3    Peak imminent — ensure target SOC is met
+P4    Peak active — switch to Self-Consumption, battery powers home
+P4.5  Partial-peak active (three-tier plans only) — Self-Consumption when SOC permits pre-peak; free discharge post-peak
+P5    Curtailment protection — battery full + solar producing = don't waste it
+P6    Forecast-aware gap analysis — calculate if solar can fill the gap before peak
+P7    Pre-peak charging — Emergency Backup burst only if solar can't cover the gap (defers if solar active)
+P8    Default — TOU mode, solar charges battery while grid covers home
 ```
 
 Each decision is logged with its priority level: `[v4 P7] Charging gap: 4.2 kWh, grid charging needed`
@@ -375,7 +328,7 @@ On first dashboard load, a one-time popup asks if you'd like to opt in. No `.env
 ### Tested Configuration
 - **Battery:** FranklinWH aPower2 (2× FHP, 27.2 kWh total)
 - **Solar:** 28.26 kW capacity (dual-meter, 16-panel Enphase house array + 60-panel SolarEdge barn array)
-- **Utility:** PG&E E-TOU-D with CARE discount, NEM2
+- **Utility:** PG&E EV2-A with CARE discount, NEM2
 - **Location:** Georgetown, CA
 
 ### Performance

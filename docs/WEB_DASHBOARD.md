@@ -11,7 +11,7 @@ The FranklinWH Automation includes a web-based dashboard for real-time monitorin
   - 🟢 **Charging** (green) — Battery receiving power (solar or grid)
   - 🟠 **Discharging** (orange) — Battery powering home
   - ⚪ **Standby** (gray) — Battery idle (±100W threshold)
-- **Peak Countdown**: Time remaining until peak period starts, or "PEAK ACTIVE" indicator
+- **Peak Countdown**: Time remaining until the next expensive window starts (peak or partial-peak on three-tier plans), or "PEAK ACTIVE" / "PARTIAL-PEAK ACTIVE" indicator
 - **Savings Tracker**: Daily, monthly, and projected annual savings
 - **Auto-Refresh**: Dashboard updates every 15 seconds
 
@@ -20,6 +20,7 @@ The FranklinWH Automation includes a web-based dashboard for real-time monitorin
 - **Date Range Selection**: Pick any date range for analysis
 - **Carousel Navigation**: Swipe or click through chart types
 - **Chart Types**: SOC timeline, power flow, solar production, savings analysis
+- **Rate Window Overlays**: Amber bands mark expensive windows on time-series charts — darker for sacred peak, lighter for partial-peak (three-tier plans only)
 - **Data Source**: All charts sourced directly from SQLite database
 - **Touch Optimized**: Works well on Fire HD 10 tablet and other touch devices
 
@@ -117,7 +118,7 @@ Open in your browser:
 | Battery Status | SOC percentage, mode (TOU/SC/Backup), charging state |
 | Current Power | Real-time charge/discharge rate in kW |
 | Available Energy | Usable kWh remaining |
-| Peak Countdown | Time until peak period starts (or "PEAK ACTIVE") |
+| Peak Countdown | Time until next expensive window starts (peak / partial-peak) or "PEAK ACTIVE" / "PARTIAL-PEAK ACTIVE" |
 | Energy Flow | Visual diagram of power flow between components |
 | Savings Tracker | Financial impact of automation |
 
@@ -130,7 +131,7 @@ Open in your browser:
 
 ### Analytics
 
-Interactive Plotly.js charts sourced from the SQLite database. Select date ranges, zoom into specific time periods, and hover for exact values. Charts include SOC timeline with mode markers, power flow breakdown, solar production vs forecast, and savings analysis. Optimized for touch interaction on the Fire HD 10 tablet (1507×943 CSS pixels) in Fully Kiosk Browser.
+Interactive Plotly.js charts sourced from the SQLite database. Select date ranges, zoom into specific time periods, and hover for exact values. Charts include SOC timeline with mode markers, power flow breakdown, solar production vs forecast, and savings analysis. Time-series charts overlay amber bands for expensive windows — darker for sacred peak, lighter for partial-peak (three-tier plans). Optimized for touch interaction on the Fire HD 10 tablet (1507×943 CSS pixels) in Fully Kiosk Browser.
 
 ### Script Status
 
@@ -287,4 +288,4 @@ For remote access, consider: VPN, Tailscale, or a reverse proxy with authenticat
 ---
 
 **Last Updated:** May 2026
-**Version:** 4.3.0
+**Version:** 4.4.1

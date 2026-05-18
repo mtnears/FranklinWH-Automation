@@ -1,7 +1,8 @@
 {
-  "_comment": "Example rate schedules for common utility plans. Copy and customize for your setup.",
+  "_comment": "Example rate schedules for common utility plans. Copy and customize for your setup. Plans with seasonal rate or window differences can use the optional 'seasons' block — see pge_ev2_a_care and pepco_r_tou_p_seasonal below.",
   "examples": {
     "pge_e_tou_d_care": {
+      "_comment": "PG&E E-TOU-D with CARE discount. ETOU-D also has summer/winter rate differences; if you're on this plan, consider adding a 'seasons' block with tier_rates per season — see pge_ev2_a_care for the pattern.",
       "rate_schedule": {
         "name": "PG&E E-TOU-D with CARE",
         "export": {"capable": false, "net_metering": "NEM 2.0", "export_rates": null},
@@ -27,6 +28,38 @@
         },
         "windows": [
           {"tier": "peak", "days": ["mon","tue","wed","thu","fri"], "start": "17:00", "end": "20:00"}
+        ],
+        "default_tier": "off_peak",
+        "holidays": [],
+        "holiday_tier": "off_peak"
+      }
+    },
+    "pge_ev2_a_care": {
+      "_comment": "PG&E EV2-A with CARE discount. Three-tier plan (peak / partial-peak / off-peak), same windows year-round but different rates per season. The 'seasons' block flips tier_rates automatically on Jun 1 (summer) and Oct 1 (winter). Top-level 'tiers' is the winter base; the 'winter' season entry mirrors it for self-documentation. CARE-discounted retail rates shown; for full retail, multiply by 1.5385 (1 / 0.65). Peak 4-9pm, partial-peak 3-4pm and 9pm-midnight, every day including weekends and holidays (no holiday exception).",
+      "rate_schedule": {
+        "name": "PG&E EV2-A with CARE",
+        "export": {"capable": false, "net_metering": "NEM 2.0", "export_rates": null},
+        "tiers": {
+          "peak": {"rate_cents": 26.714},
+          "partial_peak": {"rate_cents": 25.628},
+          "off_peak": {"rate_cents": 14.663}
+        },
+        "windows": [
+          {"tier": "peak", "days": ["mon","tue","wed","thu","fri","sat","sun"], "start": "16:00", "end": "21:00"},
+          {"tier": "partial_peak", "days": ["mon","tue","wed","thu","fri","sat","sun"], "start": "15:00", "end": "16:00"},
+          {"tier": "partial_peak", "days": ["mon","tue","wed","thu","fri","sat","sun"], "start": "21:00", "end": "00:00"}
+        ],
+        "seasons": [
+          {
+            "name": "summer",
+            "months": [6, 7, 8, 9],
+            "tier_rates": {"peak": 34.976, "partial_peak": 27.794, "off_peak": 14.663}
+          },
+          {
+            "name": "winter",
+            "months": [10, 11, 12, 1, 2, 3, 4, 5],
+            "tier_rates": {"peak": 26.714, "partial_peak": 25.628, "off_peak": 14.663}
+          }
         ],
         "default_tier": "off_peak",
         "holidays": [],
@@ -84,7 +117,7 @@
       }
     },
     "pepco_r_tou_p_seasonal": {
-      "_comment": "Pepco R-TOU-P with seasonal window switching. Winter has dual peak (Oct-May), summer has single peak (Jun-Sep). Rates auto-switch via rate_history DB.",
+      "_comment": "Pepco R-TOU-P with seasonal window switching. Winter has dual peak (Oct-May), summer has single peak (Jun-Sep). The 'seasons' block can override 'windows' as shown here, 'tier_rates' (see pge_ev2_a_care), or both. Rates can also auto-switch via rate_history DB for users who populate that table.",
       "rate_schedule": {
         "name": "Pepco R-TOU-P",
         "export": {"capable": true, "net_metering": "NEM 1:1", "export_rates": null},

@@ -12,7 +12,7 @@
         :root {
             --bg-primary: #080c1a; --bg-card: #0f1429; --bg-elevated: #1a2040; --bg-input: #0a0f22;
             --border-subtle: rgba(99,133,255,0.08); --border-active: rgba(99,133,255,0.25);
-            --text-primary: #e8ecf4; --text-secondary: #8892b0; --text-muted: #5a6380;
+            --text-primary: #e8ecf4; --text-secondary: #b8c0d4; --text-muted: #5a6380;
             --accent-blue: #4f8fff; --accent-green: #34d399; --accent-amber: #fbbf24;
             --accent-red: #f87171; --accent-purple: #a78bfa; --accent-cyan: #22d3ee;
             --solar-color: #fbbf24; --grid-color: #4f8fff; --battery-color: #34d399;
@@ -204,11 +204,27 @@
         .sav-label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 3px; }
         .sav-value { font-family: var(--font-mono); font-size: 19px; font-weight: 600; color: var(--accent-green); }
         .sav-detail { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
-        .peak-bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-elevated); border-radius: 10px; margin-top: 8px; border: 1px solid var(--border-subtle); }
-        .peak-bar-text { font-size: 12px; color: var(--text-secondary); }
-        .peak-bar-time { font-family: var(--font-mono); font-size: 16px; font-weight: 600; color: var(--accent-amber); margin-left: auto; }
-        .peak-bar.peak-active { border-color: rgba(248,113,113,.3); background: rgba(248,113,113,.06); }
-        .peak-bar.peak-active .peak-bar-time { color: var(--accent-red); }
+        /* Rate period status — two-row stack: current period (Now) and next period (Next).
+           Each row has a label / status pair and a colored left-border keyed to its tier.
+           Status text is colored by tier on both rows so the eye can scan the upcoming
+           transition at a glance. */
+        .rate-status { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+        .rate-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+            background: var(--bg-elevated); border-radius: 10px;
+            border: 1px solid var(--border-subtle); border-left-width: 3px; }
+        .rate-row-label { font-size: 11px; color: var(--text-primary, #fff); text-transform: uppercase;
+            letter-spacing: 0.04em; flex-shrink: 0; min-width: 110px; font-weight: 600; }
+        .rate-row-status { font-size: 13px; color: var(--text-secondary); margin-left: auto;
+            text-align: right; font-weight: 500; }
+        /* Tier-keyed border-left colors */
+        .rate-row.tier-peak         { border-left-color: var(--accent-red); }
+        .rate-row.tier-partial_peak { border-left-color: var(--accent-amber); }
+        .rate-row.tier-off_peak     { border-left-color: var(--accent-green, #34d399); }
+        .rate-row.tier-unknown      { border-left-color: var(--border-subtle); }
+        /* Status text colored by tier on both rows */
+        .rate-row.tier-peak         .rate-row-status { color: var(--accent-red); }
+        .rate-row.tier-partial_peak .rate-row-status { color: var(--accent-amber); }
+        .rate-row.tier-off_peak     .rate-row-status { color: var(--accent-green, #34d399); }
         .health-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
         .health-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-secondary); padding: 4px 0; }
         .hdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
@@ -742,7 +758,16 @@
                     <div class="sav-item"><div class="sav-label">Annual Proj.</div><div class="sav-value" id="savings-annual">$--</div></div>
                     <div class="sav-item"><div class="sav-label">True-Up</div><div class="sav-value" id="savings-trueup">$--</div><div class="sav-detail" id="savings-improvement"></div></div>
                 </div>
-                <div class="peak-bar" id="peak-bar"><span>⏰</span><span class="peak-bar-text" id="peak-text">Next peak</span><span class="peak-bar-time" id="peak-time">--:--</span></div>
+                <div class="rate-status" id="rate-status">
+                    <div class="rate-row rate-now tier-unknown" id="rate-now">
+                        <span class="rate-row-label">Current Rate Period</span>
+                        <span class="rate-row-status" id="rate-now-status">--</span>
+                    </div>
+                    <div class="rate-row rate-next tier-unknown" id="rate-next">
+                        <span class="rate-row-label">Next Rate Period</span>
+                        <span class="rate-row-status" id="rate-next-status">--</span>
+                    </div>
+                </div>
             </div>
             <div class="card">
                 <div class="card-label">System Health</div>
@@ -758,7 +783,8 @@
             <div class="card" style="flex:1">
                 <div class="card-label">Rate Plan</div>
                 <div class="bstat-row"><span class="bstat-k">Plan</span><span class="bstat-v" style="color:var(--accent-blue)" id="rate-plan">PG&E E-TOU-D</span></div>
-                <div class="bstat-row"><span class="bstat-k">Peak Hours</span><span class="bstat-v" id="rate-peak">5-8 PM</span></div>
+                <div class="bstat-row"><span class="bstat-k">Peak Hours</span><span class="bstat-v" style="color:var(--accent-red)" id="rate-peak">5-8 PM</span></div>
+                <div class="bstat-row" id="rate-partial-row" style="display:none"><span class="bstat-k">Partial-Peak</span><span class="bstat-v" style="color:var(--accent-amber)" id="rate-partial">--</span></div>
                 <div class="bstat-row"><span class="bstat-k">Current Rate</span><span class="bstat-v" id="rate-current">--</span></div>
             </div>
         </div>
@@ -907,6 +933,7 @@
                 <span class="an-mode-chip" style="background:rgba(248,113,113,0.30);color:#f87171;border:1px solid rgba(248,113,113,0.4)">EB</span>
                 <span class="an-mode-chip" style="background:rgba(34,211,238,0.25);color:#22d3ee;border:1px solid rgba(34,211,238,0.4)">SC</span>
                 <span class="an-mode-chip" id="an-peak-legend" style="background:rgba(251,191,36,0.12);color:#d4a017;border:1px solid rgba(251,191,36,0.3)">Peak</span>
+                <span class="an-mode-chip" id="an-partial-legend" style="background:rgba(251,191,36,0.05);color:#d4a017;border:1px solid rgba(251,191,36,0.15);display:none">Partial</span>
             </div>
             <button class="an-carousel-btn an-fs-btn" onclick="anToggleFS()" id="an-fs-btn" title="Fullscreen">⛶</button>
         </div>
@@ -1974,26 +2001,49 @@ function renderLive(d){
     document.getElementById('savings-trueup').textContent='$'+Math.round(s.true_up_projection||0);
     document.getElementById('savings-improvement').textContent=(s.improvement_percent||0)+'% improvement';
 
-    // Peak
-    const mins=b.peak_countdown_minutes,pc=document.getElementById('peak-bar');
-    if(mins!=null){if(mins<0){pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='No peak today';document.getElementById('peak-time').textContent=b.peak_time||'Weekend/Holiday'}
-    else if(mins==0){pc.classList.add('peak-active');document.getElementById('peak-text').textContent='🔴 PEAK ACTIVE';document.getElementById('peak-time').textContent=b.peak_time||''}
-    else{pc.classList.remove('peak-active');document.getElementById('peak-text').textContent='Peak starts at '+(b.peak_time||'--:--');document.getElementById('peak-time').textContent=(Math.floor(mins/60)>0?Math.floor(mins/60)+'h ':'')+mins%60+'m'}}
+    // Rate period status — two-row Now/Next display.
+    //
+    // Now: current period + time until it ends
+    // Next: what comes after current period + time until it starts
+    //
+    // Built client-side by walking the schedule windows from current time
+    // forward in 1-minute steps until the tier changes (then again until
+    // it changes a second time, giving us "what's after that"). Cheap on
+    // 5-minute resolution since windows have HH:MM granularity.
+    renderRateStatus(d);
 
     // Rate plan card — populate from config data
     const cfg=d.config||{};
     if(cfg.rate_schedule_name){document.getElementById('rate-plan').textContent=cfg.rate_schedule_name}
+    const fmtWin=w=>{
+        const parseHM=s=>{const p=String(s).split(':');return{h:parseInt(p[0]),m:parseInt(p[1]||'0')}};
+        const a=parseHM(w.start),b=parseHM(w.end);
+        const hr12=h=>{
+            if(h===0||h===24) return '12AM';
+            if(h===12) return '12PM';
+            return (h>=12?(h-12)+'PM':h+'AM');
+        };
+        return hr12(a.h)+'-'+hr12(b.h);
+    };
     if(cfg.peak_windows&&cfg.peak_windows.length){
-        const fmt=w=>{const sh=parseInt(w.start),eh=parseInt(w.end);const sf=sh>12?(sh-12)+'PM':sh+'AM';const ef=eh>12?(eh-12)+'PM':eh+'AM';return sf.replace(':00','')+'-'+ef.replace(':00','')};
-        document.getElementById('rate-peak').textContent=cfg.peak_windows.map(w=>fmt(w)).join(', ')
+        document.getElementById('rate-peak').textContent=cfg.peak_windows.map(fmtWin).join(', ')
     }else if(cfg.peak_start_hour&&cfg.peak_end_hour){
         const sh=cfg.peak_start_hour,eh=cfg.peak_end_hour;
         document.getElementById('rate-peak').textContent=(sh>12?sh-12:sh)+'-'+(eh>12?eh-12:eh)+' PM'
     }
+    // Partial-peak row (only displayed when backend emits partial_peak_windows)
+    const ppRow=document.getElementById('rate-partial-row');
+    if(cfg.partial_peak_windows&&cfg.partial_peak_windows.length){
+        document.getElementById('rate-partial').textContent=cfg.partial_peak_windows.map(fmtWin).join(', ');
+        ppRow.style.display='flex';
+    } else {
+        ppRow.style.display='none';
+    }
     if(cfg.current_rate_cents!=null){
         const tier=cfg.current_tier||'';
-        const label=tier==='peak'?'Peak':'Off-Peak';
-        const color=tier==='peak'?'var(--accent-red)':'var(--accent-green)';
+        let label='Off-Peak', color='var(--accent-green)';
+        if(tier==='peak'){ label='Peak'; color='var(--accent-red)'; }
+        else if(tier==='partial_peak'){ label='Partial-Peak'; color='var(--accent-amber)'; }
         const el=document.getElementById('rate-current');
         el.textContent=cfg.current_rate_cents.toFixed(1)+'\u00a2/kWh ('+label+')';
         el.style.color=color
@@ -2012,6 +2062,140 @@ function renderLive(d){
         return'<div class="health-item" '+(i.k==='solar'?'style="cursor:pointer" onclick="switchTab(\'solar\')"':'')+'><span class="hdot '+c+'"></span> '+i.l+extra+'</div>'
     }).join('')+'<div class="health-item" style="cursor:pointer" onclick="switchTab(\'scripts\')">' +
     '<span class="hdot '+(_scriptHealthClass||'off')+'" id="health-scripts-dot"></span> Scripts</div>'}
+}
+
+function renderRateStatus(d){
+    // Two-row rate period status: current period + time remaining, and next
+    // period + time until it starts. Computed by walking the schedule windows
+    // forward from "now" to find the next two tier transitions.
+    const nowEl       = document.getElementById('rate-now');
+    const nowStatusEl = document.getElementById('rate-now-status');
+    const nowLabelEl  = nowEl ? nowEl.querySelector('.rate-row-label') : null;
+    const nextEl       = document.getElementById('rate-next');
+    const nextStatusEl = document.getElementById('rate-next-status');
+    if(!nowEl||!nextEl) return;
+
+    const cfg = d.config || {};
+    const peakW    = cfg.peak_windows         || [];
+    const partialW = cfg.partial_peak_windows || [];
+    if(!peakW.length && !partialW.length){
+        // No rate windows configured (e.g. flat-rate plan). Hide the card.
+        nowEl.style.display = 'none';
+        nextEl.style.display = 'none';
+        return;
+    }
+    nowEl.style.display = '';
+    nextEl.style.display = '';
+
+    // Build a unified window list with tier tags. Match by day-of-week so
+    // the same logic works for weekday-only peak plans (E-TOU-D) and every-day
+    // plans (EV2-A).
+    const DAY_ABBR = ['sun','mon','tue','wed','thu','fri','sat'];
+    const allWindows = [];
+    peakW.forEach(w => allWindows.push({tier:'peak', ...w}));
+    partialW.forEach(w => allWindows.push({tier:'partial_peak', ...w}));
+
+    const parseHM = s => {
+        const p = String(s).split(':');
+        const h = parseInt(p[0], 10);
+        // 24:00 / 00:00 at window end means midnight rollover — treat as end of day
+        return {h: (h===24?0:h), m: parseInt(p[1]||'0', 10), midnight: h===24};
+    };
+
+    // Probe function: given a Date, return tier name. Walks windows; first
+    // matching wins. Default off_peak if no window covers the time.
+    function tierAt(dt){
+        const dayCode = DAY_ABBR[dt.getDay()];
+        const hm = dt.getHours()*60 + dt.getMinutes();
+        for(const w of allWindows){
+            if(w.days && w.days.indexOf(dayCode) === -1) continue;
+            const a = parseHM(w.start), b = parseHM(w.end);
+            const startMin = a.h*60 + a.m;
+            let endMin = b.h*60 + b.m;
+            if(b.midnight || endMin === 0) endMin = 24*60;
+            // Midnight-crossing window: handle wrap (e.g. 23:00 - 04:00)
+            if(endMin <= startMin && !b.midnight){
+                if(hm >= startMin || hm < endMin) return w.tier;
+            } else {
+                if(hm >= startMin && hm < endMin) return w.tier;
+            }
+        }
+        return 'off_peak';
+    }
+
+    // Walk forward in 1-minute steps. We need two tier transitions: end of
+    // current period (when "now" tier ends) and end of next period (when "next"
+    // tier ends, which lets us label what's after that). Cap at 48 hours so
+    // we always terminate; on plans with no transitions in 48h we say "—".
+    const now = new Date();
+    const curTier = tierAt(now);
+    let nowEndsAt = null, nextTier = null, nextStartsAt = null;
+    const stepMs = 60 * 1000;
+    const limit = 48 * 60; // minutes
+    let probe = new Date(now.getTime() + stepMs);
+    let lastTier = curTier;
+    for(let i = 0; i < limit; i++, probe = new Date(probe.getTime() + stepMs)){
+        const t = tierAt(probe);
+        if(t !== lastTier){
+            if(nowEndsAt === null){
+                nowEndsAt = new Date(probe.getTime());
+                nextTier = t;
+                nextStartsAt = new Date(probe.getTime());
+                lastTier = t;
+            } else {
+                break; // found end of next period — we have enough
+            }
+        }
+    }
+
+    // Format helpers
+    const TIER_LABEL = {
+        peak: 'Peak', partial_peak: 'Partial-Peak', off_peak: 'Off-Peak'
+    };
+    const fmtTime = dt => {
+        if(!dt) return '--';
+        let h = dt.getHours(), m = dt.getMinutes();
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        if(h === 0) h = 12; else if(h > 12) h -= 12;
+        return h + ':' + (m<10?'0':'') + m + ' ' + ampm;
+    };
+    const fmtDuration = mins => {
+        if(mins <= 0) return 'now';
+        const h = Math.floor(mins/60), mm = mins%60;
+        if(h === 0) return mm + 'm';
+        if(mm === 0) return h + 'h';
+        return h + 'h ' + mm + 'm';
+    };
+    const tierClass = t => 'tier-' + (t || 'unknown').replace(/[^a-z_]/g, '');
+
+    // NOW row: "In peak until 09:02 PM" / "In partial-peak until 09:02 PM" /
+    //          "Off-peak until 03:00 PM"
+    nowEl.classList.remove('tier-peak','tier-partial_peak','tier-off_peak','tier-unknown');
+    nowEl.classList.add(tierClass(curTier));
+    // Static label "Current Rate Period" — parallel structure with "Next Rate Period".
+    // The tier name lives in the status text on the right, which is colored by tier.
+    if(nowLabelEl){
+        nowLabelEl.textContent = 'Current Rate Period';
+    }
+    if(nowEndsAt){
+        const verb = curTier === 'off_peak' ? 'Off-peak until '
+                   : curTier === 'peak'         ? 'In peak until '
+                   : curTier === 'partial_peak' ? 'In partial-peak until '
+                                                : 'Until ';
+        nowStatusEl.textContent = verb + fmtTime(nowEndsAt);
+    } else {
+        nowStatusEl.textContent = TIER_LABEL[curTier] || curTier;
+    }
+
+    // NEXT row: "Partial-Peak in 3h 32m" / "Peak in 30m" / "Off-Peak in 2h"
+    nextEl.classList.remove('tier-peak','tier-partial_peak','tier-off_peak','tier-unknown');
+    nextEl.classList.add(tierClass(nextTier));
+    if(nextTier && nextStartsAt){
+        const minsTo = Math.max(0, Math.round((nextStartsAt - now) / 60000));
+        nextStatusEl.textContent = (TIER_LABEL[nextTier] || nextTier) + ' in ' + fmtDuration(minsTo);
+    } else {
+        nextStatusEl.textContent = 'No upcoming change';
+    }
 }
 
 function renderSI(d){
@@ -2885,9 +3069,20 @@ const AN_COMPARE_COLORS = [
     { line: '#ffd740', dash: 'dashdot' },
 ];
 
+// Mode bands on analytics charts. Canonical engine values are the lowercase
+// underscore forms. The display-string variants ('Self-Consumption', 'TOU-B',
+// 'Emergency Backup') were written to system_readings.mode by the cloud
+// collector between v4.3.0 (May 3) and v4.4.1 (May 17) — historical rows are
+// backfilled to canonical form via the db.py migration, but the variants are
+// mapped to the same colors here as a defensive fallback against any future
+// drift from a new collector or third-party tool.
 const AN_MODE_COLORS = {
-    time_of_use: 'rgba(79,143,255,0.25)', emergency_backup: 'rgba(248,113,113,0.30)',
-    self_consumption: 'rgba(34,211,238,0.25)', 'TOU-B': 'rgba(248,113,113,0.30)'
+    time_of_use:        'rgba(79,143,255,0.25)',
+    'TOU-B':            'rgba(79,143,255,0.25)',
+    self_consumption:   'rgba(34,211,238,0.25)',
+    'Self-Consumption': 'rgba(34,211,238,0.25)',
+    emergency_backup:   'rgba(248,113,113,0.30)',
+    'Emergency Backup': 'rgba(248,113,113,0.30)',
 };
 const AN_MODE_LEGEND = {
     time_of_use: { label: 'TOU', color: '#4f8fff' },
@@ -2989,17 +3184,34 @@ async function anLoadAvailableDates() {
         anPeakConfig = await peakRes.json();
         // Update peak legend chip with actual windows
         var peakLeg = document.getElementById('an-peak-legend');
+        var fmtWindow = function(w) {
+            var sh = w.start_hour;
+            var eh = w.end_hour === 0 ? 24 : w.end_hour;
+            var startSfx = sh >= 12 ? 'pm' : 'am';
+            var endSfx = (eh >= 12 && eh < 24) ? 'pm' : 'am';
+            var startHr = sh === 0 ? 12 : (sh > 12 ? sh-12 : sh);
+            var endHr = (eh === 0 || eh === 24) ? 12 : (eh > 12 ? eh-12 : eh);
+            if (startSfx === endSfx) return startHr + '-' + endHr + startSfx;
+            return startHr + startSfx + '-' + endHr + endSfx;
+        };
         if (peakLeg && anPeakConfig) {
             var pw = anPeakConfig.peak_windows || [];
             if (pw.length) {
-                var parts = pw.map(function(w) {
-                    var sh = w.start_hour, eh = w.end_hour;
-                    return (sh > 12 ? sh-12 : sh) + '-' + (eh > 12 ? eh-12 : eh) + (eh >= 12 ? 'pm' : 'am');
-                });
-                peakLeg.textContent = 'Peak ' + parts.join(', ');
+                peakLeg.textContent = 'Peak ' + pw.map(fmtWindow).join(', ');
             } else {
                 var sh = anPeakConfig.peak_start_hour || 17, eh = anPeakConfig.peak_end_hour || 20;
                 peakLeg.textContent = 'Peak ' + (sh > 12 ? sh-12 : sh) + '-' + (eh > 12 ? eh-12 : eh) + 'pm';
+            }
+        }
+        // Partial-peak legend chip — only shown when backend emits partial_peak_windows
+        var partialLeg = document.getElementById('an-partial-legend');
+        if (partialLeg && anPeakConfig) {
+            var ppw = anPeakConfig.partial_peak_windows || [];
+            if (ppw.length) {
+                partialLeg.textContent = 'Partial ' + ppw.map(fmtWindow).join(', ');
+                partialLeg.style.display = '';
+            } else {
+                partialLeg.style.display = 'none';
             }
         }
         anPopulateCompare();
@@ -3279,11 +3491,31 @@ const AN_PLOTLY_CONFIG = {
 };
 
 function anModeShapes(sr) {
+    // Build a list of shapes — one rect per contiguous run of a given mode.
+    //
+    // Null tolerance: rows with mode=null mean "we didn't capture mode this minute"
+    // (typically a Modbus register 15507 read miss). They don't mean "different mode."
+    // Treat null as continuation of the last-known mode so a sporadic gap row doesn't
+    // create a false transition and chart stripes. If the run starts on null
+    // (mode was unknown from the very first reading), skip emitting until we have
+    // an actual mode to use as the starting tier.
     const shapes = [];
     if (!sr || sr.length === 0) return shapes;
-    let curMode = sr[0].mode, startTs = sr[0].timestamp;
-    for (let i = 1; i <= sr.length; i++) {
-        const mode = i < sr.length ? sr[i].mode : null;
+
+    // Find the first non-null mode to use as starting tier; if none exists, give up
+    let firstIdx = 0;
+    while (firstIdx < sr.length && (sr[firstIdx].mode === null || sr[firstIdx].mode === undefined)) {
+        firstIdx++;
+    }
+    if (firstIdx >= sr.length) return shapes;
+
+    let curMode = sr[firstIdx].mode;
+    let startTs = sr[firstIdx].timestamp;
+
+    for (let i = firstIdx + 1; i <= sr.length; i++) {
+        // For nulls, treat as continuation — substitute curMode so the comparison is a no-op
+        const rawMode = i < sr.length ? sr[i].mode : null;
+        const mode = (rawMode === null || rawMode === undefined) && i < sr.length ? curMode : rawMode;
         if (mode !== curMode || i === sr.length) {
             const endTs = i < sr.length ? sr[i].timestamp : sr[i-1].timestamp;
             const fill = AN_MODE_COLORS[curMode] || 'rgba(120,144,156,0.06)';
@@ -3299,13 +3531,17 @@ function anPeakShapes(dateStr) {
     if (!anPeakConfig || !anPeakConfig.tou_enabled) return [];
 
     var pw = anPeakConfig.peak_windows || [];
+    var ppw = anPeakConfig.partial_peak_windows || [];
     var peakDays = anPeakConfig.peak_days || 'weekdays';
 
-    // Build window list: prefer peak_windows array, fall back to single start/end
+    // Build window list with tier-tagged entries. Peak windows first, then
+    // partial-peak. Older two-tier rate plans have no partial_peak_windows
+    // — the resulting empty list adds no shapes.
     var windowDefs = [];
     if (pw.length) {
         pw.forEach(function(w) {
             windowDefs.push({
+                tier: 'peak',
                 startH: w.start_hour, startM: w.start_minute || 0,
                 endH: w.end_hour, endM: w.end_minute || 0,
                 days: w.days || null
@@ -3313,11 +3549,20 @@ function anPeakShapes(dateStr) {
         });
     } else {
         windowDefs.push({
+            tier: 'peak',
             startH: anPeakConfig.peak_start_hour || 17, startM: 0,
             endH: anPeakConfig.peak_end_hour || 20, endM: 0,
             days: null
         });
     }
+    ppw.forEach(function(w) {
+        windowDefs.push({
+            tier: 'partial_peak',
+            startH: w.start_hour, startM: w.start_minute || 0,
+            endH: w.end_hour, endM: w.end_minute || 0,
+            days: w.days || null
+        });
+    });
 
     var pad = function(n) { return String(n).padStart(2, '0'); };
 
@@ -3334,14 +3579,32 @@ function anPeakShapes(dateStr) {
         return dow >= 1 && dow <= 5;
     }
 
+    // Tier-aware visual style. Sacred peak keeps the historical amber; partial-peak
+    // uses a lighter amber with no border so it reads as visually subordinate.
+    var PEAK_STYLE = {
+        fillcolor: 'rgba(251,191,36,0.08)',
+        line: { width: 1.5, color: 'rgba(251,191,36,0.5)', dash: 'dot' }
+    };
+    var PARTIAL_STYLE = {
+        fillcolor: 'rgba(251,191,36,0.035)',
+        line: { width: 0 }
+    };
+
     function makeShape(ds, w) {
+        // Midnight-end (00:00) means end-of-day in our schedule semantics.
+        // Plotly would otherwise interpret "00:00:00" as start-of-day and
+        // render an inverted/zero-width rect. Convert to "23:59:59" of the
+        // same date — the one-second gap is invisible at any usable zoom.
+        var endH = w.endH, endM = w.endM, endS = 0;
+        if (endH === 0 && endM === 0) { endH = 23; endM = 59; endS = 59; }
         var st = pad(w.startH) + ':' + pad(w.startM) + ':00';
-        var et = pad(w.endH) + ':' + pad(w.endM) + ':00';
+        var et = pad(endH) + ':' + pad(endM) + ':' + pad(endS);
+        var style = w.tier === 'partial_peak' ? PARTIAL_STYLE : PEAK_STYLE;
         return {
             type: 'rect', xref: 'x', yref: 'paper',
             x0: ds + ' ' + st, x1: ds + ' ' + et, y0: 0, y1: 1,
-            fillcolor: 'rgba(251,191,36,0.08)',
-            line: { width: 1.5, color: 'rgba(251,191,36,0.5)', dash: 'dot' },
+            fillcolor: style.fillcolor,
+            line: style.line,
             layer: 'above'
         };
     }

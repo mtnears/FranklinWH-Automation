@@ -4,6 +4,64 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.4.1 — May 2026
+
+### Per-Season Rate Auto-Switching
+- **Root cause fix:** `rate_schedule.json` `seasons` block previously supported `windows` overrides per season but not `tier_rates`. On three-tier plans (PG&E EV2-A and similar), the existing `rate_history` DB-based seasonal switching only covered `peak` and `off_peak` columns. `partial_peak` rates stayed frozen at whatever JSON last said when seasons changed — silent miscalculation on the June 1 / October 1 boundary with no error to trip on
+- **Fix:** `seasons[].tier_rates` now overrides all tiers (including `partial_peak`) when the current month matches a season's `months` array. Precedence: JSON base `tiers` → seasonal `tier_rates` override → DB `rate_history` override (peak/off_peak only)
+- Configs without a `seasons` block behave exactly as before — fully backward compatible
+- New `_validate_seasons()` helper logs WARNING for: overlapping months between seasons, missing month coverage, invalid month values (non-int or out of 1–12 range), empty `months` list, unknown tier names in `tier_rates`, non-list seasons value
+- `data/rate_schedule.example.json` adds a new `pge_ev2_a_care` example demonstrating the pattern; `pepco_r_tou_p_seasonal` `_comment` updated to note `tier_rates` is now also supported per season
+
+### Version Banner Reads From VERSION File
+- New `scripts/version.py` helper reads from `/app/VERSION` (container) with fallback to script-relative repo-root path for out-of-container testing. Result cached after first successful read
+- `smart_decision.py` engine startup banner replaced hardcoded `"v4.0 Adaptive"` with `f"v{get_version()} Adaptive"` — banner stays in sync with releases automatically
+- Docstring `v4.0` references in `adaptive_engine.py`, `rate_schedule.py`, `solar_forecast.py`, `system_profile.py`, and `smart_decision.py` left unchanged — these refer to the engine architecture branch, not runtime version
+
+---
+
+## v4.4.0 — May 2026
+
+### Three-Tier Rate Support — Peak / Partial-Peak / Off-Peak
+- **New Priority 4.5** in `adaptive_engine.py` between P4 (peak protection) and P5 (curtailment protection). Activates during partial-peak windows on three-tier plans
+- Pre-peak vs post-peak partial-peak differentiation: when peak is still ahead, preserve battery and fall through to TOU when SOC is low so battery can recharge before sacred peak; when peak is behind, free to discharge via Self-Consumption with no SOC floor concern
+- New helpers in `rate_schedule.py`:
+  - `is_partial_peak(dt)` — true when current tier is `partial_peak`
+  - `is_expensive(dt)` — true for peak OR partial-peak (avoid imports if possible)
+  - `expensive_window_remaining_hours(dt)` — walks forward in 5-minute increments to find the next off-peak transition. Returns `(peak_hours_remaining, partial_peak_hours_remaining)` for the P4.5 decision branch
+- Decision messages tagged `[P4.5]` for partial-peak entries in `intelligence_log`
+- Two-tier plans continue to work unchanged — P4.5 is a no-op when no `partial_peak` tier is defined in `rate_schedule.json`
+
+### Reference Configuration Updated to PG&E EV2-A with CARE
+- Shipped `data/rate_schedule.json` reconfigured for PG&E EV2-A with CARE: 4–9pm peak, 3–4pm and 9pm–12am partial-peak, every day including weekends and holidays
+- Empty `holidays` list with `holiday_tier: "off_peak"` as defensive default — EV2-A tariff has no holiday exception
+- Other plan examples (E-TOU-D, SMUD TOU, SCE TOU-D-PRIME, Pepco R-TOU-P seasonal, ComEd) remain available in `data/rate_schedule.example.json`
+
+### Dashboard
+- Rate Plan card displays all three tiers with current-rate highlight
+- Analytics tab amber bands distinguish peak (darker) and partial-peak (lighter)
+- Peak countdown bar reads multi-window peak periods from `rate_schedule.json`
+
+### Other Changes
+- `BATTERY_CAPACITY_KWH` reference for aPower 2: 13.6 kWh per battery (multi-battery installs sum, e.g. 27.2 kWh for 2× aPower 2)
+- Engine peak entry SOC requirement now accounts for partial-peak hours when computing target
+
+---
+
+## v4.3.1 — May 2026
+
+### Adaptive Engine — Target-Aware SC Commit
+- **Root cause fix:** Continuous Target Tracking strategy gated Self-Consumption commit on whether projection cleared the *survival floor* (reserve + peak need + safety). On systems where solar can't realistically fill the battery to target — small solar relative to capacity, cloudy days, or any configuration where forecast solar falls short — projection cleared survival even when it landed well below target. The engine committed to SC for the rest of the day, locking out the chained EB gap evaluation that would otherwise have grid-charged at the last responsible moment. Result: undercharged at peak, EB never firing despite a real shortfall
+- **Fix:** new target-aware threshold. SC commits only when projection lands within `CT_SC_COMMIT_MARGIN_PCT` (default 3.0%) of the dynamic target. When projection falls short, CT returns TOU and the EB gap logic gets to apply last-responsible-moment timing as designed
+- Both small-solar and well-sized installs are now handled by the same logic — sunny days continue to commit to SC normally; cloudy or under-sized days fall through to EB gap evaluation
+- New `ct_sc_commit_threshold` metric recorded in `intelligence_log` rows where CT is the winning decision — visible in diagnostic bundles
+- Decision messages reference the unified threshold instead of the bare survival floor
+
+### Credits
+Reported as Issue #21 by community user **miztahsparklez** (NEM 3.0, SCE TOU-D-PRIME, cloud-only). Diagnostic bundle analysis confirmed the SC commit gate as the root cause — projection consistently cleared survival floor (~59%) while landing well below configured target (95-100%), so EB never fired and battery sat at 60-65% going into peak. Issue #22 and additional related community reports addressed in the same release.
+
+---
+
 ## v4.3.0 — May 2026
 
 ### Cloud-Only Data Persistence (Bug Fix — Affects All Cloud-Only Users)

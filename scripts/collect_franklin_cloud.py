@@ -42,11 +42,13 @@ logging.basicConfig(
 log = logging.getLogger('collect_franklin_cloud')
 
 try:
-    from db import store, init_db
+    from db import store, init_db, normalize_mode
     DB_AVAILABLE = True
 except ImportError:
     DB_AVAILABLE = False
     log.warning("db.py not available — will print only")
+    def normalize_mode(x):  # fallback when db.py unavailable
+        return x
 
 try:
     from config import config
@@ -152,7 +154,12 @@ async def collect_cloud_data(test_mode=False):
             if 't_amb' in status:
                 ambient_temp = status['t_amb']
             run_status_val = status.get('run_status')
-            mode_name = status.get('name')
+            # Franklin cloud API returns 'Self-Consumption' / 'TOU-B' /
+            # 'Emergency Backup' display strings. The engine, Modbus collector,
+            # and rate_schedule logic all use canonical lowercase-underscore
+            # form ('self_consumption' / 'time_of_use' / 'emergency_backup').
+            # Normalize at the boundary so the column stays consistent.
+            mode_name = normalize_mode(status.get('name'))
             if 'gridChBat' in status:
                 grid_to_bat = status['gridChBat']
             if 'soChBat' in status:
