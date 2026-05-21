@@ -834,15 +834,30 @@ class CloudDataSource(DataSource):
         """Switch battery mode via Cloud API."""
         try:
             from franklinwh import TokenFetcher, Client, Mode
+            # Patch Mode.payload to echo back the user's current Storm Hedge
+            # setting rather than the library's hardcoded "1". The current
+            # value is read from the cloud before set_mode() and stashed on
+            # the Mode object as _stromen_preserve. See richo/franklinwh-python#8.
             _stromen_orig = getattr(Mode.payload, "_stromen_patched", None) or Mode.payload
             def _stromen_fix(self, gateway, _o=_stromen_orig):
-                p = _o(self, gateway); p["stromEn"] = "0"; return p
+                p = _o(self, gateway)
+                p["stromEn"] = getattr(self, "_stromen_preserve", "0")
+                return p
             _stromen_fix._stromen_patched = _stromen_orig
             Mode.payload = _stromen_fix
 
             # Create fresh client for mode switching (ensures fresh auth)
             fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
             client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
+
+            # Read current Storm Hedge state from the cloud so we can preserve
+            # the user's app setting across our mode switch.
+            try:
+                sw_status = await client._switch_status()
+                current_stromen = str(sw_status.get("stromEn", 0))
+            except Exception as e:
+                logger.warning(f'Could not read current stromEn, defaulting to "0": {e}')
+                current_stromen = "0"
 
             if mode in ['emergency_backup', 'backup']:
                 mode_obj = Mode.emergency_backup(soc=config.RESERVE_SOC_BACKUP)
@@ -860,8 +875,9 @@ class CloudDataSource(DataSource):
                 else:
                     mode_obj = Mode.time_of_use(soc=config.RESERVE_SOC_HOME)
 
+            mode_obj._stromen_preserve = current_stromen
             await client.set_mode(mode_obj)
-            logger.info(f'Mode switch successful: {mode}')
+            logger.info(f'Mode switch successful: {mode} (stromEn preserved as {current_stromen})')
             return True
 
         except Exception as e:
