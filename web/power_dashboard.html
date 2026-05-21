@@ -654,6 +654,17 @@
             </div>
         </div>
 
+        <!-- LEFT: Decision Engine — daily decision-making stats from CT logic -->
+        <div class="card">
+            <div class="card-label">Decision Engine</div>
+            <div class="bstat-row"><span class="bstat-k">Forecast Solar</span><span class="bstat-v" id="de-forecast">-- kWh</span></div>
+            <div class="bstat-row"><span class="bstat-k">Confidence</span><span class="bstat-v" id="de-confidence">--</span></div>
+            <div class="bstat-row"><span class="bstat-k">Target SOC</span><span class="bstat-v" id="de-target">--%</span></div>
+            <div class="bstat-row"><span class="bstat-k">Floor</span><span class="bstat-v" id="de-floor">--%</span></div>
+            <div class="bstat-row"><span class="bstat-k">Peak Reserve</span><span class="bstat-v" id="de-peak-reserve">--%</span></div>
+            <div class="bstat-row"><span class="bstat-k">Solar Refill Credit</span><span class="bstat-v" id="de-refill">--%</span></div>
+        </div>
+
         <!-- LEFT: Solar Status -->
         <div class="card">
             <div class="card-label">Solar Status</div>
@@ -1893,6 +1904,68 @@ async function update(){
         document.getElementById('api-dot').className='status-dot error';
         document.getElementById('api-text').textContent='Data unavailable';
     }
+    // Decision Engine card — pulls latest CT metrics from intelligence log.
+    // Separate from main data refresh because metrics only update each
+    // decision cycle (30 min); this fetch is cheap and non-blocking.
+    updateDecisionEngine();
+}
+
+// Parse the most recent "Engine metrics:" line from intelligence logs and
+// populate the Decision Engine card. The metrics are key=value pairs
+// comma-separated, written by adaptive_engine.py each decision cycle.
+async function updateDecisionEngine(){
+    try{
+        const r=await fetch('/api/intelligence-logs?limit=40');
+        if(!r.ok)return;
+        const d=await r.json();
+        const logs=d.logs||d.rows||d||[];
+        let metricsLine=null;
+        for(let i=0;i<logs.length;i++){
+            const msg=logs[i].message||logs[i].msg||'';
+            if(msg.indexOf('Engine metrics:')===0){metricsLine=msg;break}
+        }
+        if(!metricsLine)return;
+        // Strip "Engine metrics: " prefix and parse key=value pairs
+        const body=metricsLine.replace(/^Engine metrics:\s*/,'');
+        const m={};
+        body.split(',').forEach(p=>{
+            const kv=p.trim().split('=');
+            if(kv.length===2){const k=kv[0].trim();const v=kv[1].trim();m[k]=isNaN(parseFloat(v))?v:parseFloat(v)}
+        });
+        // Forecast solar — show kWh, with "to battery" framing
+        const setText=(id,t)=>{const el=document.getElementById(id);if(el)el.textContent=t};
+        if(m.ct_remaining_solar_kwh!==undefined){
+            setText('de-forecast',m.ct_remaining_solar_kwh.toFixed(1)+' kWh');
+        }else{setText('de-forecast','—')}
+        // Confidence — wx_score 0-1 mapped to percentage with color cue
+        if(m.ct_wx_score!==undefined){
+            const conf=Math.round(m.ct_wx_score*100);
+            const el=document.getElementById('de-confidence');
+            if(el){el.textContent=conf+'%';el.style.color=conf>=70?'var(--accent-green)':conf>=40?'var(--accent-amber)':'var(--accent-red)'}
+        }
+        // Target / Floor / Peak Reserve / Solar Refill Credit
+        if(m.ct_target_soc!==undefined)setText('de-target',m.ct_target_soc.toFixed(0)+'%');
+        if(m.ct_floor_pct!==undefined)setText('de-floor',m.ct_floor_pct.toFixed(0)+'%');
+        // Peak Reserve: show effective vs raw if discounted
+        if(m.ct_effective_peak_need_pct!==undefined&&m.ct_peak_need_pct!==undefined){
+            const eff=m.ct_effective_peak_need_pct,raw=m.ct_peak_need_pct;
+            setText('de-peak-reserve',eff.toFixed(0)+'% (raw '+raw.toFixed(0)+'%)');
+        }else if(m.ct_peak_need_pct!==undefined){
+            setText('de-peak-reserve',m.ct_peak_need_pct.toFixed(0)+'%');
+        }
+        // Solar Refill Credit — new field; show 0% if not present (old engine)
+        if(m.ct_solar_refill_pct!==undefined){
+            const credit=m.ct_solar_refill_pct;
+            const el=document.getElementById('de-refill');
+            if(el){el.textContent=credit.toFixed(0)+'%';el.style.color=credit>0?'var(--accent-green)':'var(--text-muted)'}
+        }else{setText('de-refill','—')}
+        // Hours to Peak
+        if(m.hours_to_peak!==undefined&&m.hours_to_peak!==null){
+            setText('de-hours-peak',parseFloat(m.hours_to_peak).toFixed(1)+'h');
+        }else{setText('de-hours-peak','—')}
+        // Forecast source
+        if(m.ct_forecast_source){setText('de-source',m.ct_forecast_source)}
+    }catch(e){/* silent — card stays at last values */}
 }
 
 function renderLive(d){
@@ -3090,6 +3163,20 @@ const AN_MODE_LEGEND = {
     self_consumption: { label: 'SC (Discharge)', color: '#22d3ee' },
 };
 
+// Grid outage detection — minimum duration (minutes) before rendering an outage
+// band on the chart. Filters single-reading dropouts (transient Modbus blips)
+// while preserving real events. Today's 86-minute outage and the April/May
+// outages we've seen so far have all been well above this threshold.
+const OUTAGE_MIN_DURATION_MIN = 15;
+
+// Visual style for the grid outage band — distinct from peak (dotted amber
+// border) and EB mode fill (solid pinker red). Brighter red dashed border
+// with minimal fill so the underlying mode band stays readable.
+const OUTAGE_STYLE = {
+    fillcolor: 'rgba(239,68,68,0.04)',
+    line: { width: 1.5, color: 'rgba(239,68,68,0.65)', dash: 'dash' }
+};
+
 function initAnalytics() {
     anDatePick = document.getElementById('an-date-pick');
     if (!anInitialized) {
@@ -3490,6 +3577,58 @@ const AN_PLOTLY_CONFIG = {
     responsive: true
 };
 
+function anOutageShapes(sr) {
+    // Build a list of dashed-red-border boxes — one per contiguous run of
+    // grid_connected=0 readings that meets the minimum duration threshold.
+    //
+    // We scan the system_readings array (already sorted by timestamp) for
+    // runs where grid_connected is 0. Each run becomes a single shape spanning
+    // from the first offline reading to the last offline reading. Runs shorter
+    // than OUTAGE_MIN_DURATION_MIN are skipped — typically a single missed
+    // Modbus read on an otherwise-healthy minute, not a real outage.
+    //
+    // Null-tolerant: rows with grid_connected=null are treated as "unknown,
+    // skip" rather than "assume offline." This avoids painting an outage band
+    // during periods when we just didn't capture the field (e.g., older
+    // imported data, brief collector hiccups).
+    const shapes = [];
+    if (!sr || sr.length === 0) return shapes;
+
+    let runStart = null;     // timestamp of first offline reading in current run
+    let runEnd = null;       // timestamp of most recent offline reading
+    const minMs = OUTAGE_MIN_DURATION_MIN * 60 * 1000;
+
+    function flush() {
+        if (runStart === null || runEnd === null) return;
+        const durMs = new Date(runEnd) - new Date(runStart);
+        if (durMs >= minMs) {
+            shapes.push({
+                type: 'rect', xref: 'x', yref: 'paper',
+                x0: runStart, x1: runEnd, y0: 0, y1: 1,
+                fillcolor: OUTAGE_STYLE.fillcolor,
+                line: OUTAGE_STYLE.line,
+                layer: 'above'
+            });
+        }
+        runStart = null;
+        runEnd = null;
+    }
+
+    for (let i = 0; i < sr.length; i++) {
+        const gc = sr[i].grid_connected;
+        if (gc === 0) {
+            if (runStart === null) runStart = sr[i].timestamp;
+            runEnd = sr[i].timestamp;
+        } else if (gc === 1) {
+            flush();
+        }
+        // gc === null/undefined: treat as continuation if a run is in progress,
+        // ignore if not. Don't extend runEnd on null since we don't know.
+    }
+    flush();
+    return shapes;
+}
+
 function anModeShapes(sr) {
     // Build a list of shapes — one rect per contiguous run of a given mode.
     //
@@ -3793,7 +3932,7 @@ function anRenderPowerChart(data, compareList) {
         yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'kW', font: { size: 11 } } },
         yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
             range: [0, 105], gridcolor: 'rgba(52,211,153,0.06)', tickformat: '.0f', showgrid: false },
-        shapes: [...anPeakShapes(data.date), ...anModeShapes(sr)],
+        shapes: [...anPeakShapes(data.date), ...anModeShapes(sr), ...anOutageShapes(sr)],
     };
 
     Plotly.newPlot('an-power-chart', traces, layout, AN_PLOTLY_CONFIG);
@@ -3882,7 +4021,7 @@ function anRenderBatteryChart(data, compareList) {
         yaxis: { ...AN_PLOTLY_LAYOUT.yaxis, title: { text: 'Battery kW', font: { size: 11 } }, zeroline: true, zerolinecolor: 'rgba(255,255,255,0.1)' },
         yaxis2: { title: { text: 'SOC %', font: { size: 11 } }, overlaying: 'y', side: 'right',
             range: [0, 105], tickformat: '.0f', showgrid: false },
-        shapes: [...anPeakShapes(data.date), ...anModeShapes(sr)],
+        shapes: [...anPeakShapes(data.date), ...anModeShapes(sr), ...anOutageShapes(sr)],
     };
 
     Plotly.newPlot('an-battery-chart', traces, layout, AN_PLOTLY_CONFIG);

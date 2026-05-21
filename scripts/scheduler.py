@@ -1207,7 +1207,7 @@ class APIHandler(BaseHTTPRequestHandler):
 
             readings = db_mod.query(
                 "SELECT timestamp, soc_pct, solar_kw, grid_kw, battery_kw, "
-                "home_load_kw, mode "
+                "home_load_kw, mode, grid_connected "
                 f"FROM system_readings WHERE {date_clause} ORDER BY timestamp",
                 date_params
             )

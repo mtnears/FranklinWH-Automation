@@ -157,6 +157,14 @@ P45_SAFETY_MARGIN_KWH = float(os.environ.get('P45_SAFETY_MARGIN_KWH', '2.0'))
 # Below this, the system just parks in TOU and lets solar/grid handle it.
 CT_MIN_FORECAST_SOLAR_KWH = 2.0
 
+# Solar refill credit window (hours). The floor's peak_need component can be
+# discounted by forecast solar that will refill the battery before peak,
+# but only if peak is within this window. Beyond it, forecast confidence
+# decays (multi-day forecasts are unreliable) and we revert to full peak_need
+# reservation. 24h covers today's and tomorrow's peak; weekend peaks 30-40h
+# out get no credit.
+CT_SOLAR_REFILL_MAX_HOURS = 24.0
+
 # Default hourly load profile (kW) when DB history is unavailable.
 # Index 0 = midnight, 23 = 11 PM. Based on typical US residential.
 CT_DEFAULT_HOURLY_LOAD = [
@@ -1174,10 +1182,39 @@ class AdaptiveEngine:
         peak_need_kwh = avg_load_kw * peak_duration
         peak_need_pct = peak_need_kwh / battery_kwh * 100.0
 
+        # Solar refill credit: forecast solar landing in battery before peak
+        # discounts the peak_need reservation in the floor. The reasoning: if
+        # we're confident solar will refill the battery before peak starts,
+        # we don't need to reserve the full peak_need overnight — the battery
+        # will be replenished by solar during the day.
+        #
+        # Discount = forecast_solar_to_battery × wx_score, capped at peak_need.
+        # wx_score (0-1) acts as a confidence multiplier — cloudy/uncertain
+        # forecasts get less credit. When forecast is strong and confident,
+        # effective_peak_need collapses near 0 and the floor drops to
+        # reserve + safety, freeing up the overnight drain window. When
+        # forecast is weak or peak is too far out for confidence, the full
+        # peak_need reservation is preserved.
+        #
+        # Only applied when peak is within CT_SOLAR_REFILL_MAX_HOURS (default
+        # 24h). Multi-day-out peaks (weekends) get no credit because forecast
+        # confidence decays past one day.
+        solar_refill_pct = 0.0
+        if (hours_to_peak is not None
+                and hours_to_peak > 0
+                and hours_to_peak < CT_SOLAR_REFILL_MAX_HOURS
+                and remaining_solar_kwh > 0):
+            solar_refill_kwh = remaining_solar_kwh * wx_score
+            solar_refill_pct = min(
+                solar_refill_kwh / battery_kwh * 100.0,
+                peak_need_pct
+            )
+        effective_peak_need_pct = max(0.0, peak_need_pct - solar_refill_pct)
+
         safety_pct = (CT_BASE_SAFETY_PCT
                       + (CT_MAX_SAFETY_PCT - CT_BASE_SAFETY_PCT) * (1.0 - wx_score))
-        floor_pct = backup_reserve + peak_need_pct + safety_pct
-        hard_min = backup_reserve + peak_need_pct + CT_MIN_FLOOR_ABOVE_RESERVE
+        floor_pct = backup_reserve + effective_peak_need_pct + safety_pct
+        hard_min = backup_reserve + effective_peak_need_pct + CT_MIN_FLOOR_ABOVE_RESERVE
         floor_pct = max(floor_pct, hard_min)
 
         target_soc = max(raw_target, floor_pct)
@@ -1191,6 +1228,8 @@ class AdaptiveEngine:
             'ct_remaining_solar_pct': round(remaining_solar_pct, 1),
             'ct_safety_pct': round(safety_pct, 1),
             'ct_peak_need_pct': round(peak_need_pct, 1),
+            'ct_effective_peak_need_pct': round(effective_peak_need_pct, 1),
+            'ct_solar_refill_pct': round(solar_refill_pct, 1),
             'ct_wx_score': round(wx_score, 2),
             'ct_forecast_source': forecast_source,
             'soc': round(state.soc_percent, 1),
