@@ -617,6 +617,11 @@ async def _do_mode_switch(mode_name: str) -> bool:
     Returns: True if switch succeeded
     """
     from franklinwh import Client, TokenFetcher, Mode
+    _stromen_orig = getattr(Mode.payload, "_stromen_patched", None) or Mode.payload
+    def _stromen_fix(self, gateway, _o=_stromen_orig):
+        p = _o(self, gateway); p["stromEn"] = "0"; return p
+    _stromen_fix._stromen_patched = _stromen_orig
+    Mode.payload = _stromen_fix
     
     fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
     client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)

@@ -834,6 +834,11 @@ class CloudDataSource(DataSource):
         """Switch battery mode via Cloud API."""
         try:
             from franklinwh import TokenFetcher, Client, Mode
+            _stromen_orig = getattr(Mode.payload, "_stromen_patched", None) or Mode.payload
+            def _stromen_fix(self, gateway, _o=_stromen_orig):
+                p = _o(self, gateway); p["stromEn"] = "0"; return p
+            _stromen_fix._stromen_patched = _stromen_orig
+            Mode.payload = _stromen_fix
 
             # Create fresh client for mode switching (ensures fresh auth)
             fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
