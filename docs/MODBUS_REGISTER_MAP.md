@@ -62,6 +62,12 @@ These registers have been validated against simultaneous cloud API reads across 
 | **1037** | **2** | **State of Charge** | **÷ 10** | **%** | **Primary SOC reading. Value of 730 = 73.0%. Correlation r=1.000 vs cloud API, ±0.22% accuracy.** |
 | 1038 | 3 | Battery DC voltage | ÷ 10 | V | e.g., 992 = 99.2V. May update less frequently than SOC. |
 
+### Model 714 — DER DC Measurement (Base: 1042)
+
+| Register | Offset | Field | Scale | Unit | Notes |
+|----------|--------|-------|-------|------|-------|
+| 1048 | 4 | Battery Watts | signed int16 | W | Negative=charging, positive=discharging. Validated within 0.3% of cloud charge totals |
+
 ### Model 701 — AC Measurement (Base: 72)
 
 #### System State
@@ -141,9 +147,13 @@ Static values representing inverter capacity. These do not change during operati
 
 These registers are outside the standard SunSpec model chain and appear to be vendor-specific FranklinWH extensions.
 
-| Register | Field | Values | Notes |
-|----------|-------|--------|-------|
-| **15507** | **OnGrid Mode** | **0=Backup, 1=TOU, 2=Self-Consumption, 3=Manual** | **Current operating mode. Confirmed matching cloud API mode detection. Used for local mode verification to eliminate routine cloud API polling.** |
+| Register | Offset | Field | Scale | Unit | Notes |
+|----------|--------|-------|-------|------|-------|
+| 15502 | 2 | Solar Production | raw | W | ~43% of readings return 0xFFFF (65535) — spike filter >25000W required. Validated <0.1% of cloud solar |
+| 15506 | 6 | Home Consumption | raw | W | Validated within 1–5% of cloud home load. Spike filter <25000W |
+| 15507 | 7 | OnGrid Mode | raw | 0=Never observed<br>1=Backup<br>2=Self Consumption<br>3=TOU | Current operating mode. Confirmed matching mode selected/displayed in Franklin app. Used for local mode verification to eliminate routine cloud API polling. |
+| 15508 | 8 | Active mode backup reserve | raw | % | Reflects current active mode's reserve setting — automatically goes to 100% in backup/storm hedge mode |
+| 15509 | 9 | Active mode backup reserve | raw | % | 	Identical to 15508 in all observed conditions — purpose distinction unknown |
 
 **Discovery note:** Register 15507 was identified through systematic polling of the 15500-15600 range while switching modes via the cloud API. Values change within seconds of a mode switch command. This register is used by `data_sources.py` for mode verification, reducing cloud API calls from every 30 minutes to only on actual mode switches (~2-4/day).
 
@@ -197,11 +207,11 @@ The inverter state (register 74) toggles between `3` and `7` frequently during n
 
 | Target | Status | Notes |
 |--------|--------|-------|
-| Battery power (charge/discharge kW) | Partially tested | Register 82 (offset 10) shows weak correlation during low activity. Needs testing during heavy charge/discharge. |
-| Home load (kW) | Partially tested | Register 83 (offset 11) shows moderate match with limited samples. |
+| ~~Battery power (charge/discharge kW)~~ | **Found** | Register 1048 - see Sunspec Model 714 section above; confirmed with ~300k modbus readings compared to cloud API values |
+| ~~Home load (kW)~~ | **Found** | Register 15506 (offset 6) — see Extended Registers section above; confirmed with ~300k modbus readings compared to cloud API values |
 | ~~Operating mode~~ | **Found** | Register 15507 — see Extended Registers section above. |
-| Reserve SOC setting | Not found | Not exposed via Modbus. |
-| Solar production | Not available | Model 502 returns zeros during active production. |
+| ~~Reserve SOC setting~~ | **Found** | Registers 15508/9 (offset 8/9) — see Extended Registers section above; confirmed with ~300k modbus readings compared to cloud API values |
+| ~~Solar production~~ | **Found** | Register 15502 (offset 2) — see Extended Registers section above; confirmed with ~300k modbus readings compared to cloud API values and inverter reported values |
 | Per-battery SOC | Not available | Only aggregate SOC at register 1037. Individual battery SOC requires cloud API. |
 
 ---
