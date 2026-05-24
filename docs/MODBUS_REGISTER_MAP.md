@@ -1,6 +1,6 @@
 # FranklinWH aGate — Modbus TCP Register Reference
 
-> **Last updated:** May 3, 2026
+> **Last updated:** May 24, 2026
 > **Project:** [FranklinWH Automation](https://github.com/mtnears/FranklinWH-Automation)
 
 ---
@@ -45,6 +45,7 @@ The aGate uses 700-series DER models (newer SunSpec standard), not the older 101
 | 702 (DC/Nameplate) | 227 | 50 | Inverter nameplate/capacity ratings (static) |
 | 703 (Watt-Hours) | 279 | 17 | Lifetime energy accumulators |
 | 713 (DER Status) | 1035 | 7 | SOC, battery DC voltage, rated power |
+| 714 (DER DC Measurement) | 1042 | 43 | Battery DC power (charge/discharge watts) |
 | 502 (Solar/PV) | 1098 | 28 | PV/solar data (mostly non-functional — see notes) |
 | Extended (vendor) | 15500+ | — | Operating mode (15507), other vendor-specific registers |
 
@@ -66,7 +67,7 @@ These registers have been validated against simultaneous cloud API reads across 
 
 | Register | Offset | Field | Scale | Unit | Notes |
 |----------|--------|-------|-------|------|-------|
-| 1048 | 4 | Battery Watts | signed int16 | W | Negative=charging, positive=discharging. Validated within 0.3% of cloud charge totals |
+| 1048 | 6 | Battery Watts | signed int16 | W | Negative=charging, positive=discharging. Validated within 0.3% of cloud charge totals |
 
 ### Model 701 — AC Measurement (Base: 72)
 
@@ -141,7 +142,7 @@ Static values representing inverter capacity. These do not change during operati
 
 ### Model 502 — Solar/PV (Base: 1098)
 
-**Status: Largely non-functional.** Most registers return zero even during active solar production. The aGate does not appear to expose PV data through this model. Solar production data should be sourced from the solar inverter directly (e.g., Enphase local API, SolarEdge API) or from a service like PVOutput.
+**Status: Largely non-functional.** Most registers return zero even during active solar production. The aGate does not appear to expose PV data through this model. Solar production data should be sourced from the solar inverter directly (e.g., Enphase local API, SolarEdge API), from a service like PVOutput, or from the vendor extension register 15502 (see Extended Registers section).
 
 ### Extended Registers — Operating Mode (15500 Block)
 
@@ -153,7 +154,7 @@ These registers are outside the standard SunSpec model chain and appear to be ve
 | 15506 | 6 | Home Consumption | raw | W | Validated within 1–5% of cloud home load. Spike filter <25000W |
 | 15507 | 7 | OnGrid Mode | raw | 0=Never observed<br>1=Backup<br>2=Self Consumption<br>3=TOU | Current operating mode. Confirmed matching mode selected/displayed in Franklin app. Used for local mode verification to eliminate routine cloud API polling. |
 | 15508 | 8 | Active mode backup reserve | raw | % | Reflects current active mode's reserve setting — automatically goes to 100% in backup/storm hedge mode |
-| 15509 | 9 | Active mode backup reserve | raw | % | 	Identical to 15508 in all observed conditions — purpose distinction unknown |
+| 15509 | 9 | Active mode backup reserve | raw | % | Identical to 15508 in all observed conditions — purpose distinction unknown |
 
 **Discovery note:** Register 15507 was identified through systematic polling of the 15500-15600 range while switching modes via the cloud API. Values change within seconds of a mode switch command. This register is used by `data_sources.py` for mode verification, reducing cloud API calls from every 30 minutes to only on actual mode switches (~2-4/day).
 
@@ -268,9 +269,20 @@ voltage = regs.registers[13] / 10.0
 ambient_c = regs.registers[33] / 10.0
 cabinet_c = regs.registers[34] / 10.0
 
+# Battery DC power (Model 714)
+regs = client.read_holding_registers(1048, count=1)
+battery_watts = regs.registers[0]
+if battery_watts > 32767:
+    battery_watts -= 65536  # signed 16-bit (negative=charging, positive=discharging)
+
 # Operating mode (extended register)
 regs = client.read_holding_registers(15507, count=1, device_id=1)
-mode_map = {0: 'backup', 1: 'tou', 2: 'self_consumption', 3: 'manual'}
+mode_map = {
+    0: 'standby',          # Never observed in production
+    1: 'emergency_backup',
+    2: 'self_consumption',
+    3: 'time_of_use',
+}
 mode = mode_map.get(regs.registers[0], 'unknown')
 
 client.close()
