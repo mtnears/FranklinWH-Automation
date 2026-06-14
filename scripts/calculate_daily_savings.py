@@ -38,49 +38,78 @@ try:
 except ImportError:
     DATA_DIR = Path(os.getenv('DATA_DIR', '/app/data'))
 
-# Constants
-BATTERY_CAPACITY_KWH = 30
-PEAK_START_HOUR = 17  # 5 PM
-PEAK_END_HOUR = 20    # 8 PM
-OFF_GRID_START_HOUR = 16.5  # 4:30 PM - when we want to be off grid
+# Constants — module defaults are LAST-RESORT fallbacks only; per-date values
+# come from rate_config (peak window) and app_config (capacity) at runtime.
+BATTERY_CAPACITY_KWH = 30          # superseded by app_config battery.capacity_kwh
+PEAK_START_HOUR = 17               # superseded by rate_config.peak_window_for_date
+PEAK_END_HOUR = 20                 # superseded by rate_config.peak_window_for_date
 OFF_GRID_END_HOUR = 23.5  # 11:30 PM — captures most solar discharge overnight
 
-# Rate structure (default, will be loaded from config if available)
-DEFAULT_RATES = {
-    'care': {
-        'peak_rate': 0.39,
-        'off_peak_rate': 0.27
-    },
-    'pre_care': {
-        'peak_rate': 0.60,
-        'off_peak_rate': 0.41
-    }
-}
+try:
+    import rate_config
+    RATE_CONFIG_AVAILABLE = True
+except ImportError:
+    RATE_CONFIG_AVAILABLE = False
+
+try:
+    import config_store
+    CONFIG_STORE_AVAILABLE = True
+except ImportError:
+    CONFIG_STORE_AVAILABLE = False
 
 
-def load_system_config(config_path=None):
-    """Load system configuration including rates and dates."""
-    if config_path is None:
-        config_path = DATA_DIR / 'system_milestones.json'
+def get_battery_capacity(override=None):
+    """Battery capacity in kWh: --capacity override > app_config > config.py.
 
+    The app_config value is the canonical one post-v4.6 migration. The
+    override flag exists so the rate fix can be validated in isolation
+    (recompute with --capacity 30 first, then without, to separate the
+    rate correction from the capacity correction in the savings shift).
+    """
+    if override is not None:
+        return float(override)
+    if CONFIG_STORE_AVAILABLE:
+        cap = config_store.app_config.get('battery.capacity_kwh')
+        if cap:
+            return float(cap)
     try:
-        with open(config_path, 'r') as f:
-            return json.load(f)
-    except FileNotFoundError:
+        return float(config.BATTERY_CAPACITY_KWH)
+    except (NameError, AttributeError):
+        return float(BATTERY_CAPACITY_KWH)
+
+
+def get_peak_window(date):
+    """Per-date peak window (start_hour, end_hour) from the canonical rate
+    schedule; module defaults only when nothing resolves (and that gets
+    warned about, not silently used)."""
+    if RATE_CONFIG_AVAILABLE:
+        w = rate_config.peak_window_for_date(date)
+        if w:
+            return w.start_hour, w.end_hour
+    print(f"  WARNING {date}: no peak window resolved from rate schedule — "
+          f"using module defaults {PEAK_START_HOUR}-{PEAK_END_HOUR}")
+    return PEAK_START_HOUR, PEAK_END_HOUR
+
+
+def get_rates_for_date(date):
+    """Per-date rates from the canonical resolver, in DOLLARS per kWh.
+
+    Returns (peak_rate, off_peak_rate, rate_type) or None when no rate
+    source resolves — the caller skips the date rather than fabricating
+    numbers (the pre-v4.6 hardcoded 0.60/0.41 'pre_care' fiction is gone).
+    rate_type is the resolution label: 'CARE' / 'standard' (rate_history
+    overlay applied) or 'plan' / 'json' (tier rates only).
+    """
+    if not RATE_CONFIG_AVAILABLE:
         return None
-
-
-def get_rates_for_date(date, config):
-    """Determine which rate structure applies for a given date."""
-    if config and 'critical_dates' in config:
-        care_start_str = config['critical_dates'].get('care_activation')
-        if care_start_str:
-            care_start = datetime.strptime(care_start_str, '%Y-%m-%d').date()
-            if date >= care_start:
-                if 'rate_history' in config and 'care_rates' in config['rate_history']:
-                    return config['rate_history']['care_rates'], 'care'
-                return DEFAULT_RATES['care'], 'care'
-    return DEFAULT_RATES['pre_care'], 'pre_care'
+    r = rate_config.resolve_rates(date)
+    if r is None:
+        return None
+    peak = r.dollars('peak')
+    off_peak = r.dollars('off_peak')
+    if peak is None or off_peak is None:
+        return None
+    return peak, off_peak, r.label
 
 
 def load_monitoring_data_db(date_str=None, start_date=None, end_date=None):
@@ -145,7 +174,8 @@ def get_available_dates():
     return [r['d'] for r in rows if r['d'] and r['d'] != today]
 
 
-def calculate_charging_by_mode(df_day):
+def calculate_charging_by_mode(df_day, capacity_kwh=BATTERY_CAPACITY_KWH,
+                               off_grid_start=PEAK_START_HOUR - 0.5):
     """
     Calculate battery charging using the mode column for accurate tracking.
 
@@ -160,7 +190,7 @@ def calculate_charging_by_mode(df_day):
         return 0, 0, 0, 0
 
     if 'mode' not in df_day.columns:
-        return calculate_charging_proportional(df_day)
+        return calculate_charging_proportional(df_day, capacity_kwh, off_grid_start)
 
     df_day = df_day.sort_values('timestamp').copy()
 
@@ -198,7 +228,8 @@ def calculate_charging_by_mode(df_day):
     return total_charged_kwh, solar_charged_kwh, grid_charged_kwh, solar_ratio
 
 
-def calculate_charging_proportional(df_day):
+def calculate_charging_proportional(df_day, capacity_kwh=BATTERY_CAPACITY_KWH,
+                                    off_grid_start=PEAK_START_HOUR - 0.5):
     """
     Fallback: Calculate charging using proportional allocation method.
     Used when mode column is not available.
@@ -212,15 +243,15 @@ def calculate_charging_proportional(df_day):
 
     morning_soc = morning_data['soc_percent'].min()
 
-    pre_peak_data = df_day[(df_day['hour'] >= OFF_GRID_START_HOUR) &
-                           (df_day['hour'] < OFF_GRID_START_HOUR + 0.5)]
+    pre_peak_data = df_day[(df_day['hour'] >= off_grid_start) &
+                           (df_day['hour'] < off_grid_start + 0.5)]
     if len(pre_peak_data) == 0:
-        pre_peak_data = df_day[df_day['hour'] < OFF_GRID_START_HOUR]
+        pre_peak_data = df_day[df_day['hour'] < off_grid_start]
         if len(pre_peak_data) == 0:
             return 0, 0, 0, 0
 
     pre_peak_soc = pre_peak_data['soc_percent'].iloc[-1]
-    total_charged_kwh = max(0, (pre_peak_soc - morning_soc) / 100 * BATTERY_CAPACITY_KWH)
+    total_charged_kwh = max(0, (pre_peak_soc - morning_soc) / 100 * capacity_kwh)
 
     if total_charged_kwh <= 0:
         return 0, 0, 0, 0
@@ -239,17 +270,22 @@ def calculate_charging_proportional(df_day):
     return total_charged_kwh, total_charged_kwh * 0.5, total_charged_kwh * 0.5, 0.5
 
 
-def calculate_discharge_phase(df_day):
+def calculate_discharge_phase(df_day, peak_start=PEAK_START_HOUR,
+                              peak_end=PEAK_END_HOUR,
+                              capacity_kwh=BATTERY_CAPACITY_KWH):
     """
-    Calculate battery discharge during off-grid period (4:30 PM - 10 PM).
+    Calculate battery discharge during the off-grid period (30 min before
+    peak start through OFF_GRID_END_HOUR), split at the per-date peak end.
 
     Returns: (peak_discharge_kwh, post_peak_discharge_kwh, total_discharge_kwh)
     """
-    pre_peak_data = df_day[(df_day['hour'] >= OFF_GRID_START_HOUR) &
-                           (df_day['hour'] < OFF_GRID_START_HOUR + 0.5)]
+    off_grid_start = peak_start - 0.5
 
-    peak_end_data = df_day[(df_day['hour'] >= PEAK_END_HOUR) &
-                           (df_day['hour'] < PEAK_END_HOUR + 0.5)]
+    pre_peak_data = df_day[(df_day['hour'] >= off_grid_start) &
+                           (df_day['hour'] < off_grid_start + 0.5)]
+
+    peak_end_data = df_day[(df_day['hour'] >= peak_end) &
+                           (df_day['hour'] < peak_end + 0.5)]
 
     end_data = df_day[(df_day['hour'] >= OFF_GRID_END_HOUR - 0.5) &
                       (df_day['hour'] <= OFF_GRID_END_HOUR + 0.5)]
@@ -257,7 +293,7 @@ def calculate_discharge_phase(df_day):
     if len(pre_peak_data) > 0:
         pre_peak_soc = pre_peak_data['soc_percent'].iloc[0]
     else:
-        afternoon_data = df_day[df_day['hour'] < PEAK_START_HOUR]
+        afternoon_data = df_day[df_day['hour'] < peak_start]
         if len(afternoon_data) == 0:
             return 0, 0, 0
         pre_peak_soc = afternoon_data['soc_percent'].iloc[-1]
@@ -272,17 +308,17 @@ def calculate_discharge_phase(df_day):
     else:
         end_soc = df_day['soc_percent'].iloc[-1]
 
-    total_discharge_kwh = max(0, (pre_peak_soc - end_soc) / 100 * BATTERY_CAPACITY_KWH)
+    total_discharge_kwh = max(0, (pre_peak_soc - end_soc) / 100 * capacity_kwh)
 
     if total_discharge_kwh <= 0:
         return 0, 0, 0
 
     if peak_end_soc is not None:
-        peak_discharge_kwh = max(0, (pre_peak_soc - peak_end_soc) / 100 * BATTERY_CAPACITY_KWH)
-        post_peak_discharge_kwh = max(0, (peak_end_soc - end_soc) / 100 * BATTERY_CAPACITY_KWH)
+        peak_discharge_kwh = max(0, (pre_peak_soc - peak_end_soc) / 100 * capacity_kwh)
+        post_peak_discharge_kwh = max(0, (peak_end_soc - end_soc) / 100 * capacity_kwh)
     else:
-        peak_hours = PEAK_END_HOUR - PEAK_START_HOUR
-        post_peak_hours = OFF_GRID_END_HOUR - PEAK_END_HOUR
+        peak_hours = peak_end - peak_start
+        post_peak_hours = OFF_GRID_END_HOUR - peak_end
         total_hours = peak_hours + post_peak_hours
 
         peak_discharge_kwh = total_discharge_kwh * (peak_hours / total_hours)
@@ -291,11 +327,15 @@ def calculate_discharge_phase(df_day):
     return peak_discharge_kwh, post_peak_discharge_kwh, total_discharge_kwh
 
 
-def calculate_daily_savings(date, df_monitoring, sys_config, quiet=False):
+def calculate_daily_savings(date, df_monitoring, capacity_kwh, quiet=False):
     """
     Calculate savings for a specific date using mode-aware tracking.
 
-    Returns dict with savings breakdown or None if no data.
+    Rates and the peak window are resolved PER DATE from the canonical
+    rate_config resolver. Dates with no resolvable rates are skipped —
+    never computed from fabricated numbers.
+
+    Returns dict with savings breakdown or None if no data / no rates.
     """
     df_day = df_monitoring[df_monitoring['date'] == date].copy()
 
@@ -304,13 +344,22 @@ def calculate_daily_savings(date, df_monitoring, sys_config, quiet=False):
             print(f"  {date}: Insufficient data ({len(df_day)} rows)")
         return None
 
-    rates, rate_type = get_rates_for_date(date, sys_config)
-    peak_rate = rates.get('peak_rate', DEFAULT_RATES['care']['peak_rate'])
-    off_peak_rate = rates.get('off_peak_rate', DEFAULT_RATES['care']['off_peak_rate'])
+    resolved = get_rates_for_date(date)
+    if resolved is None:
+        if not quiet:
+            print(f"  {date}: SKIPPED — no rates resolved for this date "
+                  f"(populate rate_history or rate tables)")
+        return None
+    peak_rate, off_peak_rate, rate_type = resolved
 
-    total_charged, solar_charged, grid_charged, solar_ratio = calculate_charging_by_mode(df_day)
+    peak_start, peak_end = get_peak_window(date)
+    off_grid_start = peak_start - 0.5
 
-    peak_discharge, post_peak_discharge, total_discharge = calculate_discharge_phase(df_day)
+    total_charged, solar_charged, grid_charged, solar_ratio = \
+        calculate_charging_by_mode(df_day, capacity_kwh, off_grid_start)
+
+    peak_discharge, post_peak_discharge, total_discharge = \
+        calculate_discharge_phase(df_day, peak_start, peak_end, capacity_kwh)
 
     if total_discharge <= 0:
         return {
@@ -379,7 +428,11 @@ def main():
     parser.add_argument('--yesterday', action='store_true',
                        help='Calculate yesterday\'s savings (for daily automation)')
     parser.add_argument('--all', action='store_true', help='Calculate all available dates')
-    parser.add_argument('--config', type=str, help='System configuration file path')
+    parser.add_argument('--capacity', type=float, default=None,
+                       help='Battery capacity kWh override (validation isolation; '
+                            'default: app_config battery.capacity_kwh)')
+    parser.add_argument('--config', type=str,
+                       help='(deprecated, ignored — rates come from rate_config)')
     parser.add_argument('--quiet', '-q', action='store_true', help='Minimal output (for automation)')
 
     args = parser.parse_args()
@@ -390,7 +443,12 @@ def main():
 
     init_db()
 
-    sys_config = load_system_config(args.config)
+    capacity_kwh = get_battery_capacity(args.capacity)
+    if not args.quiet:
+        cap_src = ('override' if args.capacity is not None else
+                   'app_config' if CONFIG_STORE_AVAILABLE and
+                   config_store.app_config.get('battery.capacity_kwh') else 'config.py')
+        print(f"Battery capacity: {capacity_kwh} kWh ({cap_src})")
 
     if args.date:
         dates_str = [args.date]
@@ -428,7 +486,7 @@ def main():
 
     results = []
     for date in dates:
-        result = calculate_daily_savings(date, df_monitoring, sys_config, args.quiet)
+        result = calculate_daily_savings(date, df_monitoring, capacity_kwh, args.quiet)
         if result:
             results.append(result)
             if not args.quiet:

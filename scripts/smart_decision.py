@@ -102,6 +102,16 @@ if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
             _l.setLevel(_v4_level)
             _l.addHandler(_db_handler)
 
+        # v4.6 (#26): engine drift-to-peak gets the canonical schedule window,
+        # not the legacy env hour. Inline resolve — this runs at import time,
+        # before get_effective_peak_window() is defined below.
+        try:
+            import rate_config as _rc
+            _w = _rc.peak_window_for_date(datetime.now())
+            _engine_peak_start = _w.start_hour if _w else getattr(config, 'PEAK_START_HOUR', 17)
+        except Exception:
+            _engine_peak_start = getattr(config, 'PEAK_START_HOUR', 17)
+
         from adaptive_engine import create_engine, SystemState, Decision
         adaptive_engine_instance = create_engine(
             profile_path=str(config.DATA_DIR / 'system_profile.json'),
@@ -114,7 +124,7 @@ if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
                 'decision_interval_minutes': getattr(config, 'DECISION_INTERVAL_MINUTES', 15),
                 'override_path': str(config.LOG_DIR / 'override.json'),
                 'battery_capacity_kwh': getattr(config, 'BATTERY_CAPACITY_KWH', 30.0),
-                'peak_start_hour': getattr(config, 'PEAK_START_HOUR', 17),
+                'peak_start_hour': _engine_peak_start,
                 'solar_export': getattr(config, 'SOLAR_EXPORT', False),
             },
         )
@@ -140,6 +150,65 @@ def log_intelligence(message: str):
             logger='smart_decision', message=message)
     except Exception:
         pass
+
+
+# =============================================================================
+# v4.6 — Canonical peak window (#26)
+# =============================================================================
+# The engine's peak detection previously read PEAK_START_HOUR/PEAK_END_HOUR
+# from legacy env vars, which silently drifted from the rate schedule when
+# seasons[] window logic was added (the dashboard and savings moved to the
+# schedule; the engine never did — issue #26). The engine now follows the
+# canonical schedule window via rate_config, falls back to env only when no
+# schedule source resolves, and logs an explicit conflict when env disagrees.
+
+_peak_window_cache = {'date': None, 'window': None, 'conflict_date': None,
+                      'fallback_logged': False}
+
+
+def get_effective_peak_window():
+    """Returns (start_hour, end_hour, days_mode, source) for today.
+
+    days_mode is the legacy vocabulary ('all'/'weekdays'/'weekends') or a
+    csv of day names for custom plans. Cached per calendar day so season
+    flips are picked up at midnight without per-call DB reads.
+    """
+    today = datetime.now().strftime('%Y-%m-%d')
+    if _peak_window_cache['date'] == today and _peak_window_cache['window']:
+        return _peak_window_cache['window']
+
+    window = None
+    try:
+        import rate_config
+        w = rate_config.peak_window_for_date(today)
+        if w:
+            window = (w.start_hour, w.end_hour, w.days_mode(),
+                      f'schedule({w.source}'
+                      f'{",season=" + w.season if w.season else ""})')
+            conflict = rate_config.check_env_window_conflict(
+                config.PEAK_START_HOUR, config.PEAK_END_HOUR, today)
+            if conflict and _peak_window_cache['conflict_date'] != today:
+                log_intelligence(f"CONFIG CONFLICT: {conflict}")
+                _peak_window_cache['conflict_date'] = today
+    except Exception as e:
+        if not _peak_window_cache['fallback_logged']:
+            log_intelligence(f"rate_config unavailable ({e}) — peak window "
+                             f"from legacy env vars")
+            _peak_window_cache['fallback_logged'] = True
+
+    if window is None:
+        window = (config.PEAK_START_HOUR, config.PEAK_END_HOUR,
+                  config.PEAK_DAYS, 'env-legacy')
+        if not _peak_window_cache['fallback_logged']:
+            log_intelligence(
+                f"Peak window falling back to legacy env vars "
+                f"{config.PEAK_START_HOUR:02d}:00-{config.PEAK_END_HOUR:02d}:00 — "
+                f"no rate schedule window resolved (#26)")
+            _peak_window_cache['fallback_logged'] = True
+
+    _peak_window_cache['date'] = today
+    _peak_window_cache['window'] = window
+    return window
 
 
 def save_mode_log(mode: str):
@@ -170,19 +239,25 @@ def save_peak_state(state: str):
 
 
 def is_peak_day() -> bool:
-    """Check if today is a peak pricing day based on configuration."""
+    """Check if today is a peak pricing day, per the canonical peak window."""
     if not config.TOU_ENABLED:
         return False
-    
-    today = datetime.now().weekday()  # 0=Monday, 6=Sunday
+
+    now = datetime.now()
+    today = now.weekday()  # 0=Monday, 6=Sunday
     is_weekend = today >= 5
-    
-    if config.PEAK_DAYS == 'all':
+
+    _, _, days_mode, _ = get_effective_peak_window()
+
+    if days_mode == 'all':
         return True
-    elif config.PEAK_DAYS == 'weekdays':
+    elif days_mode == 'weekdays':
         return not is_weekend
-    elif config.PEAK_DAYS == 'weekends':
+    elif days_mode == 'weekends':
         return is_weekend
+    elif ',' in str(days_mode):
+        day_names = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+        return day_names[today] in days_mode.split(',')
     else:
         return True  # Default to all days
 
@@ -210,8 +285,11 @@ def update_peak_state() -> bool:
             save_peak_state(new_state)
         return False
     
-    # Check primary peak period (now supports midnight-crossing)
-    in_primary_peak = is_peak_period(current_hour, config.PEAK_START_HOUR, config.PEAK_END_HOUR)
+    # Check primary peak period against the canonical schedule window (#26);
+    # secondary peak remains env-configured (rate plans model it as additional
+    # peak windows — future work).
+    peak_start, peak_end, _, peak_source = get_effective_peak_window()
+    in_primary_peak = is_peak_period(current_hour, peak_start, peak_end)
     
     # Check secondary peak period if configured
     in_secondary_peak = False
@@ -225,8 +303,8 @@ def update_peak_state() -> bool:
         new_state = f"Peak-{today_date}-{peak_type}"
         if current_state != new_state:
             save_peak_state(new_state)
-            peak_desc = f"{config.PEAK_START_HOUR}:00-{config.PEAK_END_HOUR}:00"
-            if config.PEAK_START_HOUR > config.PEAK_END_HOUR:
+            peak_desc = f"{peak_start}:00-{peak_end}:00 [{peak_source}]"
+            if peak_start > peak_end:
                 peak_desc += " (midnight-crossing)"
             log_intelligence(f"Peak period started: {new_state} ({peak_desc})")
         return True
@@ -254,25 +332,27 @@ def calculate_time_to_peak() -> float:
     now = datetime.now()
     current_hour = now.hour
     current_minute = now.minute
-    
+
+    peak_start, peak_end, _, _ = get_effective_peak_window()
+
     # Handle midnight-crossing peak periods
-    if config.PEAK_START_HOUR > config.PEAK_END_HOUR:
+    if peak_start > peak_end:
         # Midnight-crossing period (e.g., 22:00-06:00)
-        if current_hour >= config.PEAK_START_HOUR:
+        if current_hour >= peak_start:
             # We're after start time today, peak is ongoing
             return 0
-        elif current_hour < config.PEAK_END_HOUR:
+        elif current_hour < peak_end:
             # We're in the early morning part of the peak
             return 0
         else:
             # We're between peak end and start (e.g., 06:00-22:00)
-            # Next peak starts today at PEAK_START_HOUR
-            peak_start = now.replace(hour=config.PEAK_START_HOUR, minute=0, second=0, microsecond=0)
-            return (peak_start - now).total_seconds() / 3600
+            # Next peak starts today at peak_start
+            peak_start_dt = now.replace(hour=peak_start, minute=0, second=0, microsecond=0)
+            return (peak_start_dt - now).total_seconds() / 3600
     else:
-        # Normal peak period (e.g., 17:00-20:00)
-        peak_start_today = now.replace(hour=config.PEAK_START_HOUR, minute=0, second=0, microsecond=0)
-        peak_end_today = now.replace(hour=config.PEAK_END_HOUR, minute=0, second=0, microsecond=0)
+        # Normal peak period (e.g., 16:00-21:00)
+        peak_start_today = now.replace(hour=peak_start, minute=0, second=0, microsecond=0)
+        peak_end_today = now.replace(hour=peak_end, minute=0, second=0, microsecond=0)
         
         if now >= peak_end_today:
             # Past today's peak, calculate to tomorrow's peak
@@ -840,8 +920,10 @@ async def main() -> int:
             peak_status = "No peak today"
         else:
             peak_status = f"{hours_to_peak:.1f}h to peak"
-        if config.TOU_ENABLED and config.PEAK_START_HOUR > config.PEAK_END_HOUR:
-            peak_status += " (midnight-crossing)"
+        if config.TOU_ENABLED:
+            _ps, _pe, _, _ = get_effective_peak_window()
+            if _ps > _pe:
+                peak_status += " (midnight-crossing)"
         
         log_intelligence(f"SOC: {soc:.1f}%, Solar: {solar_kw:.3f}kW, Grid: {grid_kw:.3f}kW, Battery: {battery_kw:.3f}kW")
         log_intelligence(f"Charging: Grid→Bat: {grid_to_bat_kw:.2f}kW, Solar→Bat: {solar_to_bat_kw:.2f}kW")
