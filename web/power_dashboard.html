@@ -1022,13 +1022,25 @@
                 <div class="setting-group"><label>Target Display</label><select class="setting-input" id="s-disp" onchange="saveSettings()"><option value="1507x943">Fire HD 10 (1507×943)</option><option value="1280x800">Fire HD 8</option><option value="1920x1080">1080p</option><option value="auto">Auto</option></select></div>
                 <div class="setting-group"><label>Theme</label><select class="setting-input" id="s-theme" onchange="saveSettings()"><option value="dark">Dark</option><option value="oled">OLED Black</option></select></div>
             </div>
-            <div class="card"><div class="card-label">Automation Thresholds</div>
-                <div class="setting-note" style="margin-bottom:12px;color:var(--accent-amber)">⚠ Read from .env — edit .env file to change behavior</div>
-                <div class="setting-group"><label>Peak SOC Target (%)</label><input type="number" class="setting-input" id="s-psoc" value="100" disabled><div class="setting-note">.env: PEAK_SOC_TARGET</div></div>
-                <div class="setting-group"><label>Min SOC Reserve (%)</label><input type="number" class="setting-input" id="s-msoc" value="10" disabled><div class="setting-note">.env: BACKUP_RESERVE_PCT</div></div>
-                <div class="setting-group"><label>Charge Rate (kW)</label><input type="number" class="setting-input" id="s-rate" value="3.3" step="0.1" disabled><div class="setting-note">.env: CHARGE_RATE_KW</div></div>
-                <div class="setting-group"><label>Peak Window(s)</label><input type="text" class="setting-input" id="s-peak" value="--" disabled><div class="setting-note">From rate_schedule.json</div></div>
+            <div class="card"><div class="card-label">Automation Summary <span style="font-size:10px;color:var(--text-muted);font-weight:400">live from configuration store</span></div>
+                <div class="setting-note" style="margin-bottom:12px;color:var(--accent-amber)">⚠ Read-only — configuration editing arrives with the guided setup</div>
+                <div class="info-row"><span class="info-key">Charging Strategy</span><span class="info-val" id="v46-strategy">--</span></div>
+                <div class="info-row"><span class="info-key">Peak Window (today)</span><span class="info-val" id="v46-peakwin">--</span></div>
+                <div class="info-row"><span class="info-key">Today's Rates</span><span class="info-val" id="v46-rates-today">--</span></div>
+                <div class="info-row"><span class="info-key">Battery</span><span class="info-val" id="v46-batt">--</span></div>
+                <div class="info-row"><span class="info-key">Grid-Charge Ceiling / Target</span><span class="info-val" id="v46-soc-pts">--</span></div>
+                <div class="info-row"><span class="info-key">Config Store</span><span class="info-val" id="v46-store">--</span></div>
             </div>
+        </div>
+        <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">Configuration Health</div>
+            <div id="v46-recs" style="display:flex;flex-direction:column;gap:8px;font-size:13px"><div style="color:var(--text-muted)">Loading checks…</div></div>
+        </div>
+        <div class="settings-columns" style="margin-top:var(--gap)">
+            <div class="card"><div class="card-label">Rate Plan</div><div id="v46-rateplan" style="font-size:13px;color:var(--text-secondary)">Loading…</div></div>
+            <div class="card"><div class="card-label">Solar Arrays</div><div id="v46-arrays" style="font-size:13px;color:var(--text-secondary)">Loading…</div></div>
+        </div>
+        <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">Full Configuration <span style="font-size:10px;color:var(--text-muted);font-weight:400">source: env = explicitly set · default = code default (never reviewed) · user = edited in store</span></div>
+            <div id="v46-config" style="font-size:13px;color:var(--text-secondary)">Loading…</div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">About</div>
             <div class="info-row"><span class="info-key">Version</span><span class="info-val"><span id="about-version">--</span> <span id="update-badge" style="display:none;margin-left:8px;font-size:11px;padding:2px 8px;border-radius:4px;background:rgba(79,143,255,.12);color:var(--accent-blue);cursor:pointer" onclick="window.open(this.dataset.url,'_blank')">Update Available</span></span></div>
@@ -1258,7 +1270,7 @@ document.addEventListener('DOMContentLoaded',()=>{
         try{const t=localStorage.getItem('fwh_tab');if(t&&document.getElementById('tab-'+t)){switchTab(t)}}catch(e){}
     })();
 });
-function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();if(t==='analytics')initAnalytics();if(t==='dataexport')initDataExport();if(t==='scripts'){loadScriptStatus();startScriptAR()}else{stopScriptAR()}try{localStorage.setItem('fwh_tab',t)}catch(e){}}
+function switchTab(t){document.querySelectorAll('.tab-content').forEach(e=>e.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.getElementById('tb-'+t).classList.add('active');if(t==='logs')loadLogs();if(t==='solar')loadSolar();if(t==='analytics')initAnalytics();if(t==='dataexport')initDataExport();if(t==='settings')loadV46Settings();if(t==='scripts'){loadScriptStatus();startScriptAR()}else{stopScriptAR()}try{localStorage.setItem('fwh_tab',t)}catch(e){}}
 
 // ===== SOLAR ARRAY TAB (Multi-Array) =====
 let solArrays={}, solActive=null, solTimer=null;
@@ -2312,7 +2324,62 @@ function renderSI(d){
     const gw=d.gateways;if(gw&&gw.length>1){document.getElementById('gateway-selector').style.display='block';document.getElementById('gateway-tabs').innerHTML=gw.map((g,i)=>'<button class="gateway-tab '+(i===0?'active':'')+'" onclick="selGW('+i+')">'+(g.nickname||'System '+(i+1))+'</button>').join('')}
 }
 function selGW(i){document.querySelectorAll('.gateway-tab').forEach((t,j)=>t.classList.toggle('active',j===i))}
-function loadThresh(d){const c=d.config||{};if(c.peak_soc_target)document.getElementById('s-psoc').value=c.peak_soc_target;if(c.min_soc_reserve)document.getElementById('s-msoc').value=c.min_soc_reserve;if(c.charge_rate_kw)document.getElementById('s-rate').value=c.charge_rate_kw;if(c.peak_windows&&c.peak_windows.length){document.getElementById('s-peak').value=c.peak_windows.map(w=>w.start+' - '+w.end).join(' / ')}else if(c.peak_start_hour&&c.peak_end_hour)document.getElementById('s-peak').value=c.peak_start_hour+':00 - '+c.peak_end_hour+':00'}
+function loadThresh(d){/* v4.6: thresholds card replaced by the configuration store view (loadV46Settings) */}
+
+// ===== v4.6 SETTINGS (read-only configuration store view) =====
+const V46_SEV={conflict:{c:'#ff5d5d',i:'⛔'},warning:{c:'var(--accent-amber,#f5a623)',i:'⚠'},info:{c:'var(--accent-blue,#4f8fff)',i:'ℹ'},ok:{c:'#3ecf8e',i:'✓'}};
+function v46esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+async function v46fetch(p){try{const r=await fetch(p);return r.ok?await r.json():{available:false,reason:'HTTP '+r.status}}catch(e){return{available:false,reason:String(e)}}}
+async function loadV46Settings(){
+    const[cfg,arrays,plan,recs]=await Promise.all([v46fetch('/api/v1/settings/config'),v46fetch('/api/v1/settings/arrays'),v46fetch('/api/v1/settings/rate-plan'),v46fetch('/api/v1/settings/recommendations')]);
+    // Configuration Health
+    const recEl=document.getElementById('v46-recs');
+    if(!recs.available){recEl.innerHTML='<div style="color:var(--text-muted)">'+v46esc(recs.reason)+'</div>'}
+    else{recEl.innerHTML=recs.recommendations.map(r=>{const s=V46_SEV[r.severity]||V46_SEV.info;
+        return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.02);border-left:3px solid '+s.c+'">'
+        +'<span style="color:'+s.c+'">'+s.i+'</span><div><div style="color:var(--text-primary);font-weight:500">'+v46esc(r.title)+'</div>'
+        +'<div style="color:var(--text-muted);font-size:12px;margin-top:2px">'+v46esc(r.detail)+'</div></div></div>'}).join('')}
+    // Automation Summary
+    const eng=(recs.available?recs.recommendations.find(r=>r.code==='engine_path'):null);
+    setTextV46('v46-strategy',eng?eng.title.replace('Active charging strategy: ',''):'--');
+    if(plan.available&&plan.today){const t=plan.today;
+        setTextV46('v46-peakwin',t.peak_window?(t.peak_window.start+'–'+t.peak_window.end+' ('+t.peak_window.days+', '+(t.season||'year-round')+')'):'--');
+        const tr=t.tier_rates_cents||{};setTextV46('v46-rates-today',Object.keys(tr).sort().map(k=>k+' '+tr[k].toFixed(2)+'¢').join(' · ')+(t.label?' ['+t.label+']':''));}
+    if(cfg.available){const g=(k)=>{for(const c in cfg.categories){const f=cfg.categories[c].find(x=>x.key===k);if(f)return f.value}return null};
+        setTextV46('v46-batt',g('battery.count')+' × aPower = '+g('battery.capacity_kwh')+' kWh · reserve '+g('battery.backup_reserve_pct')+'%');
+        setTextV46('v46-soc-pts',g('engine.taper_ceiling_pct')+'% grid ceiling / '+g('engine.target_soc')+'% solar target');
+        setTextV46('v46-store',cfg.schema_version+' · '+cfg.counts.total+' keys ('+cfg.counts.from_env+' env, '+cfg.counts.defaults+' default'+(cfg.counts.user_edited?', '+cfg.counts.user_edited+' user':'')+') · migrated '+(cfg.migrated_at||'?'));}
+    else{setTextV46('v46-store',cfg.reason||'not available')}
+    // Rate Plan card
+    const rpEl=document.getElementById('v46-rateplan');
+    if(!plan.available){rpEl.innerHTML=v46esc(plan.reason)}
+    else{let h='<div style="color:var(--text-primary);font-weight:500;margin-bottom:6px">'+v46esc(plan.plan.name)+'</div>'
+        +'<div style="color:var(--text-muted);font-size:12px;margin-bottom:8px">'+(plan.plan.export_capable?'export-capable':'non-export')+' · '+v46esc(plan.plan.net_metering||'')+' · imported '+v46esc(plan.plan.imported_at||'')+'</div>';
+        for(const s of plan.seasons){const tr=s.tier_rates_cents||{};
+            h+='<div style="margin-bottom:8px"><div style="color:var(--text-secondary);font-weight:500">'+v46esc(s.name)+' <span style="color:var(--text-muted);font-weight:400;font-size:11px">months '+s.months.join(',')+'</span></div>'
+            +'<div style="font-size:12px;color:var(--text-muted)">'+Object.keys(tr).sort().map(k=>k+' '+tr[k].toFixed(3)+'¢').join(' · ')+'</div>'
+            +'<div style="font-size:12px;color:var(--text-muted)">windows: '+s.windows.map(w=>w.tier+' '+w.start+'–'+w.end).join(' · ')+'</div></div>'}
+        rpEl.innerHTML=h}
+    // Arrays card
+    const arEl=document.getElementById('v46-arrays');
+    if(!arrays.available){arEl.innerHTML=v46esc(arrays.reason)}
+    else{arEl.innerHTML=arrays.arrays.map(a=>{const cb=a.charges_battery;
+        const badge=cb===1?'<span style="color:#3ecf8e">⚡ charges battery</span>':cb===0?'<span style="color:var(--text-muted)">separately metered</span>':'<span style="color:var(--accent-amber,#f5a623)">⚠ unreviewed</span>';
+        return '<div style="margin-bottom:10px"><div style="color:var(--text-primary);font-weight:500">'+v46esc(a.name||a.array_id)+' <span style="font-size:11px;color:var(--text-muted)">('+v46esc(a.type)+')</span> '+badge+'</div>'
+        +'<div style="font-size:12px;color:var(--text-muted)">'+(a.capacity_kw||'?')+' kW AC'+(a.capacity_kwp?' / '+a.capacity_kwp+' kWp DC':'')+(a.exports===1?' · exports':a.exports===0?' · non-export':' · export status unreviewed')+(a.gateway_id?' · gateway '+v46esc(a.gateway_id):'')+'</div></div>'}).join('')}
+    // Full Configuration card
+    const cfEl=document.getElementById('v46-config');
+    if(!cfg.available){cfEl.innerHTML=v46esc(cfg.reason)}
+    else{let h='';const cats=Object.keys(cfg.categories).sort();
+        for(const c of cats){const items=cfg.categories[c];
+            h+='<details style="margin-bottom:6px"><summary style="cursor:pointer;color:var(--text-secondary);font-weight:500;padding:4px 0">'+v46esc(c)+' <span style="color:var(--text-muted);font-weight:400;font-size:11px">('+items.length+')</span></summary>'
+            +'<div style="padding:4px 0 8px 16px">'+items.map(i=>{
+                const src=i.source==='default'?'<span style="color:var(--accent-amber,#f5a623);font-size:10px"> default</span>':i.source==='user'?'<span style="color:var(--accent-blue,#4f8fff);font-size:10px"> user</span>':'';
+                return '<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.03)" title="'+v46esc(i.description||'')+'"><span style="color:var(--text-muted);font-size:12px">'+v46esc(i.key)+src+'</span><span style="color:var(--text-secondary);font-size:12px;text-align:right;word-break:break-all">'+v46esc(i.secret?'********':JSON.stringify(i.value))+'</span></div>'}).join('')
+            +'</div></details>'}
+        cfEl.innerHTML=h}
+}
+function setTextV46(id,v){const e=document.getElementById(id);if(e)e.textContent=v==null?'--':v}
 
 // ===== LOGS =====
 let logAR=null;

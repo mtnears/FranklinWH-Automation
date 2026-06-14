@@ -755,6 +755,287 @@ def _read_soc_from_cloud() -> float:
     return None
 
 
+# =============================================================================
+# v4.6 Settings API — read-only configuration views + validation
+# =============================================================================
+# Backed by the Phase 1 config tables (config_store) and the Phase 2 canonical
+# rate resolver (rate_config). Read-only by design for v4.6: the page shows
+# the truth and flags conflicts; editing comes with the guided setup (v4.7+).
+
+try:
+    import config_store as _cfgstore
+    import rate_config as _rateconf
+    _V46_SETTINGS_AVAILABLE = True
+except ImportError:
+    _V46_SETTINGS_AVAILABLE = False
+
+_ARRAY_SECRET_KEYS = ('password', 'api_key', 'email')
+
+
+def _v46_unavailable():
+    return {'available': False,
+            'reason': 'v4.6 config modules not present (config_store/rate_config)'}
+
+
+def settings_config_payload():
+    """app_config grouped by category, secrets redacted, plus migration state."""
+    if not _V46_SETTINGS_AVAILABLE:
+        return _v46_unavailable()
+    try:
+        rows = _cfgstore.app_config.get_all()  # secrets arrive redacted
+        if not rows:
+            return {'available': False,
+                    'reason': 'app_config empty — run migrate_v46.py'}
+        categories = {}
+        for r in rows:
+            categories.setdefault(r['category'] or 'other', []).append({
+                'key': r['key'], 'value': r['value'],
+                'type': r['value_type'], 'source': r['source'],
+                'secret': bool(r['is_secret']),
+                'description': r['description'],
+                'updated_at': r['updated_at'],
+            })
+        return {
+            'available': True,
+            'schema_version': _cfgstore.app_state.get('schema_version'),
+            'migrated_at': _cfgstore.app_state.get('migration.phase1_completed_at'),
+            'categories': categories,
+            'counts': {
+                'total': len(rows),
+                'from_env': sum(1 for r in rows if r['source'] == 'env'),
+                'defaults': sum(1 for r in rows if r['source'] == 'default'),
+                'user_edited': sum(1 for r in rows if r['source'] == 'user'),
+            },
+        }
+    except Exception as e:
+        return {'available': False, 'reason': str(e)}
+
+
+def settings_arrays_payload():
+    """solar_arrays with credentials masked for the wire."""
+    if not _V46_SETTINGS_AVAILABLE:
+        return _v46_unavailable()
+    try:
+        out = []
+        for a in _cfgstore.solar_arrays.all(enabled_only=False):
+            cfg = {k: ('********' if k in _ARRAY_SECRET_KEYS and v else v)
+                   for k, v in (a.get('config') or {}).items()}
+            out.append({
+                'array_id': a['array_id'], 'name': a['name'],
+                'type': a['array_type'],
+                'charges_battery': a['charges_battery'],
+                'exports': a['exports'],
+                'gateway_id': a['gateway_id'],
+                'capacity_kw': a['capacity_kw'],
+                'capacity_kwp': a['capacity_kwp'],
+                'enabled': a['enabled'],
+                'config': cfg,
+            })
+        return {'available': True, 'arrays': out}
+    except Exception as e:
+        return {'available': False, 'reason': str(e)}
+
+
+def settings_rate_plan_payload():
+    """Active plan, seasons with merged tier rates, windows, today's resolution."""
+    if not _V46_SETTINGS_AVAILABLE:
+        return _v46_unavailable()
+    try:
+        plan = _cfgstore.rate_plans.get_active_plan()
+        if not plan:
+            return {'available': False,
+                    'reason': 'no rate plan imported — run migrate_v46.py'}
+        pid = plan['id']
+        seasons = []
+        for s in _cfgstore.rate_plans.get_seasons(pid):
+            windows = _cfgstore.rate_plans.get_windows(pid, s['id'])
+            seasons.append({
+                'name': s['name'], 'months': s['months'],
+                'tier_rates_cents': _cfgstore.rate_plans.get_tier_rates(pid, s['id']),
+                'windows': [{'tier': w['tier'], 'start': w['start_time'],
+                             'end': w['end_time'], 'days': w['days']}
+                            for w in windows],
+            })
+        today = datetime.now().strftime('%Y-%m-%d')
+        res = _rateconf.resolve_rates(today)
+        win = _rateconf.peak_window_for_date(today)
+        return {
+            'available': True,
+            'plan': {'name': plan['name'],
+                     'export_capable': bool(plan['export_capable']),
+                     'net_metering': plan['net_metering'],
+                     'default_tier': plan['default_tier'],
+                     'imported_at': plan['imported_at']},
+            'base_tier_rates_cents': _cfgstore.rate_plans.get_tier_rates(pid, None),
+            'seasons': seasons,
+            'today': {
+                'date': today,
+                'label': res.label if res else None,
+                'season': res.season if res else None,
+                'tier_rates_cents': res.tier_rates_cents if res else None,
+                'source': res.source if res else None,
+                'peak_window': ({'start': win.start, 'end': win.end,
+                                 'days': win.days_mode()} if win else None),
+            },
+        }
+    except Exception as e:
+        return {'available': False, 'reason': str(e)}
+
+
+def settings_recommendations_payload():
+    """The v4.6 validation checks: config-correctness conflicts and warnings.
+
+    Severities: 'conflict' (active disagreement driving behavior),
+    'warning' (probable misconfiguration), 'info' (worth knowing), 'ok'.
+    """
+    if not _V46_SETTINGS_AVAILABLE:
+        return _v46_unavailable()
+    recs = []
+
+    def add(severity, code, title, detail):
+        recs.append({'severity': severity, 'code': code,
+                     'title': title, 'detail': detail})
+
+    try:
+        cfg = _cfgstore.app_config
+        if not cfg.get_row('battery.capacity_kwh'):
+            add('warning', 'not_migrated', 'Configuration not migrated',
+                'app_config is empty — run migrate_v46.py to populate the '
+                'v4.6 configuration store.')
+            return {'available': True, 'recommendations': recs}
+
+        # --- #26: engine peak window vs legacy env ---
+        try:
+            from config import config as _envcfg
+            conflict = _rateconf.check_env_window_conflict(
+                _envcfg.PEAK_START_HOUR, _envcfg.PEAK_END_HOUR)
+            if conflict:
+                add('conflict', 'peak_window_env_mismatch',
+                    'Legacy env peak window disagrees with rate schedule', conflict)
+            else:
+                w = _rateconf.peak_window_for_date(datetime.now())
+                if w:
+                    add('ok', 'peak_window',
+                        f'Engine peak window: {w.start}-{w.end}',
+                        f'Engine follows the rate schedule window '
+                        f'({w.source}{", season=" + w.season if w.season else ""}); '
+                        f'legacy env values agree.')
+        except Exception as e:
+            add('info', 'peak_window_check_failed',
+                'Peak window check unavailable', str(e))
+
+        # --- #21 Item A: SOLAR_EXPORT strategy vs plan/NEM ---
+        solar_export = cfg.get('solar.export', False)
+        nem = (cfg.get('solar.nem_version') or '').lower()
+        plan = _cfgstore.rate_plans.get_active_plan()
+        export_capable = bool(plan and plan['export_capable'])
+        strategy = ('export-friendly (continuous-target subsystem SKIPPED; '
+                    'engine ensures peak coverage via charging-gap path, '
+                    'surplus exports)') if solar_export else \
+                   ('self-consumption / storage optimization '
+                    '(continuous-target subsystem ACTIVE; grid charging '
+                    'capped at the taper ceiling)')
+        add('info', 'engine_path',
+            f'Active charging strategy: '
+            f'{"export-friendly" if solar_export else "self-consumption"}',
+            f'solar.export={solar_export} selects the engine path: {strategy}. '
+            f'This is a STRATEGY flag, not a capability flag (#21).')
+        if export_capable and nem in ('nem1', 'nem2', '1:1', 'nem 1.0', 'nem 2.0') \
+                and not solar_export:
+            add('warning', 'export_strategy_mismatch',
+                'Export-capable on 1:1 net metering but export strategy is off',
+                f'Plan is export-capable with {nem or "1:1"} net metering, but '
+                f'solar.export=false keeps the engine in self-consumption mode. '
+                f'If export credits are near-retail, solar.export=true may be '
+                f'better economics. (NEM 3.0 users: false is correct.)')
+        elif solar_export and plan and not export_capable:
+            add('warning', 'export_without_capability',
+                'Export strategy enabled on a non-export plan',
+                'solar.export=true but the rate plan is marked non-export — '
+                'the engine will skip headroom management for export credits '
+                'the plan cannot earn.')
+
+        # --- #18 family: season coverage / overlap ---
+        if plan:
+            covered = {}
+            for s in _cfgstore.rate_plans.get_seasons(plan['id']):
+                for m in s.get('months', []):
+                    covered.setdefault(m, []).append(s['name'])
+            if covered:
+                missing = [m for m in range(1, 13) if m not in covered]
+                overlaps = {m: n for m, n in covered.items() if len(n) > 1}
+                if missing:
+                    add('warning', 'season_gap',
+                        f'Months not covered by any season: {missing}',
+                        'Base tier rates and year-round windows apply in these '
+                        'months — verify that is intended.')
+                if overlaps:
+                    add('warning', 'season_overlap',
+                        f'Months claimed by multiple seasons: {sorted(overlaps)}',
+                        f'{overlaps} — first match wins; fix the season month '
+                        f'lists in the rate schedule.')
+                if not missing and not overlaps:
+                    add('ok', 'seasons',
+                        'Season definitions cover all 12 months with no overlap',
+                        f'{len(covered and set(sum(covered.values(), [])))} season(s) '
+                        f'validated.')
+
+        # --- arrays: unreviewed classification ---
+        arrays = _cfgstore.solar_arrays.all(enabled_only=False)
+        unreviewed = [a['array_id'] for a in arrays
+                      if a['charges_battery'] is None or a['exports'] is None]
+        if unreviewed:
+            add('warning', 'arrays_unreviewed',
+                f'Array classification needs review: {", ".join(unreviewed)}',
+                'charges_battery and/or exports is unset for these arrays. '
+                'The engine must know which array feeds the battery.')
+
+        # --- battery capacity consistency ---
+        cap = cfg.get('battery.capacity_kwh')
+        count = cfg.get('battery.count')
+        if cap and count:
+            expected = count * 13.6
+            if abs(cap - expected) > 0.5:
+                add('warning', 'capacity_mismatch',
+                    f'battery.capacity_kwh ({cap}) vs battery.count ({count})',
+                    f'{count} aPower 2 units = {expected:.1f} kWh expected; '
+                    f'configured {cap} kWh. Verify which is wrong.')
+
+        # --- solar capacity semantics (battery-connected only) ---
+        solar_cap = cfg.get('solar.capacity_kw')
+        bc = [a for a in arrays if a['charges_battery'] == 1]
+        if solar_cap and bc:
+            bc_kw = sum(a['capacity_kw'] or 0 for a in bc)
+            bc_kwp = sum(a['capacity_kwp'] or 0 for a in bc)
+            ceiling = max(bc_kw, bc_kwp)
+            if ceiling and solar_cap > ceiling * 1.25:
+                add('warning', 'solar_capacity_semantic',
+                    f'solar.capacity_kw ({solar_cap}) exceeds battery-connected '
+                    f'capacity ({ceiling})',
+                    f'solar.capacity_kw should describe ONLY the battery-connected '
+                    f'array ({", ".join(a["array_id"] for a in bc)} = {bc_kw} kW AC '
+                    f'/ {bc_kwp} kWp DC). A larger value usually means '
+                    f'separately-metered arrays were summed in — the engine then '
+                    f'overestimates chargeable solar.')
+
+        # --- unreviewed defaults ---
+        defaults = [r['key'] for r in cfg.get_all() if r['source'] == 'default']
+        if defaults:
+            add('info', 'unreviewed_defaults',
+                f'{len(defaults)} settings are code defaults (never explicitly set)',
+                ', '.join(sorted(defaults)))
+
+        if not any(r['severity'] in ('conflict', 'warning') for r in recs):
+            add('ok', 'all_clear', 'No configuration conflicts detected',
+                'All validation checks passed.')
+    except Exception as e:
+        add('info', 'validation_error', 'Validation run incomplete', str(e))
+
+    order = {'conflict': 0, 'warning': 1, 'info': 2, 'ok': 3}
+    recs.sort(key=lambda r: order.get(r['severity'], 9))
+    return {'available': True, 'recommendations': recs}
+
+
 class APIHandler(BaseHTTPRequestHandler):
     """Handles dashboard save and override operations."""
 
@@ -806,6 +1087,14 @@ class APIHandler(BaseHTTPRequestHandler):
             self._get_chart_dates()
         elif path.startswith('/api/peak-config'):
             self._get_peak_config()
+        elif path == '/api/v1/settings/config':
+            self._json_response(200, settings_config_payload())
+        elif path == '/api/v1/settings/arrays':
+            self._json_response(200, settings_arrays_payload())
+        elif path == '/api/v1/settings/rate-plan':
+            self._json_response(200, settings_rate_plan_payload())
+        elif path == '/api/v1/settings/recommendations':
+            self._json_response(200, settings_recommendations_payload())
         elif path.startswith('/api/data-export/available'):
             self._get_data_export_available()
         elif path.startswith('/api/data-export'):
