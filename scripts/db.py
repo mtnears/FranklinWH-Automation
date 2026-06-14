@@ -493,6 +493,15 @@ def init_db():
         conn.executescript(BILLING_SCHEMA_SQL)
         conn.commit()
         logger.info(f"Database initialized: {_DB_PATH}")
+        # v4.6 / PR #25: ensure new system_readings columns exist before any
+        # collector writes. Idempotent — re-runs are no-ops. Keeps the new
+        # collector safe even if migrate_v46.py hasn't been run yet.
+        try:
+            added = _ensure_v46_columns(conn)
+            if added:
+                logger.info(f"v4.6 column migration: added {', '.join(added)}")
+        except Exception as e:
+            logger.warning(f"v4.6 column migration failed: {e}")
         # One-time historical data cleanup. Idempotent — re-runs are no-ops
         # once the data is canonical. Wrapped in try/except so a migration
         # hiccup never blocks startup.
@@ -524,6 +533,34 @@ def close():
 def _now_iso() -> str:
     """Current time as ISO string."""
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+# =============================================================================
+# v4.6 Column Migration (PR #25)
+# =============================================================================
+
+def _ensure_v46_columns(conn) -> list:
+    """Add v4.6 / PR #25 columns to system_readings if missing. Idempotent.
+
+    battery_kw_direct  — battery power read directly from register 1048,
+                         parallel-logged alongside the derived battery_kw
+                         (load - solar - grid) until validated, then swapped
+                         to authoritative in a follow-up release.
+    active_reserve_pct — the reserve that applies to the CURRENT mode,
+                         replacing the self_reserve_pct/tou_reserve_pct pair.
+                         Old columns retained until the post-soak cleanup.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(system_readings)").fetchall()]
+    added = []
+    if 'battery_kw_direct' not in cols:
+        conn.execute("ALTER TABLE system_readings ADD COLUMN battery_kw_direct REAL")
+        added.append('battery_kw_direct')
+    if 'active_reserve_pct' not in cols:
+        conn.execute("ALTER TABLE system_readings ADD COLUMN active_reserve_pct INTEGER")
+        added.append('active_reserve_pct')
+    if added:
+        conn.commit()
+    return added
 
 
 # =============================================================================
@@ -638,6 +675,7 @@ class _Store:
                        grid_kw: float = None,
                        solar_kw: float = None,
                        battery_kw: float = None,
+                       battery_kw_direct: float = None,
                        home_load_kw: float = None,
                        solar_to_battery_kw: float = None,
                        grid_to_battery_kw: float = None,
@@ -658,6 +696,7 @@ class _Store:
                        wifi_signal: int = None,
                        self_reserve_pct: int = None,
                        tou_reserve_pct: int = None,
+                       active_reserve_pct: int = None,
                        kwh_solar: float = None,
                        kwh_grid_import: float = None,
                        kwh_grid_export: float = None,
@@ -681,25 +720,27 @@ class _Store:
             conn.execute("""
                 INSERT OR REPLACE INTO system_readings
                 (timestamp, device_id, soc_pct, grid_kw, solar_kw, battery_kw,
+                 battery_kw_direct,
                  home_load_kw, solar_to_battery_kw, grid_to_battery_kw,
                  per_battery_soc_json, per_battery_power_json,
                  mode, mode_detail, run_status,
                  grid_voltage_v, grid_frequency_hz, grid_status, grid_connected, conn_state,
                  ambient_temp_c, cabinet_temp_c, batt_dc_voltage_v, cell_signal, wifi_signal,
-                 self_reserve_pct, tou_reserve_pct,
+                 self_reserve_pct, tou_reserve_pct, active_reserve_pct,
                  kwh_solar, kwh_grid_import, kwh_grid_export, kwh_load,
                  kwh_battery_charge, kwh_battery_discharge, kwh_generator,
                  hours_to_peak, engine_priority, curtailed_kwh, grid_price_cents,
                  source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (ts, device_id, soc_pct, grid_kw, solar_kw, battery_kw,
+                  battery_kw_direct,
                   home_load_kw, solar_to_battery_kw, grid_to_battery_kw,
                   per_battery_soc_json, per_battery_power_json,
                   mode, mode_detail, run_status,
                   grid_voltage_v, grid_frequency_hz, grid_status, grid_connected, conn_state,
                   ambient_temp_c, cabinet_temp_c, batt_dc_voltage_v, cell_signal, wifi_signal,
-                  self_reserve_pct, tou_reserve_pct,
+                  self_reserve_pct, tou_reserve_pct, active_reserve_pct,
                   kwh_solar, kwh_grid_import, kwh_grid_export, kwh_load,
                   kwh_battery_charge, kwh_battery_discharge, kwh_generator,
                   hours_to_peak, engine_priority, curtailed_kwh, grid_price_cents,

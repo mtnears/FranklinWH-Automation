@@ -69,6 +69,7 @@ REGISTER_BLOCKS = {
     'model_702': {'addr': 227,   'count': 50,  'desc': 'DC Measurement / Nameplate'},
     'model_703': {'addr': 279,   'count': 50,  'desc': 'Lifetime Watt-Hour Accumulators'},
     'model_713': {'addr': 1035,  'count': 7,   'desc': 'DER Status (SOC, battery V)'},
+    'batt_w_1048': {'addr': 1048, 'count': 1,  'desc': 'Battery power direct (PR #25 parallel logging)'},
     'ext_15500': {'addr': 15500, 'count': 17,  'desc': 'Franklin Extension (solar, load, mode, dispatch)'},
     'conn_state': {'addr': 75,   'count': 1,   'desc': 'Grid connection state'},
 }
@@ -195,6 +196,7 @@ class ModbusCollector:
                 grid_kw=parsed.get('grid_kw'),
                 solar_kw=parsed.get('solar_kw'),
                 battery_kw=parsed.get('battery_kw'),
+                battery_kw_direct=parsed.get('battery_kw_direct'),
                 home_load_kw=parsed.get('home_load_kw'),
                 mode=parsed.get('mode'),
                 mode_detail=parsed.get('mode_detail'),
@@ -209,16 +211,20 @@ class ModbusCollector:
                 conn_state=parsed.get('conn_state'),
                 self_reserve_pct=parsed.get('self_reserve_pct'),
                 tou_reserve_pct=parsed.get('tou_reserve_pct'),
+                active_reserve_pct=parsed.get('active_reserve_pct'),
                 source='modbus',
                 device_id=self.device_id,
                 timestamp=ts,
             )
 
+        batt_direct = parsed.get('battery_kw_direct')
         log.info(
             f"SOC={parsed.get('soc_pct', '?')}% "
             f"Grid={parsed.get('grid_kw') or 0:.3f}kW "
             f"Solar={parsed.get('solar_kw') or 0:.3f}kW "
             f"Load={parsed.get('home_load_kw') or 0:.3f}kW "
+            f"Batt={parsed.get('battery_kw') if parsed.get('battery_kw') is not None else '?'}"
+            f"{f'(d:{batt_direct:.3f})' if batt_direct is not None else ''} "
             f"Mode={parsed.get('mode_detail', '?')} "
             f"[{elapsed_ms:.0f}ms] "
             f"Blocks={len(raw_blocks)}/{len(REGISTER_BLOCKS)}"
@@ -235,6 +241,17 @@ class ModbusCollector:
             d['soc_pct'] = m713[2] / 10.0
         if m713 and len(m713) > 3:
             d['batt_dc_voltage_v'] = m713[3] / 10.0
+
+        # PR #25: battery power read directly from register 1048, parallel-logged
+        # alongside the derived battery_kw (load - solar - grid). Signed int16,
+        # watts. Scale/sign convention is what the parallel-log soak validates
+        # before any authority swap — do not consume battery_kw_direct in
+        # decision logic until that comparison has run.
+        b1048 = blocks.get('batt_w_1048')
+        if b1048:
+            raw = b1048[0]
+            if raw not in (0xFFFF, 0x8000):
+                d['battery_kw_direct'] = self._int16(raw) / 1000.0
 
         m701a = blocks.get('model_701a')
         m701b = blocks.get('model_701b')
@@ -289,6 +306,14 @@ class ModbusCollector:
 
             d['self_reserve_pct'] = ext[8]
             d['tou_reserve_pct'] = ext[9]
+            # PR #25: single active_reserve_pct — the reserve that applies to
+            # the CURRENT mode. Parallel-logged alongside the legacy pair;
+            # the soak validates this mode-conditional selection before the
+            # legacy columns are dropped.
+            if d.get('mode') == 'self_consumption':
+                d['active_reserve_pct'] = ext[8]
+            elif d.get('mode') == 'time_of_use':
+                d['active_reserve_pct'] = ext[9]
 
         conn = blocks.get('conn_state')
         if conn:
