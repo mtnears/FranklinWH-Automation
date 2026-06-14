@@ -67,7 +67,7 @@ These registers have been validated against simultaneous cloud API reads across 
 
 | Register | Offset | Field | Scale | Unit | Notes |
 |----------|--------|-------|-------|------|-------|
-| 1048 | 6 | Battery Watts | signed int16 | W | Negative=charging, positive=discharging. Validated within 0.3% of cloud charge totals |
+| 1048 | 6 | Battery Watts | signed int16 | W | Direct battery power. As of v4.6 this is parallel-logged to `system_readings.battery_kw_direct` alongside the derived `battery_kw` (load − solar − grid); early soak shows the two agreeing to ~0.3% (mean abs error ~0.05 kW against swings to ±16 kW). Sign convention is validated during the soak before the v4.6.1 authority swap — do not consume in decision logic until then |
 
 ### Model 701 — AC Measurement (Base: 72)
 

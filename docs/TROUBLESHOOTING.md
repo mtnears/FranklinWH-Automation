@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-**Common issues and solutions for FranklinWH Battery Automation v4.4**
+**Common issues and solutions for FranklinWH Battery Automation**
 
 ---
 
@@ -161,6 +161,12 @@ If you see grid charging during peak:
 - For users on legacy `PEAK_START_HOUR`/`PEAK_END_HOUR` config: verify these match your tariff
 - For `rate_schedule.json` users: check that the active window covers the expected hours (see Rate Schedule Issues below)
 - Check system timezone with `docker exec franklin-automation date` — container should match your local time zone for the rate plan to apply correctly
+
+> **v4.6 (#26):** the engine now resolves its peak window from your rate schedule, not the legacy `.env` peak hours, so a stale `PEAK_START_HOUR`/`PEAK_END_HOUR` no longer silently drives behavior. If the two disagree you'll see a `CONFIG CONFLICT` line in the intelligence log and a flag on **Settings → Configuration Health**. Check there first — it tells you the engine's active window, the schedule's window, and which is being used:
+> ```bash
+> docker exec -w /app/scripts franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT timestamp, message FROM intelligence_log WHERE message LIKE 'CONFIG CONFLICT%' ORDER BY id DESC LIMIT 5\").fetchall(); [print(r) for r in rows] or print('no conflicts')"
+> ```
+> The fix is to align `PEAK_START_HOUR`/`PEAK_END_HOUR` in `.env` with your schedule (then re-run `migrate_v46.py`), or rely on the schedule and treat the env vars as a fallback.
 
 ### Excessive mode switching (flapping)
 
@@ -352,6 +358,41 @@ print(f'Tiers loaded: {s.tiers}')
 
 ---
 
+## Configuration Store & Settings (v4.6)
+
+### Settings tab shows stale or wrong values
+
+The Settings tab reads the SQLite config store, which is refreshed by the migration — not live from `.env`. After editing `.env` or `rate_schedule.json`, re-run the migration to refresh it:
+
+```bash
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --battery-array <your-array-id>
+```
+
+The migration preserves any values you've edited directly in the store (`source=user`); it only refreshes `env`/`default` rows and re-imports the rate plan.
+
+### Settings tab / health checks show "not migrated"
+
+The v4.6 migration hasn't been run on this install. Run it once (preview with `--dry-run` first):
+
+```bash
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --dry-run --battery-array <your-array-id>
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --battery-array <your-array-id>
+```
+
+### Migration warns about a `months` key on a window
+
+Your `rate_schedule.json` has a per-window `months` key, which the old parser silently ignored (seasons would never switch). Move seasonal window layouts into per-season `windows` blocks — see `data/rate_schedule.example.json` (`pepco_r_tou_p_seasonal`). The migration rejects this by default; `--allow-legacy-months` downgrades it to a warning that drops the key and imports the window as year-round.
+
+### Confirm the migration landed
+
+```bash
+docker exec franklin-automation python3 -c "import sqlite3; conn=sqlite3.connect('/app/data/franklin.db'); rows=conn.execute(\"SELECT key, value FROM app_state ORDER BY key\").fetchall(); [print(r) for r in rows]"
+```
+
+Look for `schema_version = 4.6.0-phase1` and a `migration.phase1_completed_at` timestamp.
+
+---
+
 ## aGate Mode State Issues
 
 ### Mode verification disagrees with observed battery behavior
@@ -444,5 +485,5 @@ GitHub Issues: https://github.com/mtnears/FranklinWH-Automation/issues
 
 ---
 
-**Last Updated:** May 2026
-**Version:** 4.4.1
+**Last Updated:** June 2026
+**Version:** 4.6.0

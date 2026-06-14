@@ -143,6 +143,8 @@ crontab -e
 
 All settings are in your `.env` file. See [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md) for complete details.
 
+> **v4.6:** the system keeps a consolidated, read-only copy of your config in SQLite (viewable on the Settings tab, with validation). `.env` and `rate_schedule.json` remain the source of truth — don't delete them. After installing or changing `.env`, populate/refresh the store by running the migration once (native path): `./venv311/bin/python scripts/migrate_v46.py --battery-array <your-array-id>` (add `--dry-run` to preview; single-array setups can omit the flag).
+
 **Minimum required:**
 ```bash
 FRANKLIN_USERNAME=your_email@example.com
@@ -191,9 +193,14 @@ source venv311/bin/activate
 pip install -r requirements.txt
 ```
 
-Check the [CHANGELOG.md](../CHANGELOG.md) for any new `.env` settings to add.
+Check the [CHANGELOG.md](../CHANGELOG.md) for any new `.env` settings to add. **For v4.6**, after pulling, run the one-time config migration to populate the SQLite config store (copies `.env` and `rate_schedule.json`, modifies neither):
+
+```bash
+./venv311/bin/python scripts/migrate_v46.py --dry-run --battery-array <your-array-id>
+./venv311/bin/python scripts/migrate_v46.py --battery-array <your-array-id>
+```
 
 ---
 
-**Last Updated:** May 2026
-**Version:** 4.4.1
+**Last Updated:** June 2026
+**Version:** 4.6.0

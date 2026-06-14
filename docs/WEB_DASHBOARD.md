@@ -47,6 +47,14 @@ The FranklinWH Automation includes a web-based dashboard for real-time monitorin
 - **Auto-Refresh**: Logs update every 30 seconds when tab is active
 - **Report Issue Button**: Generates sanitized diagnostic bundle with credentials stripped
 
+### Settings Tab (v4.6)
+- **Dashboard Settings**: Browser-side preferences (refresh interval, temperature unit, theme, target display)
+- **Automation Summary**: Live read-only view from the configuration store — active charging strategy, today's peak window and rates, battery configuration, and the grid-charge ceiling vs. solar target
+- **Configuration Health**: Validates your setup and flags conflicts — peak-window mismatches (engine vs. schedule), `SOLAR_EXPORT`-vs-net-metering mismatches, seasonal coverage gaps, unreviewed arrays, and capacity sanity
+- **Rate Plan & Solar Arrays**: Your active plan with seasons and tier rates; each array with its capacity and whether it charges the battery
+- **Full Configuration**: Every setting by category, with each value's source (explicitly set vs. never-reviewed default); secrets masked
+- Read-only in v4.6 — editing from the UI and a guided setup wizard are planned on this foundation
+
 ---
 
 ## Docker Installation (Recommended)
@@ -287,5 +295,5 @@ For remote access, consider: VPN, Tailscale, or a reverse proxy with authenticat
 
 ---
 
-**Last Updated:** May 2026
-**Version:** 4.4.1
+**Last Updated:** June 2026
+**Version:** 4.6.0

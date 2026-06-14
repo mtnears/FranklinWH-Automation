@@ -131,7 +131,7 @@ All tasks run automatically inside the container:
 
 ## Dashboard Features
 
-The built-in dashboard has five tabs:
+The built-in dashboard has six tabs:
 
 ### Live Dashboard
 - Real-time battery status and SOC
@@ -165,6 +165,11 @@ The built-in dashboard has five tabs:
 - Intelligence log (engine decisions from SQLite)
 - Scheduler log (task execution)
 - Auto-refresh every 30 seconds
+
+### Settings (v4.6)
+- Read-only view of your full configuration from the SQLite config store, with each value's source (explicitly set vs. never-reviewed default)
+- Solar arrays and which one charges the battery; active rate plan with seasons
+- **Configuration Health** — validates your setup and flags conflicts (peak-window mismatches, export-strategy-vs-NEM, seasonal coverage gaps, unreviewed arrays)
 
 ---
 
@@ -213,6 +218,15 @@ docker compose up -d
 
 **Important:** Scripts are built into the Docker image (not volume-mounted). You must rebuild with `--no-cache` when updating to pick up code changes. A simple `docker restart` is not sufficient for code updates.
 
+**Upgrading to v4.6:** after the rebuild, run the one-time configuration migration, which copies your `.env` and `rate_schedule.json` into the new SQLite config store (neither file is modified):
+
+```bash
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --dry-run --battery-array <your-array-id>
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --battery-array <your-array-id>
+```
+
+`<your-array-id>` is the array that charges your battery (e.g. `house`, from `SOLAR_ARRAYS`); single-array setups can omit the flag. Then open the **Settings** tab → **Configuration Health** to confirm your setup. Your `.env` and `rate_schedule.json` remain authoritative — the migration is additive. After any later `.env` change, re-run the migration to refresh the store.
+
 ---
 
 ## Configuration Options
@@ -246,6 +260,8 @@ PEAK_START_HOUR=17
 PEAK_END_HOUR=20
 PEAK_DAYS=weekdays
 ```
+
+> **v4.6:** when a `rate_schedule.json` is present, the engine takes its peak window from the schedule and these vars are a fallback only; the Settings tab flags any disagreement (#26). Keep them matched to your schedule.
 
 ### Solar Forecast
 
@@ -437,5 +453,5 @@ Open: `http://YOUR-PI-IP:8100`
 
 ---
 
-**Last Updated:** May 2026
-**Version:** 4.4.1
+**Last Updated:** June 2026
+**Version:** 4.6.0

@@ -1,8 +1,16 @@
 # Configuration Reference
 
-**Complete guide to configuring FranklinWH Battery Automation v4.4**
+**Complete guide to configuring FranklinWH Battery Automation**
 
-All configuration is done via the `.env` file. You never need to edit Python scripts directly.
+All configuration is done via the `.env` file (and your TOU schedule in `data/rate_schedule.json`). You never need to edit Python scripts directly.
+
+**As of v4.6**, the system also keeps a consolidated, read-only copy of your configuration in its SQLite database, viewable on the dashboard's **Settings** tab, with a Configuration Health section that validates your setup and flags conflicts. The store is a *copy* — `.env` and `rate_schedule.json` remain the source of truth and are still required; **do not delete or trim them**. After changing a setting, restart and re-run the migration to refresh the store:
+
+```bash
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --battery-array <your-array-id>
+```
+
+(Add `--dry-run` to preview. Single-array setups can omit the flag.)
 
 ---
 
@@ -106,7 +114,7 @@ The forecast engine predicts daily solar production to optimize grid charging de
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SOLAR_EXPORT` | `false` | Does your system export surplus solar to the grid? |
+| `SOLAR_EXPORT` | `false` | **Charging strategy**, not a hardware capability flag (#21). `false` = self-consumption/storage optimization (continuous-target logic runs, grid charging capped at the taper ceiling). `true` = export-friendly (that logic is skipped; surplus exports for credit). The right value depends on your net-metering economics, not just whether you *can* export: on **NEM 3.0** (near-worthless export credit) `false` is usually correct even though you can export; on **NEM 2.0 / 1:1** `true` may be better. The Settings tab flags a likely mismatch. |
 | `CARE_RATE` | `false` | CARE/FERA discount program active |
 | `NEM_VERSION` | `nem2` | Net metering version: `nem2` or `nem3` |
 
@@ -250,10 +258,12 @@ For three-tier plans, `partial_peak` rates come from JSON `seasons` since `rate_
 
 For simple two-tier rate plans with one peak window, peak hours can be configured directly via `.env` vars without a `rate_schedule.json`. **For three-tier plans, seasonal rate switching, or multiple peak windows per day, configure `data/rate_schedule.json` instead** — see [Rate Schedule](#rate-schedule-rate_schedulejson) above.
 
+> **v4.6 (#26):** When a `rate_schedule.json` is present, the engine resolves its peak window from the schedule (season-aware), and these `.env` vars become a **fallback only**. If they disagree with your schedule, the Settings tab → Configuration Health flags a `CONFIG CONFLICT` and the engine follows the schedule. Keep them in sync with your schedule, or rely on the schedule and treat these as a backstop. (Previously the engine read these vars directly, which could silently drift from the schedule after a season change — that's what #26 fixed.)
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PEAK_START_HOUR` | `17` | Peak start in 24-hour format |
-| `PEAK_END_HOUR` | `20` | Peak end in 24-hour format |
+| `PEAK_START_HOUR` | `17` | Fallback peak start (24hr) — superseded by the rate schedule window |
+| `PEAK_END_HOUR` | `20` | Fallback peak end (24hr) — superseded by the rate schedule window |
 | `PEAK_DAYS` | `weekdays` | `all`, `weekdays`, or `weekends` |
 | `PEAK2_START_HOUR` | (disabled) | Optional second peak start |
 | `PEAK2_END_HOUR` | (disabled) | Optional second peak end |
@@ -480,6 +490,10 @@ For Gmail, use an [App Password](https://myaccount.google.com/apppasswords), not
 
 ## Validating Your Configuration
 
+### Settings Tab (v4.6, easiest)
+
+Open the dashboard → **Settings** tab. It shows your full configuration (with each value's source — explicitly set vs. never-reviewed default), your arrays and which one charges the battery, your rate plan and seasons, and a **Configuration Health** section that actively validates the setup: peak-window conflicts (#26), `SOLAR_EXPORT`-vs-NEM mismatches (#21), seasonal coverage gaps (#18), unreviewed arrays, and capacity sanity. This is the fastest way to confirm your configuration is correct and consistent. (Requires the v4.6 migration to have been run.)
+
 ### Docker
 
 ```bash
@@ -510,7 +524,8 @@ docker exec -w /app/scripts franklin-automation python3 -c "from config import V
 |---------|-------------|----------|
 | "Authentication failed" | Wrong credentials | Verify in Franklin WH app, check `.env` |
 | "Gateway not found" | Wrong gateway ID | Check App → Settings → System Info |
-| Battery charges during peak | Wrong peak hours | Verify `PEAK_START_HOUR` / `PEAK_END_HOUR` |
+| Battery charges during peak | Wrong peak hours | Verify your `rate_schedule.json` peak window; check Settings → Configuration Health for a peak-window `CONFIG CONFLICT` (#26) |
+| Settings tab shows stale values | Store not refreshed after an `.env` edit | Re-run `migrate_v46.py` to refresh the config store |
 | Battery not ready for peak | Charge rate too high | Re-test your charge rate, lower by 10-20% |
 | Charges too early (wastes solar) | Taper ceiling too high | Lower `TAPER_CEILING_PCT` by 5 until curtailment clears |
 | Wrong mode after peak | Wrong `HOME_MODE` | Set to `tou` or `self_consumption` to match your setup |
@@ -519,5 +534,5 @@ docker exec -w /app/scripts franklin-automation python3 -c "from config import V
 
 ---
 
-**Last Updated:** May 2026
-**Version:** 4.4.1
+**Last Updated:** June 2026
+**Version:** 4.6.0
