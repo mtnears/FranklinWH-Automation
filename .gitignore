@@ -239,6 +239,5 @@ patch_modbus_syntax.sh
 scripts/env_template.txt
 data/system_profile.json
 
-# But track rate schedule configs (needed by other users)
-!data/rate_schedule.json
+# Track the rate schedule template only; each user's local data/rate_schedule.json stays ignored under data/
 !data/rate_schedule.example.json
