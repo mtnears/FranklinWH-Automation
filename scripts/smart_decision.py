@@ -540,22 +540,34 @@ def adaptive_engine_decision(battery_data, current_mode: str, in_peak: bool, hou
 def detect_mode(battery_data) -> str:
     """
     Detect current battery operating mode from data.
-    Priority: mode_name (if available), then run_status mapping.
-    
+
+    mode_name is authoritative when present. run_status is UNRELIABLE on
+    FranklinWH firmware (observed stuck at 1 = emergency_backup regardless of
+    actual mode), so it is only consulted when mode_name is entirely absent.
+
+    When a mode_name is present but matches none of the known substrings
+    (e.g. a custom schedule named "Custom NEM 3.0"), it is treated as the
+    user's home schedule and mapped into the normalized vocabulary via
+    HOME_MODE — NOT allowed to fall through to run_status, which would
+    misreport it as emergency_backup and suppress required mode switches.
+
     Returns normalized mode names:
       "emergency_backup", "self_consumption", "time_of_use", or "unknown"
     """
-    # Try mode name first (from detailed status)
+    # Try mode name first (from detailed status) — authoritative when present.
     if hasattr(battery_data, 'mode_name') and battery_data.mode_name:
         mode_name = battery_data.mode_name.lower()
         if 'backup' in mode_name or 'emergency' in mode_name:
             return "emergency_backup"
-        elif 'tou' in mode_name or 'time' in mode_name:
-            return "time_of_use" 
-        elif 'self' in mode_name or 'consumption' in mode_name:
+        if 'self' in mode_name or 'consumption' in mode_name:
             return "self_consumption"
-    
-    # Fallback to run_status mapping
+        # Any other named schedule (TOU-B, TOU-Summer, "Custom NEM 3.0", user
+        # custom schedules) is the user's home schedule. Map HOME_MODE
+        # ('tou' | 'self_consumption') into the normalized vocabulary. Do NOT
+        # fall through to the unreliable run_status mapping below.
+        return "self_consumption" if config.HOME_MODE == "self_consumption" else "time_of_use"
+
+    # mode_name absent — fall back to run_status (best-effort, may be unreliable)
     if hasattr(battery_data, 'run_status') and battery_data.run_status:
         status_map = {
             1: "emergency_backup",
