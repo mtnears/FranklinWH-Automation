@@ -50,11 +50,32 @@ For older releases — v4.3.1 (target-aware SC commit fix), v4.3 (cloud-only per
 
 ---
 
-## Upgrading — Fresh Install Required
+## Upgrading
 
-This update touches nearly every script, replaces the entire data storage layer, and removes several files. There is no supported upgrade path from v3.5 or v4.0.
+### To v4.6 (from v4.1+)
 
-**Steps for existing users:**
+v4.6 is an in-place upgrade — no fresh install. After pulling, run the one-time configuration migration, which copies your `.env` and `rate_schedule.json` into the new SQLite config store (neither file is modified):
+
+```bash
+git pull
+docker compose build --no-cache
+docker compose down
+docker compose up -d
+
+# Preview the migration first (writes nothing):
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --dry-run --battery-array <your-array-id>
+
+# Then run it:
+docker exec franklin-automation python3 /app/scripts/migrate_v46.py --battery-array <your-array-id>
+```
+
+`<your-array-id>` is the array that charges your Franklin battery (e.g. `house`), as defined by `SOLAR_ARRAYS` in your `.env`. If you have a single array it's auto-detected and the flag is optional. After migrating, open the **Settings** tab → **Configuration Health** — anything it flags is the validation working as intended.
+
+Your `.env` and `rate_schedule.json` remain authoritative and required — the migration is additive. To change a setting later, edit `.env` (or the JSON), restart, and re-run the migration to refresh the store.
+
+### Fresh Install (from v3.5 / v4.0)
+
+The v4.1 data-layer rewrite touched nearly every script and replaced the entire storage layer. There is no supported in-place upgrade path from v3.5 or v4.0 — a fresh install is required.
 
 ```bash
 # 1. Back up your .env and any data you want to keep
@@ -92,6 +113,7 @@ Your historical data from CSV logs will not be migrated to the new SQLite databa
 - **Curtailment Protection** — Detects when battery is full during solar production and switches modes to prevent wasting free energy
 - **Post-Peak Solar Discharge** — Burns free solar stored in the battery after peak instead of importing from the grid overnight
 - **SQLite Data Layer** — All readings, decisions, weather, and solar data stored in a local SQLite database. Fast queries, no CSV parsing, dashboard analytics from real data
+- **Configuration Store + Settings Page** (v4.6) — A consolidated, read-only view of your entire configuration on the Settings tab, backed by SQLite, with a Configuration Health section that validates your setup and flags conflicts. One canonical rate resolver keeps the engine, savings, and dashboard in agreement on what rates and peak window apply each day
 - **Hybrid Data Collection** — Modbus TCP for fast local monitoring (26ms) with Franklin cloud API for mode switching. Falls back gracefully if Modbus isn't available
 - **Rate Schedule Flexibility** — Supports two-tier (PG&E E-TOU-D, SCE TOU-D, etc.), three-tier with partial-peak (PG&E EV2-A), dynamic hourly pricing (ComEd), and custom schedules with multiple peak windows and per-season auto-switching for rates and windows
 - **Peak Safety Net** — Hardware mode verification during peak hours ensures the battery is never charging from the grid at peak rates, even if a mode switch fails
@@ -223,7 +245,9 @@ See [.env.example](.env.example) for all options including weather, solar arrays
 
 ## Configuration
 
-All settings live in your `.env` file. No code edits needed.
+All settings live in your `.env` file (and your TOU schedule in `rate_schedule.json`). No code edits needed.
+
+As of **v4.6**, the system also keeps a consolidated, read-only copy of your configuration in its SQLite database, viewable on the **Settings** tab. This is how the system — and you — can see everything in one place, with a Configuration Health section that flags conflicts (mismatched peak windows, seasonal coverage gaps, unreviewed arrays, and more). Important: the store is a *copy*. Your `.env` and `rate_schedule.json` are still the source of truth and are still required — **don't delete or trim them.** To change a setting, edit `.env` (or the JSON), restart, and re-run the migration to refresh the store (see [Upgrading](#upgrading)). Editing configuration directly from the UI, and a guided setup wizard for new installs, are planned on top of this foundation.
 
 ### Feature Toggles
 
@@ -241,10 +265,12 @@ All settings live in your `.env` file. No code edits needed.
 
 ### TOU Settings
 
+As of **v4.6**, the engine's peak window comes from your **rate schedule** (`rate_schedule.json`, season-aware), not these `.env` variables. The variables below are kept as a fallback for installs without a resolvable schedule window, and the Settings tab flags a `CONFIG CONFLICT` if they disagree with your schedule. Keep them in sync with your schedule, or let the schedule drive and treat these as a backstop.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `PEAK_START_HOUR` | `17` | Peak period start (24hr) |
-| `PEAK_END_HOUR` | `20` | Peak period end (24hr) |
+| `PEAK_START_HOUR` | `17` | Fallback peak start (24hr) — superseded by the rate schedule window |
+| `PEAK_END_HOUR` | `20` | Fallback peak end (24hr) — superseded by the rate schedule window |
 | `PEAK2_START_HOUR` | — | Optional second peak window |
 | `PEAK2_END_HOUR` | — | Optional second peak window |
 | `PEAK_DAYS` | `weekdays` | `weekdays`, `weekends`, or `all` |

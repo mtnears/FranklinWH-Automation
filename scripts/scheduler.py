@@ -242,6 +242,18 @@ def job_solaredge_panels():
         run_script("collect_solaredge_panels.py", "SolarEdge Panel Monitoring")
 
 
+def job_collect_solaredge_modbus():
+    """SolarEdge inverter-level collector (Modbus TCP) - runs every 5 minutes.
+
+    Reads both barn inverters over local SunSpec Modbus and writes
+    solaredge_inverter_readings + solar_barn.json, tracking firmware in
+    device_inventory on change. Replaces the broken cloud-portal path for
+    live barn production. Inverter-level only — no per-optimizer data over
+    Modbus (that remains a portal capability).
+    """
+    run_script("collect_solaredge_modbus.py", "SolarEdge Modbus Collection")
+
+
 def job_solar_health():
     """Solar health monitor - runs daily after sunset.
     
@@ -397,6 +409,9 @@ def setup_schedule():
         se_panel = getattr(config, 'SOLAREDGE_PANEL_MONITORING', False)
         if se_panel:
             log(f"  - SolarEdge Panel Monitoring: site {getattr(config, 'SOLAREDGE_SITE_ID', 'N/A')}")
+        se_modbus = getattr(config, 'SOLAREDGE_MODBUS_ENABLED', False)
+        if se_modbus:
+            log(f"  - SolarEdge Modbus Collection: every 5 min (site {getattr(config, 'SOLAREDGE_SITE_ID', 'N/A')})")
         adaptive = getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False)
         if adaptive:
             log(f"  - V4.0 Adaptive Engine: ENABLED")
@@ -496,10 +511,17 @@ def setup_schedule():
     
     # SolarEdge panel monitoring - every 15 minutes (if enabled)
     # Separate from the solar array collection above; this collects real
-    # per-optimizer energy data for health monitoring / anomaly detection
+    # per-optimizer energy + color health data for anomaly detection.
+    # The portal path (track 2) is revived (Cognito /services/ energy API).
+    # The collector self-gates its solar_barn.json write when Modbus is
+    # enabled (Modbus owns production), writing only the health overlay
+    # solaredge_panel_current.json, so both jobs run without clobbering.
+    se_modbus_enabled = getattr(config, 'SOLAREDGE_MODBUS_ENABLED', False) if CONFIG_LOADED else False
     if CONFIG_LOADED and getattr(config, 'SOLAREDGE_PANEL_MONITORING', False):
         schedule.every(15).minutes.do(job_solaredge_panels)
-        _register("SolarEdge Panel Monitoring", f"Every 15 minutes (site {config.SOLAREDGE_SITE_ID})")
+        _scope = "health overlay only" if se_modbus_enabled else "owns barn JSON"
+        _register("SolarEdge Panel Monitoring",
+                  f"Every 15 minutes (site {config.SOLAREDGE_SITE_ID}, {_scope})")
     
     # Daily report - 4:30 PM (if email enabled)
     if CONFIG_LOADED and getattr(config, 'EMAIL_ENABLED', False):
@@ -527,6 +549,9 @@ def setup_schedule():
     if modbus_enabled and Path(SCRIPT_DIR / "collect_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every(5).minutes.do(job_collect_system_snapshot)
         _register("SQLite Modbus Collection", "Every 5 min")
+    if se_modbus_enabled and Path(SCRIPT_DIR / "collect_solaredge_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
+        schedule.every(5).minutes.do(job_collect_solaredge_modbus)
+        _register("SolarEdge Modbus Collection", "Every 5 min")
     if Path(SCRIPT_DIR / "collect_weather_db.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         if CONFIG_LOADED and getattr(config, 'WEATHER_ENABLED', False):
             schedule.every(15).minutes.do(job_collect_weather_db)

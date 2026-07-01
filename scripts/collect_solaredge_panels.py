@@ -3,7 +3,7 @@
 SolarEdge Per-Panel Data Collector (Portal API)
 
 Collects real per-optimizer energy data from the SolarEdge monitoring portal
-using direct API endpoints. No extra packages needed beyond requests.
+using direct API endpoints. Requires pycognito for the /services/ energy API.
 
 Data collected per optimizer per run:
   - Today's energy (Wh)
@@ -26,10 +26,9 @@ Output files:
   SQLite: solaredge_readings table   - Historical per-optimizer data
 
 Portal API details:
-  - Uses HTTP Basic Auth with portal username/password
-  - layout/logical endpoint for optimizer inventory
-  - layout/energy endpoint with timeUnit for energy data
-  - 5 HTTP calls per collection regardless of optimizer count
+  - layout/logical (legacy /solaredge-apigw/, HTTP basic auth) for inventory
+  - /services/.../by-inverter (Cognito token auth) for energy + color health
+  - One energy call per date range covers every optimizer
   - Portal refreshes every ~15 minutes; run on 15-min schedule
 
 Usage:
@@ -47,6 +46,7 @@ import os
 import sys
 import json
 import time
+import base64
 import logging
 from config import configure_logging
 import argparse
@@ -75,6 +75,27 @@ PEAKS_JSON = DATA_DIR / "solaredge_panel_peaks.json"
 LAYOUT_CACHE = DATA_DIR / "solaredge_panel_layout.json"
 DAILY_HISTORY = DATA_DIR / "solaredge_daily_history.json"
 WEB_JSON = WEB_DIR / "solaredge_panel_current.json"
+TOKEN_CACHE = DATA_DIR / "solaredge_se_token.json"
+
+# ──────────────────────────────────────────────────────────────────────
+# SolarEdge auth (2026): the legacy /solaredge-apigw/ endpoints still take
+# HTTP basic auth (layout/logical works), but the newer /services/ energy
+# API authenticates off an AWS Cognito access token presented as the
+# se_monitoring_auth cookie plus an x-se-user-id header (the token's uuid
+# claim) plus a real browser request-context header set.
+# ──────────────────────────────────────────────────────────────────────
+COGNITO_REGION = "eu-central-1"
+COGNITO_POOL_ID = "eu-central-1_fVUTz39em"
+COGNITO_CLIENT_ID = "ugfnsujd3384sshcjehaphlh3"
+TOKEN_REFRESH_MARGIN_S = 600  # re-mint if within 10 min of expiry
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36")
+
+# Color-based health overrides (SolarEdge's own period-relative metric,
+# 1.0 = best performer in the period). Catches an acutely bad optimizer
+# before multi-year lifetime ratios move enough to flag it.
+COLOR_WATCH = 0.75
+COLOR_ALERT = 0.60
 
 # Layout cache duration (seconds) - re-fetch layout once per day
 LAYOUT_CACHE_MAX_AGE = 86400
@@ -136,6 +157,8 @@ def get_config():
         "password": os.environ.get("SOLAREDGE_PASSWORD", ""),
         "api_key": os.environ.get("SOLAREDGE_API_KEY",
                    os.environ.get("SOLAR_ARRAY_BARN_API_KEY", "")),
+        "modbus_enabled": os.environ.get("SOLAREDGE_MODBUS_ENABLED", "").strip().lower()
+                          in ("1", "true", "yes", "on"),
     }
 
 
@@ -247,12 +270,124 @@ def get_cached_layout(session, site_id):
     return optimizer_map, inverter_info
 
 
-def get_energy(session, site_id, time_unit):
-    """Get per-optimizer energy for a time period (DAY, WEEK, MONTH, ALL)."""
-    url = f"{PORTAL_BASE}/solaredge-apigw/api/sites/{site_id}/layout/energy?timeUnit={time_unit}"
-    r = session.post(url, timeout=30)
+def _jwt_claims(token):
+    """Decode a JWT payload (no signature verification) to read claims."""
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def _cache_token(token, refresh_token):
+    """Persist the access token + refresh token + decoded claims."""
+    try:
+        claims = _jwt_claims(token)
+        TOKEN_CACHE.write_text(json.dumps({
+            "access_token": token,
+            "refresh_token": refresh_token,
+            "uuid": claims.get("uuid"),
+            "exp": claims.get("exp", 0),
+        }))
+    except (IOError, ValueError, KeyError) as e:
+        logger.warning(f"Token cache write failed (non-fatal): {e}")
+
+
+def get_se_token(username, password):
+    """
+    Return (access_token, uuid) for the /services/ energy API.
+
+    Mints an AWS Cognito access token via SRP (pycognito). The token lives
+    ~24h and carries a refresh token, so we cache it and reuse/refresh rather
+    than running the full SRP handshake every collection cycle.
+    """
+    # 1. Try a still-valid cached access token.
+    if TOKEN_CACHE.exists():
+        try:
+            cache = json.loads(TOKEN_CACHE.read_text())
+            if cache.get("access_token") and \
+               cache.get("exp", 0) - time.time() > TOKEN_REFRESH_MARGIN_S:
+                logger.info("Using cached SolarEdge token "
+                            f"({int((cache['exp'] - time.time()) / 3600)}h to expiry)")
+                return cache["access_token"], cache.get("uuid")
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    from pycognito import Cognito
+
+    # 2. Try refreshing with a cached refresh token (avoids re-sending password).
+    if TOKEN_CACHE.exists():
+        try:
+            cache = json.loads(TOKEN_CACHE.read_text())
+            rt = cache.get("refresh_token")
+            if rt:
+                c = Cognito(COGNITO_POOL_ID, COGNITO_CLIENT_ID,
+                            user_pool_region=COGNITO_REGION)
+                c.refresh_token = rt
+                c.renew_access_token()
+                if c.access_token:
+                    logger.info("Refreshed SolarEdge token via refresh_token")
+                    _cache_token(c.access_token, rt)
+                    return c.access_token, _jwt_claims(c.access_token).get("uuid")
+        except Exception as e:
+            logger.info(f"Token refresh failed, falling back to SRP login: {e}")
+
+    # 3. Full SRP authentication.
+    c = Cognito(COGNITO_POOL_ID, COGNITO_CLIENT_ID,
+                username=username, user_pool_region=COGNITO_REGION)
+    c.authenticate(password=password)
+    token = c.access_token
+    _cache_token(token, c.refresh_token)
+    logger.info("Minted SolarEdge token via SRP login")
+    return token, _jwt_claims(token).get("uuid")
+
+
+def _services_headers(uuid):
+    """Browser request-context headers the /services/ API requires."""
+    return {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        "referer": f"{PORTAL_BASE}/one",
+        "origin": PORTAL_BASE,
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+        "user-agent": BROWSER_UA,
+        "x-se-user-id": uuid or "",
+    }
+
+
+def get_energy(token, uuid, site_id, inverter_serials, start_date, end_date):
+    """
+    Get per-optimizer energy + color for a date range from the by-inverter
+    endpoint. One call covers every optimizer. Returns the parsed JSON.
+    """
+    url = (f"{PORTAL_BASE}/services/layout/energy/site/{site_id}/by-inverter"
+           f"?start-date={start_date}&end-date={end_date}"
+           f"&inverter-serials={inverter_serials}"
+           f"&include-max-temperature=false&include-color=true")
+    r = requests.get(url, headers=_services_headers(uuid),
+                     cookies={"se_monitoring_auth": token}, timeout=30)
     r.raise_for_status()
-    return json.loads(r.text)
+    return r.json()
+
+
+def _energy_by_serial(resp):
+    """
+    Flatten a by-inverter response into {serial: energy_wh} and
+    {serial: color}. Optimizers are nested under inverters[].optimizers[]
+    and keyed by hardware serial directly.
+    """
+    energy = {}
+    color = {}
+    for inv in resp.get("inverters", []):
+        for opt in inv.get("optimizers", []):
+            sn = opt.get("serial")
+            if not sn:
+                continue
+            energy[sn] = (opt.get("energy") or {}).get("value", 0) or 0
+            c = opt.get("color")
+            if c is not None:
+                color[sn] = c
+    return energy, color
 
 
 def get_current_site_power(site_id, api_key):
@@ -528,6 +663,60 @@ def analyze_health(optimizers):
     return summary
 
 
+def apply_color_health(optimizers, summary):
+    """
+    Overlay SolarEdge's per-optimizer 'color' metric onto the health status.
+
+    'color' (0.0-1.0, period-relative, 1.0 = best in the period) is the
+    portal's own relative-performance signal and is what the Layout view
+    shows by eye. It catches an acutely bad optimizer faster than the
+    lifetime-energy ratios, which are dominated by years of prior good
+    production. We only let color *escalate* severity (never downgrade a
+    panel the ratio math already flagged), then recompute the array-wide
+    counts and underperformer list from the final per-optimizer statuses.
+    """
+    rank = {"excellent": 0, "good": 1, "fair": 2, "watch": 3, "alert": 4}
+
+    for opt in optimizers:
+        c = opt.get("color")
+        health = opt.setdefault("health", {})
+        if c is None:
+            continue
+        health["color"] = round(c, 4)
+        color_status = None
+        if c < COLOR_ALERT:
+            color_status = "alert"
+        elif c < COLOR_WATCH:
+            color_status = "watch"
+        if color_status and rank[color_status] > rank.get(health.get("status", "good"), 1):
+            health["status"] = color_status
+
+    # Recompute counts + underperformers from final statuses.
+    counts = {"excellent": 0, "good": 0, "fair": 0, "watch": 0, "alert": 0}
+    underperformers = []
+    for opt in optimizers:
+        status = opt.get("health", {}).get("status", "good")
+        if status in counts:
+            counts[status] += 1
+        if status in ("watch", "alert"):
+            h = opt["health"]
+            underperformers.append({
+                "serial_number": opt["serial_number"],
+                "inverter": opt["inverter"],
+                "string": opt["string"],
+                "status": status,
+                "color": h.get("color"),
+                "ratio_vs_string": h.get("ratio_vs_string"),
+                "ratio_vs_array": h.get("ratio_vs_array"),
+                "lifetime_wh": opt["lifetime_wh"],
+                "today_wh": opt["today_wh"],
+            })
+
+    summary["health_counts"] = counts
+    summary["underperformers"] = underperformers
+    return summary
+
+
 def collect(config):
     """
     Main collection: authenticate, get layout, fetch energy data.
@@ -548,32 +737,61 @@ def collect(config):
         logger.error(f"Layout fetch failed: {e}")
         return None
 
-    # Fetch energy for all time units
-    energy = {}
-    for tu in ["DAY", "WEEK", "MONTH", "ALL"]:
-        try:
-            data = get_energy(session, config["site_id"], tu)
-            # Filter to only optimizer IDs
-            energy[tu] = {k: v for k, v in data.items() if k in opt_map}
-        except Exception as e:
-            logger.warning(f"Energy fetch failed for {tu}: {e}")
-            energy[tu] = {}
+    # Mint the Cognito token for the /services/ energy API.
+    try:
+        token, uuid = get_se_token(config["username"], config["password"])
+    except Exception as e:
+        logger.error(f"SolarEdge token mint failed: {e}")
+        return None
 
-    # Build optimizer results
+    inverter_serials = ",".join(
+        inv["serial"] for inv in inverter_info if inv.get("serial"))
+
+    # Fetch energy by explicit date range. DAY is fatal; the wider ranges are
+    # best-effort so a slow/failed lifetime call never blocks the live grid.
+    today = date.today()
+    install = datetime.strptime(PANEL_SPEC["install_date"], "%Y-%m-%d").date()
+    ranges = {
+        "DAY":   (today, today),
+        "WEEK":  (today - timedelta(days=6), today),
+        "MONTH": (today.replace(day=1), today),
+        "ALL":   (install, today),
+    }
+
+    energy = {}
+    colors = {}
+    for label, (start, end) in ranges.items():
+        try:
+            resp = get_energy(token, uuid, config["site_id"], inverter_serials,
+                              start.isoformat(), end.isoformat())
+            wh, col = _energy_by_serial(resp)
+            energy[label] = wh
+            if label == "DAY":
+                colors = col
+        except Exception as e:
+            if label == "DAY":
+                logger.error(f"DAY energy fetch failed (fatal): {e}")
+                return None
+            logger.warning(f"{label} energy fetch failed (non-fatal): {e}")
+            energy[label] = {}
+
+    # Build optimizer results, joining layout to energy on hardware serial.
     now = datetime.now()
     optimizers = []
     totals = {"today_wh": 0, "week_wh": 0, "month_wh": 0, "lifetime_wh": 0}
 
     for opt_id, info in sorted(opt_map.items(),
                                 key=lambda x: (x[1]["inverter"], x[1]["string"], x[1]["serial_number"])):
-        today_wh = energy.get("DAY", {}).get(opt_id, {}).get("unscaledEnergy", 0)
-        week_wh = energy.get("WEEK", {}).get(opt_id, {}).get("unscaledEnergy", 0)
-        month_wh = energy.get("MONTH", {}).get(opt_id, {}).get("unscaledEnergy", 0)
-        lifetime_wh = energy.get("ALL", {}).get(opt_id, {}).get("unscaledEnergy", 0)
+        sn = info["serial_number"]
+        today_wh = energy.get("DAY", {}).get(sn, 0)
+        week_wh = energy.get("WEEK", {}).get(sn, 0)
+        month_wh = energy.get("MONTH", {}).get(sn, 0)
+        lifetime_wh = energy.get("ALL", {}).get(sn, 0)
+        col = colors.get(sn)
 
         optimizers.append({
             "id": opt_id,
-            "serial_number": info["serial_number"],
+            "serial_number": sn,
             "inverter": info["inverter"],
             "inverter_sn": info["inverter_sn"],
             "string": info["string"],
@@ -582,6 +800,7 @@ def collect(config):
             "week_wh": week_wh,
             "month_wh": month_wh,
             "lifetime_wh": lifetime_wh,
+            "color": round(col, 4) if col is not None else None,
         })
 
         totals["today_wh"] += today_wh
@@ -593,6 +812,7 @@ def collect(config):
 
     # ── Run health analysis ──
     health_summary = analyze_health(optimizers)
+    apply_color_health(optimizers, health_summary)
 
     # ── Fetch current site power from cloud API ──
     # This is a single lightweight API call that gives us real-time watts
@@ -1125,7 +1345,10 @@ def main():
     update_peaks(data)
     save_current(data)
     daily_history = update_daily_history(data)
-    save_dashboard_json(data, config, daily_history)
+    if config.get("modbus_enabled"):
+        logger.info("Modbus owns solar_barn.json; writing health overlay only")
+    else:
+        save_dashboard_json(data, config, daily_history)
     store_to_db(data)
 
     logger.info("Collection complete")

@@ -1,6 +1,8 @@
 # ==============================================================================
-# FranklinWH Battery Automation - Python Dependencies v4.4.1
+# FranklinWH Battery Automation - Python Dependencies v4.6.0
 # ==============================================================================
+# v4.6 added no new dependencies — config_store.py and rate_config.py use only
+# the standard library (sqlite3, base64, json).
 
 # Core Franklin WH API
 franklinwh>=0.1.0
@@ -30,3 +32,11 @@ aiohttp>=3.8.0
 
 # Additional async support
 asyncio-mqtt>=0.13.0
+
+# ==============================================================================
+# SolarEdge /services/ energy API auth (added for portal collector revival)
+# ==============================================================================
+# The newer /services/.../by-inverter endpoint (per-optimizer energy + color
+# health) authenticates via an AWS Cognito SRP token. pycognito handles the
+# SRP handshake. Pulls boto3/botocore + pyjwt[crypto] transitively.
+pycognito>=2024.5.1

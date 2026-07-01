@@ -188,6 +188,10 @@ class Config:
     # Requires portal login credentials (username/password, not API key)
     # Provides per-panel health monitoring, degradation tracking, anomaly detection
     SOLAREDGE_PANEL_MONITORING: bool = field(default_factory=lambda: get_bool('SOLAREDGE_PANEL_MONITORING', False))
+    # Local SunSpec Modbus TCP collection of the barn inverters. When true, the
+    # Modbus collector owns solar_barn.json (live production) and the portal panel
+    # collector writes only the health overlay. Consumed by scheduler setup.
+    SOLAREDGE_MODBUS_ENABLED: bool = field(default_factory=lambda: get_bool('SOLAREDGE_MODBUS_ENABLED', False))
     SOLAREDGE_SITE_ID: str = field(default_factory=lambda: os.getenv('SOLAREDGE_SITE_ID',
                                    os.getenv('SOLAR_ARRAY_BARN_SITE_ID', '')))
     SOLAREDGE_USERNAME: str = field(default_factory=lambda: os.getenv('SOLAREDGE_USERNAME', ''))

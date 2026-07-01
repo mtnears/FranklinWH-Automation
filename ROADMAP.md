@@ -6,6 +6,16 @@ Planned features and improvements. Items are listed in rough priority order. Con
 
 ## 🔧 In Progress
 
+### Configuration Editing + Guided Setup (built on v4.6)
+**Priority: High**
+
+v4.6 shipped the configuration foundation: a DB-resident config store, one canonical rate resolver, and a **read-only** Settings page with configuration-health validation. The next major step builds the *write* path on top of it — editing configuration from the UI, and a guided setup wizard for new installs that builds your rate schedule from a utility/plan picker instead of hand-editing JSON. This is also when `.env` gets retired down to just the three Franklin credentials, via a migration with timestamped backups (not by hand). Gated on the v4.6 store and validation checks proving themselves across community configurations first — see "How you can help" in the [v4.6.0 release notes](https://github.com/mtnears/FranklinWH-Automation/releases).
+
+### Direct Battery Power Register 
+**Priority: Medium**
+
+v4.6 parallel-logs battery power read directly from Modbus register 1048 (`battery_kw_direct`) alongside the derived value (load − solar − grid). Once the parallel-log soak confirms the direct read tracks the derived value across real charge/discharge cycles, a following patch swaps the direct read to authoritative and drops the deprecated `self_reserve_pct`/`tou_reserve_pct` columns in favor of the single `active_reserve_pct`.
+
 ### Telemetry Expansion
 **Priority: Medium**
 
@@ -37,11 +47,15 @@ The dashboard currently assumes a solar+battery system on a single-peak TOU rate
 ### Automation Savings Calculation Update
 **Priority: Medium**
 
-Savings calculations need updating for v4 changes:
-- Three-mode strategy changes what counts as "savings"
-- Energy source tracking affects how grid vs solar vs battery discharge is valued
-- CARE discount interaction: consumption charges reduced ~38.8% but export credits unaffected — verify math accounts for this asymmetry
-- Dynamic pricing: savings should use actual price at time of charge/discharge, not flat rate assumptions
+**v4.6 progress:** the savings calculator now resolves rates and the peak window per date through the canonical `rate_config` resolver (no more hardcoded fictional rates or fixed peak hours), reads battery capacity from `app_config`, and recomputes history against the rates actually in effect on each date — including the CARE discount via `rate_history`. Remaining work:
+- Dynamic pricing: savings should use the actual price at time of charge/discharge, not flat-rate assumptions
+- Export-credit asymmetry under CARE: consumption charges discounted but export credits unaffected — verify the math accounts for this
+- NEM 3.0 export-rate modeling (separate workstream; `rate_schedule.json` export_rates currently null-only)
+
+### Export / NEM 3.0 Handling + Charging Strategy
+**Priority: Medium**
+
+v4.6's Settings page surfaces the active charging strategy and flags `SOLAR_EXPORT`-vs-NEM mismatches, clarifying that `SOLAR_EXPORT` is a *strategy* flag (self-consumption vs export-friendly), not a capability flag (#21). Remaining: make the engine path selection explicit/configurable rather than gated by a single env var, a metrics contract so the Decision Engine dashboard card populates for export-path users, and an **optional** opt-in "charge-to-target" mode for users who want a fuller battery into peak even at some off-peak grid cost (engine-behavior change, default off — design pass pending).
 
 ### Home Load & Battery Power via Modbus
 **Priority: Medium**
@@ -61,7 +75,7 @@ The Script Status dashboard tab needs updated descriptions for the new v4.1 scri
 ### Multi-Gateway Management
 **Priority: Low**
 
-Support for users with multiple FranklinWH aGate systems. Coordinated management of multiple battery systems with independent configurations.
+Support for users with multiple FranklinWH aGate systems. Coordinated management of multiple battery systems with independent configurations. **v4.6 groundwork:** `app_config` is keyed `(scope, key)` and `solar_arrays.gateway_id` ties arrays to a gateway, so per-gateway configuration is representable without a schema change.
 
 ---
 
@@ -79,6 +93,19 @@ Support for users with multiple FranklinWH aGate systems. Coordinated management
 ---
 
 ## ✅ Recently Completed
+
+### v4.6.1 — Mode Detection Fix + SolarEdge Collector Auth Migration (June 2026)
+- **Mode detection fix (#21):** `detect_mode()` fell through to the unreliable `run_status` field for any Franklin schedule whose name didn't contain backup/tou/self substrings (e.g. a cloud-only user's "Custom NEM 3.0"), so the engine believed it was already in Emergency Backup and skipped switches it had correctly decided to make. Restored the exhaustive name-based detection from v3.3.0, mapping unmatched names to `HOME_MODE`. Cloud-only users only; Modbus installs verify via register 15507 and were unaffected.
+- **SolarEdge panel collector rewrite:** migrated `collect_solaredge_panels.py` to SolarEdge's new Cognito-authenticated by-inverter energy API (the old basic-auth endpoint was retired). SRP auth via `pycognito`, tokens cached to disk. Added `collect_solaredge_modbus.py` (inverter-level Modbus collector) and `migrate_solaredge_inventory.py`.
+- Fixed `SOLAREDGE_MODBUS_ENABLED` never being exposed on `config`, which had silently skipped the Modbus collector's scheduler registration.
+
+### v4.6.0 — Configuration Consolidation + Settings Page (June 2026)
+- **DB-resident config store** (`config_store.py`): `app_config`, `solar_arrays`, the rate-plan table set, and `app_state` in SQLite, with accessors. `migrate_v46.py` copies `.env` and `rate_schedule.json` into the store without modifying either, recording each value's source (env vs default).
+- **One canonical rate resolver** (`rate_config.py`): single per-date resolver for tier rates and the peak window, replacing divergent rate-reading paths. Savings calculator fixed — was computing from hardcoded fictional rates (0.60/0.41) and a fixed peak window; now resolves per date and reads capacity from config.
+- **Engine peak repoint (#26):** the decision engine followed the rate schedule's peak window instead of legacy `.env` peak hours; env becomes fallback-only with a `CONFIG CONFLICT` log line on disagreement.
+- **Read-only Settings page + validation:** new `/api/v1/settings/*` endpoints and a live configuration view replacing the placeholder thresholds card. Configuration Health flags peak-window conflicts (#26), `SOLAR_EXPORT`-vs-NEM mismatches (#21), season coverage/overlap (#18), unreviewed arrays, and capacity/solar-capacity-semantic issues.
+- **PR #25:** parallel-logs direct battery power (register 1048) and a single mode-conditional `active_reserve_pct` alongside the legacy reserve pair, ahead of a v4.6.1 authority swap.
+- Additive release — `.env` and `rate_schedule.json` remain authoritative and required.
 
 ### v4.4.1 — Per-Season Rate Auto-Switching (May 2026)
 - **Per-season tier_rates override** — `rate_schedule.json` `seasons` block now supports `tier_rates` overrides in addition to the existing `windows` overrides. Plans with summer/winter rate differences (PG&E EV2-A, etc.) flip automatically on the seasonal boundary without manual JSON edits

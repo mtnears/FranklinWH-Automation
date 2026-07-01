@@ -4,6 +4,60 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.6.1 — June 2026
+
+A bug-fix and collector-maintenance release. Two independent efforts: a mode-detection fix that restores correct behavior for users whose Franklin schedule has a custom name, and a rewrite of the SolarEdge panel collector against SolarEdge's new authenticated energy API.
+
+### Mode Detection Fix — Custom Schedule Names (#21)
+- **Root cause:** `detect_mode()` treated the gateway `mode_name` as authoritative only for three substring matches (backup/emergency, tou/time, self/consumption). Any other schedule name — e.g. a cloud-only NEM 3.0 user's "Custom NEM 3.0" — matched none and fell through to the `run_status` fallback, which is unreliable on FranklinWH firmware (observed stuck at `1` = emergency_backup regardless of actual mode). The engine then believed it was already in Emergency Backup and skipped the switch it had correctly decided to make: the hardware stayed in TOU while the log read `Mode unchanged: emergency_backup`. Pre-peak urgent charging was silently defeated for affected cloud-only users.
+- **Regression origin:** the v3.3.0 name-detection fix ended with an `else → home mode` catch-all that made the name block exhaustive. That catch-all was lost when an intermediate `tou`/`time` branch was later added, reopening the drop-through to `run_status`.
+- **Fix:** when `mode_name` is present it is authoritative. Names that aren't backup/self now map to the user's `HOME_MODE` (`tou` → `time_of_use`, `self_consumption` → `self_consumption`) instead of falling through. `run_status` is consulted only when `mode_name` is entirely absent. Isolated to `smart_decision.py`.
+- Modbus-equipped installs (which verify mode via register 15507) were unaffected — this only bit cloud-only users whose schedule name missed the substrings.
+
+### SolarEdge Panel Collector — New Authenticated Energy API
+- SolarEdge retired the basic-auth energy endpoint (`/solaredge-apigw/`) the per-optimizer collector relied on. `collect_solaredge_panels.py` rewritten against the new `/services/layout/energy/site/{id}/by-inverter` endpoint, which requires an AWS Cognito JWT (`se_monitoring_auth` cookie + `x-se-user-id` header derived from the token's `uuid` claim) plus browser-context headers
+- Auth via `pycognito` SRP handshake (the client has `USER_PASSWORD_AUTH` disabled); access and refresh tokens cache to `data/solaredge_se_token.json` so SRP doesn't re-run every 15-minute cycle. The old layout endpoint still works on basic auth and is retained for optimizer inventory
+- New `get_energy()` returns per-optimizer energy plus a period-relative `color` health metric in a single call; the parse loop joins layout inventory to energy by hardware serial, and `apply_color_health()` overlays color onto health status in an escalate-only pattern then recomputes counts
+- New `scripts/collect_solaredge_modbus.py` — inverter-level Modbus collector (SE7600H confirmed at 192.168.4.213:1502; SE11400H pending installer verification)
+- New `scripts/migrate_solaredge_inventory.py` — one-time inventory migration
+- `config.py`: added `SOLAREDGE_MODBUS_ENABLED` — `getattr(config, 'SOLAREDGE_MODBUS_ENABLED', False)` previously always returned False, silently skipping the Modbus collector's scheduler registration while the startup banner still printed "every 5 min"
+- `scheduler.py`: lifted the panel-job suppression (the collector now self-gates its `solar_barn.json` write when Modbus is enabled) and registered the Modbus job
+- `requirements.txt`: added `pycognito>=2024.5.1`
+
+### Credits
+Mode-detection issue reported by community user **miztahsparklez** (NEM 3.0, SCE, cloud-only) as a follow-up on #21.
+
+---
+
+## v4.6.0 — June 2026
+
+Foundation release: configuration consolidation, a canonical rate resolver, and a read-only settings page with configuration validation. Behavior is unchanged for a correctly-configured system — this release changes where configuration is *read from* and surfaces what was previously invisible. `.env` and `rate_schedule.json` are **not** retired; they remain authoritative and required.
+
+### DB-Resident Configuration Store (Phase 1)
+- New `scripts/config_store.py` — a SQLite-backed configuration store with four tables and accessors: `app_config` (typed key/value, scope-aware for future multi-aGate), `solar_arrays` (per-array inventory with an explicit `charges_battery` flag), the `rate_plans`/`rate_seasons`/`rate_tiers`/`rate_windows`/`rate_holidays` set, and `app_state` (schema version, migration stamps, reserved for the setup-wizard state machine)
+- New `scripts/migrate_v46.py` — manual one-shot migration (run via `docker exec`, not auto-invoked) that **copies** `.env` and `rate_schedule.json` into the store without modifying either file. Records each value's source (`env` vs code `default`) so the settings page can flag never-reviewed defaults. Idempotent: re-runs refresh env/default rows, preserve user edits, and re-import the rate plan atomically
+- **#18 fix surfaced at import:** the migration rejects the legacy per-window `months` key (silently ignored by the old parser, which caused seasons to never switch for some users) rather than dropping it silently; `--allow-legacy-months` downgrades to a warning. Also validates season month coverage and overlap
+- Secrets stored base64-**obscured** (not encrypted — prevents shoulder-surfing and accidental log/screenshot exposure). The three Franklin credentials never enter the store; they stay in `.env`
+- `db.py`: `system_reading()` gains `battery_kw_direct` and `active_reserve_pct` columns; `init_db()` ensures them idempotently at startup so the collector can never race the migration
+- `collect_modbus.py` (PR #25): parallel-logs register 1048 (battery power read directly) alongside the derived `battery_kw` (load − solar − grid), and derives a single mode-conditional `active_reserve_pct` alongside the legacy `self_reserve_pct`/`tou_reserve_pct` pair. Parallel logging validates the direct read before a later authority swap
+
+### Canonical Rate Resolver + Engine Peak Repoint (Phase 2)
+- New `scripts/rate_config.py` — **one** per-date resolver for tier rates and the peak window, replacing divergent rate-reading paths. Resolution order: v4.6 rate tables (per-date season) → `rate_history` overlay for peak/off_peak (CARE-first, mirroring the engine's proven path) → `rate_schedule.json` fallback for un-migrated installs. Returns nothing rather than fabricating rates when no source resolves. Units are explicit (cents canonical, dollars on request) to prevent the 100× class of error
+- **Savings calculator fix:** `calculate_daily_savings.py` previously computed savings from hardcoded fictional rates (0.60/0.41 $/kWh) that existed nowhere in any config, and a hardcoded 17:00–20:00 peak window. It now resolves rates and the peak window per date through `rate_config`, and reads battery capacity from `app_config`. Dates with no resolvable rate are skipped, not invented. Savings history recomputes against the rates actually in effect on each date
+- **#26 fix:** the decision engine's peak detection read `PEAK_START_HOUR`/`PEAK_END_HOUR` from `.env`, which silently drifted from the rate schedule when `seasons[]` window logic was added — the dashboard and savings moved onto the resolved seasonal window but the engine never did, causing overnight discharge after a season change for users whose env peak hours were stale. `smart_decision.py` now resolves the peak window from the rate schedule via `rate_config`; the legacy env vars become fallback-only, and a `CONFIG CONFLICT` line is written to `intelligence_log` when env disagrees with the schedule instead of failing silently
+
+### Read-Only Settings Page + Configuration Validation (Phase 3)
+- `scheduler.py`: four new endpoints — `/api/v1/settings/config` (app_config by category, source flags, secrets redacted on the wire), `/api/v1/settings/arrays` (battery classification, credentials masked), `/api/v1/settings/rate-plan` (plan, seasons with merged tier rates, windows, and today's live resolution), and `/api/v1/settings/recommendations` (the validation engine)
+- Configuration Health checks: legacy-env-vs-schedule peak window conflict (#26), `SOLAR_EXPORT` strategy vs net-metering/export-capability (#21 — surfaces the active charging strategy in plain language, since `SOLAR_EXPORT` is a strategy flag, not a capability flag), season month coverage/overlap (#18), unreviewed array classification, battery-capacity-vs-count consistency, and the `SOLAR_CAPACITY_KW` semantic check (battery-connected array only, not summed with separately-metered arrays)
+- `power_dashboard.html`: the placeholder "Automation Thresholds" card — which displayed `.env` variables that don't exist (`PEAK_SOC_TARGET`, `CHARGE_RATE_KW`) and a hardcoded 30 kWh capacity — is replaced with a live configuration view: automation summary (active strategy, today's window and rates, battery, the grid-charge-ceiling vs solar-target distinction), Configuration Health, rate plan, arrays, and the full configuration browser with source flags
+
+### Notes
+- This release is additive. `.env` and `rate_schedule.json` are unchanged and still read by the system; do not delete or trim either. Editing config still works as before (edit `.env`/the JSON, restart, re-run the migration to refresh the store). Retiring the old files to a credentials-only `.env` is planned for a future release via a migration with backups
+- The new `battery_kw_direct` column is parallel-validation data for an upcoming accuracy improvement; it is logged but not yet consumed by decision logic
+- Multi-aGate groundwork: `app_config` is keyed `(scope, key)` and `solar_arrays.gateway_id` ties arrays to a gateway, so per-gateway configuration is possible later without a schema change
+
+---
+
 ## v4.4.1 — May 2026
 
 ### Per-Season Rate Auto-Switching
