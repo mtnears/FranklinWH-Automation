@@ -522,8 +522,14 @@ def load_rate_schedule(json_path: str) -> RateSchedule:
     A config without a 'seasons' block behaves exactly as before — fully
     backward compatible with any existing user JSON.
     """
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+    try:
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        msg = (f"rate schedule {json_path} is not valid JSON "
+               f"(line {e.lineno}, column {e.colno}: {e.msg})")
+        logger.error(msg)
+        raise ValueError(msg) from e
 
     rs = data.get('rate_schedule', data)  # Allow nested or flat
 
