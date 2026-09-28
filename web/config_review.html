@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Configuration Review</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-primary:#080c1a; --bg-card:#0f1429; --bg-elevated:#1a2040; --bg-input:#0a0f22;
+  --border-subtle:rgba(99,133,255,0.08); --border-active:rgba(99,133,255,0.25);
+  --text-primary:#e8ecf4; --text-secondary:#b8c0d4; --text-muted:#5a6380;
+  --accent-blue:#4f8fff; --accent-green:#34d399; --accent-amber:#fbbf24; --accent-red:#f87171;
+  --accent-purple:#a78bfa; --accent-cyan:#22d3ee;
+  --radius:14px; --font:'DM Sans',-apple-system,sans-serif;
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+html{font-size:15px;-webkit-font-smoothing:antialiased}
+body{font-family:var(--font);background:var(--bg-primary);color:var(--text-primary);min-height:100vh}
+button,input,select{font-family:inherit;font-size:14px}
+.wrap{max-width:1100px;margin:0 auto;padding:0 16px 120px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 0 10px}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-mark{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--accent-blue),var(--accent-cyan));display:flex;align-items:center;justify-content:center;font-weight:700;color:#081022}
+h1{font-size:18px;font-weight:600;letter-spacing:-.3px}
+.sub{font-size:12px;color:var(--text-muted)}
+a.back{color:var(--text-secondary);font-size:13px;text-decoration:none;border:1px solid var(--border-active);padding:6px 12px;border-radius:8px}
+.banner{margin:6px 0 14px;padding:10px 14px;border-radius:10px;font-size:13px;line-height:1.45;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.3);color:#d9ceff}
+.banner b{color:#fff}
+.steps{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;scrollbar-width:thin}
+.step{flex:0 0 auto;display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;border:1px solid var(--border-subtle);background:var(--bg-card);color:var(--text-muted);font-size:13px;cursor:pointer;white-space:nowrap}
+.step .n{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;background:var(--bg-elevated);color:var(--text-secondary)}
+.step.active{border-color:var(--accent-blue);color:var(--text-primary)}
+.step.active .n{background:var(--accent-blue);color:#081022}
+.step .dot{width:7px;height:7px;border-radius:50%;background:var(--accent-amber);display:none}
+.step.flag .dot{display:inline-block}
+.screen-title{font-size:20px;font-weight:600;margin:4px 0 2px}
+.screen-intro{color:var(--text-secondary);font-size:13px;margin-bottom:14px}
+.card{background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.card-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:6px;cursor:default}
+.card-h.coll{cursor:pointer}
+.card-t{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px}
+.card-s{font-size:12px;color:var(--text-muted)}
+.row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.3fr);gap:10px 16px;align-items:start;padding:11px 0;border-top:1px solid var(--border-subtle)}
+.row:first-of-type{border-top:none}
+.lbl{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--text-primary);padding-top:6px}
+.lbl .env{font-size:11px;color:var(--text-muted);font-family:ui-monospace,monospace}
+.info{width:18px;height:18px;border-radius:50%;border:1px solid var(--border-active);background:transparent;color:var(--text-secondary);font-size:11px;cursor:pointer;flex:0 0 auto;line-height:16px;padding:0}
+.info:hover{border-color:var(--accent-blue);color:var(--accent-blue)}
+.ctl{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ctl-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+input[type=text],input[type=number],input[type=time],select{background:var(--bg-input);border:1px solid var(--border-active);color:var(--text-primary);border-radius:8px;padding:7px 10px;min-width:0}
+input[type=text],select{width:100%;max-width:340px}
+input[type=number]{width:120px}
+input:focus,select:focus{outline:none;border-color:var(--accent-blue)}
+.seg{display:inline-flex;border:1px solid var(--border-active);border-radius:8px;overflow:hidden}
+.seg button{background:var(--bg-input);border:none;color:var(--text-secondary);padding:7px 14px;cursor:pointer}
+.seg button.on{background:var(--accent-blue);color:#081022;font-weight:600}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.b-match{background:rgba(52,211,153,.1);color:var(--accent-green)}
+.b-conflict{background:rgba(251,191,36,.12);color:var(--accent-amber)}
+.b-new{background:rgba(79,143,255,.12);color:var(--accent-blue)}
+.b-default{background:rgba(255,255,255,.05);color:var(--text-muted)}
+.b-edited{background:rgba(167,139,250,.14);color:var(--accent-purple)}
+.b-review{background:rgba(248,113,113,.12);color:var(--accent-red)}
+.b-env{background:rgba(255,255,255,.05);color:var(--text-secondary)}
+.conflict{font-size:12px;color:var(--text-secondary);background:rgba(251,191,36,.05);border:1px solid rgba(251,191,36,.2);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+.conflict label{display:flex;gap:6px;align-items:center;cursor:pointer}
+.conflict code{color:var(--text-primary)}
+.hint{font-size:12px;border-radius:8px;padding:6px 10px;line-height:1.4}
+.hint.warn{background:rgba(251,191,36,.07);color:#f6d58a}
+.hint.ok{background:rgba(52,211,153,.06);color:#8fe3c3}
+.hint.rec{background:rgba(79,143,255,.06);color:#a9c6ff}
+.muted{color:var(--text-muted);font-size:12px}
+.val{font-size:14px;color:var(--text-secondary);padding-top:6px}
+.test{background:transparent;border:1px dashed var(--border-active);color:var(--text-muted);border-radius:8px;padding:5px 10px;font-size:12px;cursor:not-allowed}
+.revert{background:transparent;border:none;color:var(--accent-purple);font-size:12px;cursor:pointer;text-decoration:underline}
+.pop{position:fixed;z-index:50;max-width:340px;background:var(--bg-elevated);border:1px solid var(--border-active);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;color:var(--text-secondary);box-shadow:0 12px 30px rgba(0,0,0,.45);display:none}
+.pop b{color:var(--text-primary)}
+.pop .rec{margin-top:8px;color:#a9c6ff}
+.season{margin-top:10px;border-top:1px solid var(--border-subtle);padding-top:10px}
+.season h4{font-size:14px;font-weight:600;margin-bottom:6px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px 16px}
+.tier{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px}
+.wins{margin-top:8px;display:flex;flex-direction:column;gap:6px}
+.win{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px}
+.tierchip{min-width:96px;font-size:12px;padding:3px 8px;border-radius:6px;text-align:center}
+.t-peak{background:rgba(248,113,113,.12);color:var(--accent-red)}
+.t-partial_peak{background:rgba(251,191,36,.12);color:var(--accent-amber)}
+.t-off_peak{background:rgba(52,211,153,.1);color:var(--accent-green)}
+.sumlist{list-style:none;display:flex;flex-direction:column;gap:6px;font-size:13px}
+.sumlist li{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.sumlist code{font-family:ui-monospace,monospace;font-size:12px;color:var(--text-primary)}
+.navbar{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(0deg,var(--bg-primary) 70%,rgba(8,12,26,0));padding:18px 16px 16px}
+.navin{max-width:1100px;margin:0 auto;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.btn{border-radius:10px;padding:10px 18px;border:1px solid var(--border-active);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-weight:500}
+.btn.primary{background:var(--accent-blue);border-color:var(--accent-blue);color:#081022;font-weight:600}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.counts{font-size:12px;color:var(--text-muted)}
+.err{padding:30px;text-align:center;color:var(--accent-red)}
+@media (max-width:720px){
+  .row{grid-template-columns:1fr;gap:6px}
+  .lbl{padding-top:0}
+  input[type=text],select{max-width:none}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo"><div class="logo-mark">⚙</div>
+      <div><h1>Configuration review</h1><div class="sub" id="meta">Loading…</div></div></div>
+    <a class="back" href="/">Dashboard</a>
+  </header>
+  <div class="banner" id="banner" style="display:none"></div>
+  <div class="steps" id="steps"></div>
+  <div id="screen"></div>
+</div>
+<div class="navbar"><div class="navin">
+  <button class="btn" id="prev">Back</button>
+  <span class="counts" id="counts"></span>
+  <button class="btn primary" id="next">Next</button>
+</div></div>
+<div class="pop" id="pop"></div>
+
+<script>
+(function(){
+'use strict';
+var params = new URLSearchParams(location.search);
+var PREVIEW = params.get('preview') === '1' || params.get('preview') === 'true';
+var data = null, recs = [], cur = 0;
+var edits = {};      // key -> value (string) the user typed
+var choice = {};     // key -> 'env' | 'store' for conflicts
+var rowIndex = {};   // key -> row
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+
+function currentValue(r){
+  if (r.key in edits) return edits[r.key];
+  if (r.status === 'conflict' && choice[r.key] === 'store') return r.store;
+  return r.proposed;
+}
+function isEdited(r){
+  if (!(r.key in edits)) return false;
+  var base = (r.status === 'conflict' && choice[r.key] === 'store') ? r.store : r.proposed;
+  return String(edits[r.key] ?? '') !== String(base ?? '');
+}
+
+function badge(r){
+  if (r.kind === 'secret') return '<span class="badge b-env">stays in .env</span>';
+  if (r.kind === 'flag') return r.value == null ? '<span class="badge b-review">needs review</span>' : '';
+  if (isEdited(r)) return '<span class="badge b-edited">edited</span>';
+  switch (r.status) {
+    case 'match': return '<span class="badge b-match">matches</span>';
+    case 'conflict': return '<span class="badge b-conflict">.env and store differ</span>';
+    case 'env_only': return '<span class="badge b-new">from .env</span>';
+    case 'store_only': return '<span class="badge b-default">from store</span>';
+    case 'default': return r.optional ? '<span class="badge b-default">not set</span>'
+                                      : '<span class="badge b-default">default</span>';
+  }
+  return '';
+}
+
+function infoBtn(r){
+  if (!r.help && !r.recommend) return '';
+  return '<button class="info" data-help="' + esc(r.key || r.env_name || r.label) + '" title="What is this?">i</button>';
+}
+
+function control(r){
+  var v = currentValue(r);
+  var k = esc(r.key);
+  if (r.readonly) return '<div class="val">' + esc(v) + '</div>';
+  if (r.type === 'bool') {
+    var on = String(v) === 'true';
+    var cl = r.choice_labels || {};
+    return '<div class="seg" data-key="' + k + '">' +
+      '<button data-v="false" class="' + (!on ? 'on' : '') + '">' + esc(cl['false'] || 'Off') + '</button>' +
+      '<button data-v="true" class="' + (on ? 'on' : '') + '">' + esc(cl['true'] || 'On') + '</button></div>';
+  }
+  if (r.choices && r.choices.length) {
+    var o = r.choices.map(function(c){
+      var lab = (r.choice_labels || {})[c] || c;
+      return '<option value="' + esc(c) + '"' + (String(v) === c ? ' selected' : '') + '>' + esc(lab) + '</option>';
+    }).join('');
+    return '<select data-key="' + k + '">' + o + '</select>';
+  }
+  var num = ['int','float','float?'].indexOf(r.type) >= 0;
+  var attrs = num ? ' type="number" step="' + (r.type === 'int' ? '1' : 'any') + '"' +
+      (r.vmin != null ? ' min="' + r.vmin + '"' : '') + (r.vmax != null ? ' max="' + r.vmax + '"' : '')
+      : ' type="text"';
+  var ph = r.optional ? (r.app_value != null ? 'blank = use the app (' + r.app_value + '%)' : 'blank = not set')
+         : (r.default != null ? 'default ' + r.default : '');
+  return '<input' + attrs + ' data-key="' + k + '" value="' + esc(v ?? '') + '" placeholder="' + esc(ph) + '">';
+}
+
+function rowHtml(r){
+  var h = '';
+  if (r.kind === 'info') {
+    return '<div class="row"><div class="lbl">' + esc(r.label) + infoBtn(r) + '</div>' +
+      '<div class="val">' + esc(r.value ?? '—') + '</div></div>';
+  }
+  if (r.show_if && String(currentValue(rowIndex[r.show_if]) ) !== 'true') return '';
+  var envTag = r.env_name ? '<span class="env">' + esc(r.env_name) + '</span>' : '';
+  h += '<div class="row" data-row="' + esc(r.key || r.env_name) + '">';
+  h += '<div class="lbl">' + esc(r.label) + infoBtn(r) + '</div><div class="ctl">';
+  if (r.kind === 'secret') {
+    h += '<div class="ctl-line"><span class="val" style="padding:0">' +
+      (r.set ? (r.shown ? esc(r.shown) : '••••••••') : '<span style="color:var(--accent-red)">not set</span>') +
+      '</span>' + badge(r) + (r.testable ? '<button class="test" disabled title="Live tests arrive in the next build">Test</button>' : '') +
+      '</div>';
+  } else if (r.kind === 'flag') {
+    var yes = r.value === 1 || r.value === true, no = r.value === 0 || r.value === false;
+    h += '<div class="ctl-line"><div class="seg" data-flag="' + esc(r.key) + '">' +
+      '<button class="' + (no ? 'on' : '') + '">No</button><button class="' + (yes ? 'on' : '') + '">Yes</button></div>' +
+      badge(r) + '</div>';
+  } else {
+    h += '<div class="ctl-line">' + control(r) + badge(r) +
+      (isEdited(r) ? '<button class="revert" data-revert="' + esc(r.key) + '">revert</button>' : '') +
+      (r.testable ? '<button class="test" disabled title="Live tests arrive in the next build">Test</button>' : '') + '</div>';
+    if (r.status === 'conflict') {
+      var c = choice[r.key] || 'env';
+      h += '<div class="conflict"><label><input type="radio" name="c_' + esc(r.key) + '" data-choice="' + esc(r.key) +
+        '" value="env"' + (c === 'env' ? ' checked' : '') + '> Keep .env value <code>' + esc(r.env) + '</code></label>' +
+        '<label><input type="radio" name="c_' + esc(r.key) + '" data-choice="' + esc(r.key) + '" value="store"' +
+        (c === 'store' ? ' checked' : '') + '> Keep store value <code>' + esc(r.store) + '</code></label></div>';
+    }
+    if (r.detected != null) h += '<div class="muted">Detected: <b style="color:var(--text-primary)">' +
+      esc(r.detected) + '</b>' + (r.detected_source ? ' (' + esc(r.detected_source) + ')' : '') + '</div>';
+    if (r.effective != null && String(r.effective) !== String(currentValue(r)) && !isEdited(r))
+      h += '<div class="muted">In effect now: ' + esc(r.effective) + '</div>';
+  }
+  (r.hints || []).forEach(function(x){ h += '<div class="hint ' + esc(x.level) + '">' + esc(x.text) + '</div>'; });
+  h += '</div></div>';
+  return h;
+}
+
+function ratePlanHtml(card){
+  var p = card.plan, h = '<div class="muted">Default tier: ' + esc(p.default_tier || '—') +
+    ' · ' + (p.export_capable ? 'export-capable' : 'non-export') +
+    (p.net_metering ? ' · ' + esc(p.net_metering) : '') + ' · imported ' + esc(p.imported_at || '—') + '</div>';
+  var mn = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  p.seasons.forEach(function(s, si){
+    h += '<div class="season"><h4>' + esc(s.name) + ' <span class="muted">' +
+      s.months.map(function(m){ return mn[m]; }).join(', ') + '</span></h4><div class="grid2">';
+    Object.keys(s.tiers).forEach(function(t){
+      var key = 'rate.' + si + '.' + t;
+      var v = key in edits ? edits[key] : s.tiers[t];
+      h += '<div class="tier"><span class="tierchip t-' + esc(t) + '">' + esc(t.replace('_',' ')) + '</span>' +
+        '<span><input type="number" step="0.001" data-rate="' + esc(key) + '" data-orig="' + esc(s.tiers[t]) +
+        '" value="' + esc(v) + '"> ¢</span></div>';
+    });
+    h += '</div><div class="wins">';
+    s.windows.forEach(function(w, wi){
+      var ks = 'win.' + si + '.' + wi + '.start', ke = 'win.' + si + '.' + wi + '.end';
+      h += '<div class="win"><span class="tierchip t-' + esc(w.tier) + '">' + esc(w.tier.replace('_',' ')) + '</span>' +
+        '<input type="time" data-rate="' + ks + '" data-orig="' + esc(w.start_time) + '" value="' + esc(ks in edits ? edits[ks] : w.start_time) + '">' +
+        '<span class="muted">to</span>' +
+        '<input type="time" data-rate="' + ke + '" data-orig="' + esc(w.end_time) + '" value="' + esc(ke in edits ? edits[ke] : w.end_time) + '">' +
+        '<span class="muted">' + esc(daysLabel(w.days)) + '</span></div>';
+    });
+    h += '</div></div>';
+  });
+  h += '<div class="muted" style="margin-top:10px">Prices and times can be changed; adding or removing tiers, windows or seasons waits for the setup wizard.</div>';
+  return h;
+}
+function daysLabel(d){
+  var all = ['mon','tue','wed','thu','fri','sat','sun'];
+  if (!d || d.length === 7) return 'every day';
+  if (d.join() === all.slice(0,5).join()) return 'weekdays';
+  if (d.join() === 'sat,sun') return 'weekends';
+  return d.join(', ');
+}
+
+function summaryHtml(){
+  var conflicts = [], edited = [], unreviewed = [];
+  Object.keys(rowIndex).forEach(function(k){
+    var r = rowIndex[k];
+    if (r.kind === 'setting' && r.status === 'conflict') conflicts.push(r);
+    if (r.kind === 'setting' && isEdited(r)) edited.push(r);
+    if (r.kind === 'flag' && r.value == null) unreviewed.push(r);
+  });
+  var rateEdits = Object.keys(edits).filter(function(k){ return /^(rate|win)\./.test(k); });
+  var s = data.summary, h = '';
+  h += '<div class="card"><div class="card-h"><span class="card-t">Differences between .env and the store</span></div>';
+  h += conflicts.length ? '<ul class="sumlist">' + conflicts.map(function(r){
+      var c = choice[r.key] || 'env';
+      return '<li><b>' + esc(r.label) + '</b><code>' + esc(r.env) + '</code> (.env) vs <code>' + esc(r.store) +
+        '</code> (store) → keeping <b>' + (c === 'env' ? '.env' : 'store') + '</b></li>'; }).join('') + '</ul>'
+    : '<div class="muted">None. The store matches .env for every setting.</div>';
+  h += '</div>';
+  h += '<div class="card"><div class="card-h"><span class="card-t">Your edits</span></div>';
+  h += (edited.length || rateEdits.length) ? '<ul class="sumlist">' + edited.map(function(r){
+      return '<li><b>' + esc(r.label) + '</b><code>' + esc(r.proposed ?? '—') + '</code> → <code>' + esc(edits[r.key] || '(blank)') + '</code></li>'; }).join('') +
+      rateEdits.map(function(k){ return '<li><b>' + esc(k) + '</b> → <code>' + esc(edits[k]) + '</code></li>'; }).join('') + '</ul>'
+    : '<div class="muted">No edits.</div>';
+  h += '</div>';
+  var hints = [];
+  Object.keys(rowIndex).forEach(function(k){ (rowIndex[k].hints || []).forEach(function(x){
+    if (x.level === 'warn') hints.push({label: rowIndex[k].label, text: x.text}); }); });
+  if (hints.length || unreviewed.length) {
+    h += '<div class="card"><div class="card-h"><span class="card-t">Worth a look</span></div><ul class="sumlist">' +
+      hints.map(function(x){ return '<li><b>' + esc(x.label) + '</b>' + esc(x.text) + '</li>'; }).join('') +
+      unreviewed.map(function(r){ return '<li><b>' + esc(r.label) + '</b>needs a yes/no on its array card</li>'; }).join('') +
+      '</ul></div>';
+  }
+  h += '<div class="card"><div class="card-h"><span class="card-t">Replaced or retired .env keys</span></div><ul class="sumlist">';
+  (s.derived_in_env || []).forEach(function(d){
+    h += '<li><code>' + esc(d.env_name) + '=' + esc(d.env) + '</code><span class="muted">now derived (rate plan, arrays or billing settings); ignored after the review</span></li>'; });
+  (s.legacy_aliases_in_env || []).forEach(function(n){
+    h += '<li><code>' + esc(n) + '</code><span class="muted">legacy alias; the array card value wins</span></li>'; });
+  (s.retired_in_env || []).forEach(function(n){
+    h += '<li><code>' + esc(n) + '</code><span class="muted">retired; nothing reads it</span></li>'; });
+  if (!(s.derived_in_env || []).length && !(s.retired_in_env || []).length) h += '<li class="muted">None</li>';
+  h += '</ul><div class="muted" style="margin-top:8px">These can be removed from .env later. Leaving them does no harm.</div></div>';
+  if (recs.length) {
+    h += '<div class="card"><div class="card-h"><span class="card-t">Configuration health</span></div><ul class="sumlist">' +
+      recs.filter(function(r){ return r.severity !== 'ok'; }).map(function(r){
+        return '<li><span class="badge ' + (r.severity === 'conflict' ? 'b-conflict' : r.severity === 'warning' ? 'b-review' : 'b-default') +
+          '">' + esc(r.severity) + '</span><b>' + esc(r.title) + '</b></li>'; }).join('') + '</ul></div>';
+  }
+  h += '<div class="card"><div class="card-h"><span class="card-t">Commit</span></div>' +
+    '<div class="muted" style="font-size:13px;line-height:1.5">' + (PREVIEW
+      ? 'Preview mode. Nothing will be saved and the system keeps running exactly as it is (config source: <b>' + esc(data.authority) + '</b>).'
+      : 'Committing arrives in the next build. For now this page is read-only.') +
+    '</div><div style="margin-top:10px"><button class="btn primary" disabled>Commit and restart</button></div></div>';
+  return h;
+}
+
+function render(){
+  var sc = data.screens[cur];
+  document.getElementById('steps').innerHTML = data.screens.map(function(s, i){
+    var flag = s.cards.some(function(c){ return c.rows.some(function(r){
+      return r.status === 'conflict' || (r.kind === 'flag' && r.value == null) ||
+        (r.hints || []).some(function(x){ return x.level === 'warn'; }); }); });
+    return '<div class="step' + (i === cur ? ' active' : '') + (flag ? ' flag' : '') + '" data-i="' + i + '"><span class="n">' +
+      (i + 1) + '</span>' + esc(s.title) + '<span class="dot"></span></div>';
+  }).join('');
+  var h = '<div class="screen-title">' + esc(sc.title) + '</div><div class="screen-intro">' + esc(sc.intro) + '</div>';
+  if (sc.id === 'summary') h += summaryHtml();
+  sc.cards.forEach(function(c, ci){
+    var coll = c.collapsed && !c._open;
+    h += '<div class="card"><div class="card-h' + (c.collapsed ? ' coll' : '') + '" data-card="' + ci + '"><span class="card-t">' +
+      esc(c.title) + (c.collapsed ? (coll ? ' ▸' : ' ▾') : '') + '</span><span class="card-s">' + esc(c.subtitle || '') + '</span></div>';
+    if (!coll) {
+      if (c.kind === 'rate_plan') h += ratePlanHtml(c);
+      h += c.rows.map(rowHtml).join('');
+    }
+    h += '</div>';
+  });
+  document.getElementById('screen').innerHTML = h;
+  document.getElementById('prev').disabled = cur === 0;
+  var nx = document.getElementById('next');
+  nx.style.visibility = cur === data.screens.length - 1 ? 'hidden' : 'visible';
+  nx.textContent = cur === data.screens.length - 2 ? 'Review summary' : 'Next';
+  var nEdits = Object.keys(rowIndex).filter(function(k){ return isEdited(rowIndex[k]); }).length +
+    Object.keys(edits).filter(function(k){ return /^(rate|win)\./.test(k); }).length;
+  document.getElementById('counts').textContent = 'Step ' + (cur + 1) + ' of ' + data.screens.length +
+    (nEdits ? ' · ' + nEdits + ' edit' + (nEdits > 1 ? 's' : '') : '');
+}
+
+function go(i){ cur = Math.max(0, Math.min(data.screens.length - 1, i)); hidePop(); render(); window.scrollTo(0, 0);
+  try { sessionStorage.setItem('review.step', cur); } catch(e) {} }
+
+function showPop(btn, id){
+  var r = rowIndex[id]; if (!r) { Object.keys(rowIndex).forEach(function(k){ if (rowIndex[k].label === id) r = rowIndex[k]; }); }
+  if (!r) return;
+  var p = document.getElementById('pop');
+  p.innerHTML = '<b>' + esc(r.label) + '</b><div style="margin-top:4px">' + esc(r.help || '') + '</div>' +
+    (r.recommend ? '<div class="rec">Recommendation: ' + esc(r.recommend) + '</div>' : '') +
+    (r.default != null && r.kind === 'setting' ? '<div class="muted" style="margin-top:6px">Default: ' + esc(r.default) + '</div>' : '');
+  p.style.display = 'block';
+  var b = btn.getBoundingClientRect(), w = Math.min(340, window.innerWidth - 24);
+  p.style.maxWidth = w + 'px';
+  var left = Math.min(b.left, window.innerWidth - w - 12);
+  p.style.left = Math.max(12, left) + 'px';
+  var top = b.bottom + 8;
+  if (top + p.offsetHeight > window.innerHeight - 10) top = b.top - p.offsetHeight - 8;
+  p.style.top = Math.max(10, top) + 'px';
+}
+function hidePop(){ document.getElementById('pop').style.display = 'none'; }
+
+document.addEventListener('click', function(e){
+  var t = e.target;
+  if (t.closest('.info')) { e.stopPropagation(); showPop(t.closest('.info'), t.closest('.info').dataset.help); return; }
+  if (!t.closest('.pop')) hidePop();
+  var st = t.closest('.step'); if (st) { go(+st.dataset.i); return; }
+  var ch = t.closest('.card-h.coll'); if (ch) { var c = data.screens[cur].cards[+ch.dataset.card]; c._open = !c._open; render(); return; }
+  var seg = t.closest('.seg[data-key]');
+  if (seg && t.dataset.v != null) { edits[seg.dataset.key] = t.dataset.v; render(); return; }
+  var fl = t.closest('.seg[data-flag]');
+  if (fl && t.tagName === 'BUTTON') { var r = rowIndex[fl.dataset.flag]; r.value = t.textContent === 'Yes' ? 1 : 0;
+    edits[fl.dataset.flag] = String(r.value); render(); return; }
+  if (t.dataset.revert) { delete edits[t.dataset.revert]; render(); return; }
+});
+document.addEventListener('change', function(e){
+  var t = e.target;
+  if (t.dataset.choice) { choice[t.dataset.choice] = t.value; delete edits[t.dataset.choice]; render(); return; }
+  if (t.dataset.key) { edits[t.dataset.key] = t.value; render(); return; }
+  if (t.dataset.rate) { if (String(t.value) === String(t.dataset.orig)) delete edits[t.dataset.rate]; else edits[t.dataset.rate] = t.value; render(); }
+});
+document.getElementById('prev').onclick = function(){ go(cur - 1); };
+document.getElementById('next').onclick = function(){ go(cur + 1); };
+window.addEventListener('scroll', hidePop, {passive: true});
+
+function load(){
+  Promise.all([
+    fetch('/api/v1/review').then(function(r){ return r.json(); }),
+    fetch('/api/v1/settings/recommendations').then(function(r){ return r.json(); }).catch(function(){ return {}; })
+  ]).then(function(res){
+    data = res[0]; recs = (res[1] && res[1].recommendations) || [];
+    if (!data || !data.available) throw new Error((data && data.reason) || 'review unavailable');
+    data.screens.forEach(function(s){ s.cards.forEach(function(c){ c.rows.forEach(function(r){
+      if (r.key) rowIndex[r.key] = r; else if (r.kind === 'secret' || r.kind === 'info') rowIndex[r.env_name || r.label] = r; }); }); });
+    document.getElementById('meta').textContent = 'Config source now: ' + data.authority +
+      (data.synced_at ? ' · store last synced ' + data.synced_at : '') + ' · loaded ' + data.generated_at;
+    var b = document.getElementById('banner');
+    b.style.display = 'block';
+    b.innerHTML = PREVIEW
+      ? '<b>Preview.</b> This is the review every install will go through. Change anything you like to see how it behaves — nothing is saved, and the system keeps running on its current configuration.'
+      : '<b>Read-only for now.</b> Open with <code>?preview=1</code> to try edits. Committing arrives in the next build.';
+    try { var s = +sessionStorage.getItem('review.step'); if (s >= 0 && s < data.screens.length) cur = s; } catch(e) {}
+    render();
+  }).catch(function(err){
+    document.getElementById('screen').innerHTML = '<div class="err">Could not load the review: ' + esc(err.message) + '</div>';
+    document.getElementById('meta').textContent = '';
+  });
+}
+load();
+})();
+</script>
+</body>
+</html>

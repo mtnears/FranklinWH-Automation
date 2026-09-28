@@ -1196,6 +1196,12 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json_response(200, settings_rate_plan_payload())
         elif path == '/api/v1/settings/recommendations':
             self._json_response(200, settings_recommendations_payload())
+        elif path == '/api/v1/review':
+            try:
+                import config_review
+                self._json_response(200, config_review.review_payload())
+            except Exception as e:
+                self._json_response(200, {'available': False, 'reason': str(e)})
         elif path.startswith('/api/data-export/available'):
             self._get_data_export_available()
         elif path.startswith('/api/data-export'):
