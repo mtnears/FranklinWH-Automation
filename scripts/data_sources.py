@@ -24,6 +24,7 @@ Architecture:
 import asyncio
 import time
 import logging
+import settings
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -83,7 +84,7 @@ def preserved_mode_soc(mode: str, sw_status: Optional[dict]) -> tuple:
     env_key = 'RESERVE_SOC_BACKUP' if is_backup else 'RESERVE_SOC_HOME'
     default = config.RESERVE_SOC_BACKUP if is_backup else config.RESERVE_SOC_HOME
 
-    if os.environ.get(env_key, '').strip():
+    if settings.is_set(env_key):
         return int(default), 'env'
 
     field_name = _MODE_RESERVE_FIELD.get(mode)
@@ -688,8 +689,7 @@ class SolarDataSource:
         if solar_arrays:
             # Use first Enphase array found
             for array_id in [a.strip() for a in solar_arrays.split(',') if a.strip()]:
-                import os
-                array_type = os.getenv(f'SOLAR_ARRAY_{array_id.upper()}_TYPE', '')
+                array_type = settings.raw(f'SOLAR_ARRAY_{array_id.upper()}_TYPE', '')
                 if array_type == 'enphase':
                     self.solar_file = config.DATA_DIR / f"solar_{array_id}.json"
                     break

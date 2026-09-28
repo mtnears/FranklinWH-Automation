@@ -25,6 +25,7 @@ import csv
 import json
 import logging
 import os
+import settings
 import signal
 import sys
 import time
@@ -376,8 +377,8 @@ def main():
             host = config.MODBUS_HOST
             port = port or config.MODBUS_PORT
         else:
-            host = os.getenv('MODBUS_HOST', '192.168.5.149')
-            port = port or int(os.getenv('MODBUS_PORT', '502'))
+            host = settings.raw('MODBUS_HOST', '192.168.5.149')
+            port = port or int(settings.raw('MODBUS_PORT', '502'))
 
     if DB_AVAILABLE:
         init_db()

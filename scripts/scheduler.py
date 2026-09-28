@@ -47,6 +47,7 @@ import time
 import subprocess
 import sys
 import os
+import settings
 import json
 import asyncio
 import threading
@@ -257,7 +258,7 @@ def job_solar_arrays():
     if solar_arrays:
         for array_id in [a.strip() for a in solar_arrays.split(',') if a.strip()]:
             array_type_key = f'SOLAR_ARRAY_{array_id.upper()}_TYPE'
-            array_type = os.getenv(array_type_key, 'enphase')
+            array_type = settings.raw(array_type_key, 'enphase')
             if array_type == 'enphase':
                 run_script_with_args(
                     "collect_solar_enphase.py",
@@ -453,6 +454,11 @@ def setup_schedule():
     log("=" * 60)
     log("FranklinWH Automation Scheduler v" + VERSION)
     log("=" * 60)
+    try:
+        for _line in settings.startup_summary():
+            log(_line)
+    except Exception as _e:
+        log(f"Config authority summary unavailable: {_e}")
     
     # Get scheduling config
     buffer_minutes = config.PEAK_TRANSITION_BUFFER_MINUTES if CONFIG_LOADED else 10
@@ -2096,7 +2102,7 @@ class APIHandler(BaseHTTPRequestHandler):
             # Trigger a fresh collection so layout takes effect immediately
             solar_arrays = getattr(config, 'SOLAR_ARRAYS', '') if CONFIG_LOADED else ''
             if solar_arrays and safe_id in solar_arrays:
-                array_type = os.getenv(
+                array_type = settings.raw(
                     f'SOLAR_ARRAY_{safe_id.upper()}_TYPE', 'enphase')
                 if array_type == 'enphase':
                     threading.Thread(

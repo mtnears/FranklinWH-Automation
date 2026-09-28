@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List
+
+import settings
 import json
 
 # Try to load dotenv if available
@@ -57,14 +59,14 @@ VERSION = get_version()
 
 def get_bool(key: str, default: bool = False) -> bool:
     """Parse boolean from environment variable."""
-    value = os.getenv(key, str(default)).lower()
+    value = settings.raw(key, str(default)).lower()
     return value in ('true', '1', 'yes', 'on')
 
 
 def get_int(key: str, default: int) -> int:
     """Parse integer from environment variable."""
     try:
-        return int(os.getenv(key, str(default)))
+        return int(settings.raw(key, str(default)))
     except (ValueError, TypeError):
         return default
 
@@ -72,14 +74,14 @@ def get_int(key: str, default: int) -> int:
 def get_float(key: str, default: float) -> float:
     """Parse float from environment variable."""
     try:
-        return float(os.getenv(key, str(default)))
+        return float(settings.raw(key, str(default)))
     except (ValueError, TypeError):
         return default
 
 
 def get_list(key: str, default: str = '') -> List[str]:
     """Parse comma-separated list from environment variable."""
-    value = os.getenv(key, default)
+    value = settings.raw(key, default)
     if not value:
         return []
     return [item.strip() for item in value.split(',') if item.strip()]
@@ -92,7 +94,7 @@ def get_optional_float(key: str) -> Optional[float]:
     This distinguishes between "disabled" (not set) and "set to 0"
     which is important for thresholds that accept negative values.
     """
-    value = os.getenv(key)
+    value = settings.raw(key)
     if value is None or value.strip() == '':
         return None
     try:
@@ -137,9 +139,9 @@ class Config:
     """
     
     # ===== Required: Franklin WH Credentials =====
-    FRANKLIN_USERNAME: str = field(default_factory=lambda: os.getenv('FRANKLIN_USERNAME', ''))
-    FRANKLIN_PASSWORD: str = field(default_factory=lambda: os.getenv('FRANKLIN_PASSWORD', ''))
-    FRANKLIN_GATEWAY_ID: str = field(default_factory=lambda: os.getenv('FRANKLIN_GATEWAY_ID', ''))
+    FRANKLIN_USERNAME: str = field(default_factory=lambda: settings.raw('FRANKLIN_USERNAME', ''))
+    FRANKLIN_PASSWORD: str = field(default_factory=lambda: settings.raw('FRANKLIN_PASSWORD', ''))
+    FRANKLIN_GATEWAY_ID: str = field(default_factory=lambda: settings.raw('FRANKLIN_GATEWAY_ID', ''))
     
     # ===== Required: Battery Configuration =====
     BATTERY_CAPACITY_KWH: float = field(default_factory=lambda: get_float('BATTERY_CAPACITY_KWH', 30.0))
@@ -152,20 +154,20 @@ class Config:
     WEATHER_ENABLED: bool = field(default_factory=lambda: get_bool('WEATHER_ENABLED', False))
     PVOUTPUT_ENABLED: bool = field(default_factory=lambda: get_bool('PVOUTPUT_ENABLED', False))
     ENPHASE_ENABLED: bool = field(default_factory=lambda: get_bool('ENPHASE_ENABLED', False))
-    SOLAR_ARRAYS: str = field(default_factory=lambda: os.getenv('SOLAR_ARRAYS', ''))
+    SOLAR_ARRAYS: str = field(default_factory=lambda: settings.raw('SOLAR_ARRAYS', ''))
 
     # ===== NEW: Modbus Integration =====
     MODBUS_ENABLED: bool = field(default_factory=lambda: get_bool('MODBUS_ENABLED', False))
-    MODBUS_HOST: str = field(default_factory=lambda: os.getenv('MODBUS_HOST', '192.168.5.149'))
+    MODBUS_HOST: str = field(default_factory=lambda: settings.raw('MODBUS_HOST', '192.168.5.149'))
     MODBUS_PORT: int = field(default_factory=lambda: get_int('MODBUS_PORT', 502))
     MODBUS_TIMEOUT: float = field(default_factory=lambda: get_float('MODBUS_TIMEOUT', 5.0))
     MODBUS_RETRY_ATTEMPTS: int = field(default_factory=lambda: get_int('MODBUS_RETRY_ATTEMPTS', 3))
     
     # ===== NEW: Telemetry Options =====
     TELEMETRY_ENABLED: bool = field(default_factory=lambda: get_bool('TELEMETRY_ENABLED', False))
-    TELEMETRY_ENDPOINT: str = field(default_factory=lambda: os.getenv('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
+    TELEMETRY_ENDPOINT: str = field(default_factory=lambda: settings.raw('TELEMETRY_ENDPOINT', 'https://telemetry.example.com/franklin-automation'))
     TELEMETRY_INTERVAL_HOURS: int = field(default_factory=lambda: get_int('TELEMETRY_INTERVAL_HOURS', 24))
-    ENGINE_VERSION: str = field(default_factory=lambda: os.getenv('ENGINE_VERSION', VERSION))
+    ENGINE_VERSION: str = field(default_factory=lambda: settings.raw('ENGINE_VERSION', VERSION))
     MULTI_METER: bool = field(default_factory=lambda: get_bool('MULTI_METER', False))
     FORECAST_ENABLED: bool = field(default_factory=lambda: get_bool('FORECAST_ENABLED', False))
 
@@ -192,29 +194,29 @@ class Config:
     # Modbus collector owns solar_barn.json (live production) and the portal panel
     # collector writes only the health overlay. Consumed by scheduler setup.
     SOLAREDGE_MODBUS_ENABLED: bool = field(default_factory=lambda: get_bool('SOLAREDGE_MODBUS_ENABLED', False))
-    SOLAREDGE_SITE_ID: str = field(default_factory=lambda: os.getenv('SOLAREDGE_SITE_ID',
-                                   os.getenv('SOLAR_ARRAY_BARN_SITE_ID', '')))
-    SOLAREDGE_USERNAME: str = field(default_factory=lambda: os.getenv('SOLAREDGE_USERNAME', ''))
-    SOLAREDGE_PASSWORD: str = field(default_factory=lambda: os.getenv('SOLAREDGE_PASSWORD', ''))
+    SOLAREDGE_SITE_ID: str = field(default_factory=lambda: settings.raw('SOLAREDGE_SITE_ID',
+                                   settings.raw('SOLAR_ARRAY_BARN_SITE_ID', '')))
+    SOLAREDGE_USERNAME: str = field(default_factory=lambda: settings.raw('SOLAREDGE_USERNAME', ''))
+    SOLAREDGE_PASSWORD: str = field(default_factory=lambda: settings.raw('SOLAREDGE_PASSWORD', ''))
 
     # ===== TOU Settings =====
     PEAK_START_HOUR: int = field(default_factory=lambda: get_int('PEAK_START_HOUR', 17))
     PEAK_END_HOUR: int = field(default_factory=lambda: get_int('PEAK_END_HOUR', 20))
-    PEAK_DAYS: str = field(default_factory=lambda: os.getenv('PEAK_DAYS', 'weekdays'))
+    PEAK_DAYS: str = field(default_factory=lambda: settings.raw('PEAK_DAYS', 'weekdays'))
     
     # Optional second peak period
     PEAK2_START_HOUR: Optional[int] = field(default_factory=lambda: get_int('PEAK2_START_HOUR', 0) or None)
     PEAK2_END_HOUR: Optional[int] = field(default_factory=lambda: get_int('PEAK2_END_HOUR', 0) or None)
-    PEAK2_DAYS: str = field(default_factory=lambda: os.getenv('PEAK2_DAYS', 'weekdays'))
+    PEAK2_DAYS: str = field(default_factory=lambda: settings.raw('PEAK2_DAYS', 'weekdays'))
     
     # ===== Scheduling Settings =====
     # Dynamic polling frequency based on data source and features
     CHECK_INTERVAL_MINUTES: int = 30  # Will be calculated in __post_init__
     PEAK_TRANSITION_BUFFER_MINUTES: int = field(default_factory=lambda: get_int('PEAK_TRANSITION_BUFFER_MINUTES', 10))
-    HOME_MODE: str = field(default_factory=lambda: os.getenv('HOME_MODE', 'tou'))
+    HOME_MODE: str = field(default_factory=lambda: settings.raw('HOME_MODE', 'tou'))
     
     # ===== Dynamic Pricing Settings =====
-    PRICING_PROVIDER: str = field(default_factory=lambda: os.getenv('PRICING_PROVIDER', 'comed'))
+    PRICING_PROVIDER: str = field(default_factory=lambda: settings.raw('PRICING_PROVIDER', 'comed'))
     PRICE_THRESHOLD_CENTS: float = field(default_factory=lambda: get_float('PRICE_THRESHOLD_CENTS', 4.0))
     PRICE_CEILING_CENTS: float = field(default_factory=lambda: get_float('PRICE_CEILING_CENTS', 10.0))
     
@@ -229,9 +231,9 @@ class Config:
     MIN_SOLAR_FOR_WAIT: float = field(default_factory=lambda: get_float('MIN_SOLAR_FOR_WAIT', 0.5))
     
     # ===== Weather Settings =====
-    WEATHER_PROVIDER: str = field(default_factory=lambda: os.getenv('WEATHER_PROVIDER', 'wunderground'))
-    WEATHER_STATION_ID: str = field(default_factory=lambda: os.getenv('WEATHER_STATION_ID', ''))
-    WEATHER_API_KEY: str = field(default_factory=lambda: os.getenv('WEATHER_API_KEY', ''))
+    WEATHER_PROVIDER: str = field(default_factory=lambda: settings.raw('WEATHER_PROVIDER', 'wunderground'))
+    WEATHER_STATION_ID: str = field(default_factory=lambda: settings.raw('WEATHER_STATION_ID', ''))
+    WEATHER_API_KEY: str = field(default_factory=lambda: settings.raw('WEATHER_API_KEY', ''))
     CLOUDY_THRESHOLD_PERCENT: int = field(default_factory=lambda: get_int('CLOUDY_THRESHOLD_PERCENT', 50))
     
     # ===== Solar Forecast Settings (v4.0 forecast-aware charging) =====
@@ -242,16 +244,16 @@ class Config:
     FORECAST_HOUSE_TILT: int = field(default_factory=lambda: get_int('FORECAST_HOUSE_TILT', 22))
     FORECAST_HOUSE_AZIMUTH: int = field(default_factory=lambda: get_int('FORECAST_HOUSE_AZIMUTH', -65))
     FORECAST_HOUSE_KWP: float = field(default_factory=lambda: get_float('FORECAST_HOUSE_KWP', 6.96))
-    FORECAST_SOLAR_API_KEY: str = field(default_factory=lambda: os.getenv('FORECAST_SOLAR_API_KEY', ''))
+    FORECAST_SOLAR_API_KEY: str = field(default_factory=lambda: settings.raw('FORECAST_SOLAR_API_KEY', ''))
     
     # ===== PVOutput Settings =====
-    PVOUTPUT_API_KEY: str = field(default_factory=lambda: os.getenv('PVOUTPUT_API_KEY', ''))
+    PVOUTPUT_API_KEY: str = field(default_factory=lambda: settings.raw('PVOUTPUT_API_KEY', ''))
     PVOUTPUT_SYSTEM_IDS: List[str] = field(default_factory=lambda: get_list('PVOUTPUT_SYSTEM_IDS'))
     
     # ===== Decision Tuning =====
     TARGET_SOC: float = field(default_factory=lambda: get_float('TARGET_SOC', 95.0))
     SAFETY_MARGIN_HOURS: float = field(default_factory=lambda: get_float('SAFETY_MARGIN_HOURS', 0.5))
-    CHARGING_STRATEGY: str = field(default_factory=lambda: os.getenv('CHARGING_STRATEGY', 'balanced'))
+    CHARGING_STRATEGY: str = field(default_factory=lambda: settings.raw('CHARGING_STRATEGY', 'balanced'))
     
     # Reserve SOC for mode switching (passed to franklinwh library)
     # BACKUP reserve: SOC target when in Emergency Backup / grid-charging mode
@@ -260,24 +262,24 @@ class Config:
     RESERVE_SOC_HOME: int = field(default_factory=lambda: get_int('RESERVE_SOC_HOME', 20))
     
     # ===== System Paths =====
-    BASE_DIR: Path = field(default_factory=lambda: Path(os.getenv('BASE_DIR', '/app')))
-    LOG_DIR: Path = field(default_factory=lambda: Path(os.getenv('LOG_DIR', '/app/logs')))
-    DATA_DIR: Path = field(default_factory=lambda: Path(os.getenv('DATA_DIR', '/app/data')))
-    WEB_DIR: Path = field(default_factory=lambda: Path(os.getenv('WEB_DIR', '/app/web')))
+    BASE_DIR: Path = field(default_factory=lambda: Path(settings.raw('BASE_DIR', '/app')))
+    LOG_DIR: Path = field(default_factory=lambda: Path(settings.raw('LOG_DIR', '/app/logs')))
+    DATA_DIR: Path = field(default_factory=lambda: Path(settings.raw('DATA_DIR', '/app/data')))
+    WEB_DIR: Path = field(default_factory=lambda: Path(settings.raw('WEB_DIR', '/app/web')))
     
     # ===== Notifications =====
     EMAIL_ENABLED: bool = field(default_factory=lambda: get_bool('EMAIL_ENABLED', False))
-    SMTP_SERVER: str = field(default_factory=lambda: os.getenv('SMTP_SERVER', 'smtp.gmail.com'))
+    SMTP_SERVER: str = field(default_factory=lambda: settings.raw('SMTP_SERVER', 'smtp.gmail.com'))
     SMTP_PORT: int = field(default_factory=lambda: get_int('SMTP_PORT', 587))
-    SENDER_EMAIL: str = field(default_factory=lambda: os.getenv('SENDER_EMAIL', ''))
-    SENDER_PASSWORD: str = field(default_factory=lambda: os.getenv('SENDER_PASSWORD', ''))
-    RECIPIENT_EMAIL: str = field(default_factory=lambda: os.getenv('RECIPIENT_EMAIL', ''))
+    SENDER_EMAIL: str = field(default_factory=lambda: settings.raw('SENDER_EMAIL', ''))
+    SENDER_PASSWORD: str = field(default_factory=lambda: settings.raw('SENDER_PASSWORD', ''))
+    RECIPIENT_EMAIL: str = field(default_factory=lambda: settings.raw('RECIPIENT_EMAIL', ''))
     
     # ===== Advanced =====
     DEBUG_MODE: bool = field(default_factory=lambda: get_bool('DEBUG_MODE', False))
     API_MAX_RETRIES: int = field(default_factory=lambda: get_int('API_MAX_RETRIES', 5))
     API_RETRY_DELAY: int = field(default_factory=lambda: get_int('API_RETRY_DELAY', 10))
-    TZ: str = field(default_factory=lambda: os.getenv('TZ', 'America/Los_Angeles'))
+    TZ: str = field(default_factory=lambda: settings.raw('TZ', 'America/Los_Angeles'))
     
     def __post_init__(self):
         """Ensure paths are Path objects and create directories if needed."""

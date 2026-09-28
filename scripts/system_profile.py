@@ -18,6 +18,7 @@ Part of the v4.0 Adaptive Decision Engine.
 import csv
 import json
 import os
+import settings
 import logging
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -553,13 +554,13 @@ def discover_capacity(rows: list, config: Optional[dict] = None) -> SystemCapaci
 
     # --- Attempt Modbus auto-discovery ---
     modbus_info = None
-    modbus_host = config.get('modbus_host') or os.environ.get('MODBUS_HOST')
-    modbus_enabled = config.get('modbus_enabled', os.environ.get('MODBUS_ENABLED', 'false').lower() == 'true')
+    modbus_host = config.get('modbus_host') or settings.raw('MODBUS_HOST')
+    modbus_enabled = config.get('modbus_enabled', settings.raw('MODBUS_ENABLED', 'false').lower() == 'true')
 
     if modbus_enabled and modbus_host:
         try:
             from modbus_discovery import discover_from_modbus
-            modbus_port = int(config.get('modbus_port') or os.environ.get('MODBUS_PORT', '502'))
+            modbus_port = int(config.get('modbus_port') or settings.raw('MODBUS_PORT', '502'))
             modbus_info = discover_from_modbus(modbus_host, modbus_port)
             if modbus_info:
                 logger.info(f"Modbus auto-discovery successful: {modbus_info.battery_count} batteries, "
@@ -601,7 +602,7 @@ def discover_capacity(rows: list, config: Optional[dict] = None) -> SystemCapaci
         # Read live reserve from Modbus
         try:
             from modbus_discovery import read_live_from_modbus
-            modbus_port = int(config.get('modbus_port') or os.environ.get('MODBUS_PORT', '502'))
+            modbus_port = int(config.get('modbus_port') or settings.raw('MODBUS_PORT', '502'))
             live = read_live_from_modbus(modbus_host, modbus_port)
             if live:
                 backup_reserve = live.reserve_pct
@@ -832,15 +833,15 @@ if __name__ == '__main__':
 
     # Optional config overrides via environment
     config = {}
-    if os.environ.get('BATTERY_COUNT'):
-        config['battery_count'] = int(os.environ['BATTERY_COUNT'])
+    if settings.raw('BATTERY_COUNT'):
+        config['battery_count'] = int(settings.raw('BATTERY_COUNT'))
     # Note: BATTERY_CAPACITY_KWH is the total system capacity used by the
     # adaptive engine. Per-battery capacity for the profile comes from Modbus
     # auto-discovery (13.6 kWh per aPower) or the DEFAULT_CAPACITY_KWH constant.
     # Don't map BATTERY_CAPACITY_KWH to capacity_per_battery_kwh here — it
     # would override the accurate Modbus value with a rounded total.
-    if os.environ.get('BACKUP_RESERVE_PCT'):
-        config['backup_reserve_pct'] = float(os.environ['BACKUP_RESERVE_PCT'])
+    if settings.raw('BACKUP_RESERVE_PCT'):
+        config['backup_reserve_pct'] = float(settings.raw('BACKUP_RESERVE_PCT'))
 
     profile = build_profile(csv_path=csv_path, config=config, db_path=db_path)
     save_profile(profile, output_path)

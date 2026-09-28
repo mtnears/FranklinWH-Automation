@@ -22,6 +22,7 @@ import argparse
 import json
 import logging
 import os
+import settings
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -96,7 +97,7 @@ def collect_enphase(test_mode=False, force=False):
         log.warning("requests not available, skipping Enphase")
         return []
 
-    ip = os.environ.get('ENPHASE_ENVOY_IP', os.environ.get('SOLAR_ARRAY_HOUSE_IP', ''))
+    ip = settings.raw('ENPHASE_ENVOY_IP', settings.raw('SOLAR_ARRAY_HOUSE_IP', ''))
     if not ip:
         log.info("No Enphase IP configured, skipping")
         return []
@@ -110,8 +111,8 @@ def collect_enphase(test_mode=False, force=False):
     token = token_path.read_text().strip()
 
     devices = []
-    gateway_serial = os.environ.get('ENPHASE_ENVOY_SERIAL',
-                     os.environ.get('SOLAR_ARRAY_HOUSE_SERIAL', ''))
+    gateway_serial = settings.raw('ENPHASE_ENVOY_SERIAL',
+                     settings.raw('SOLAR_ARRAY_HOUSE_SERIAL', ''))
 
     try:
         resp = requests.get(
@@ -188,8 +189,8 @@ def collect_solaredge(test_mode=False, force=False):
     import urllib.parse
     import urllib.error
 
-    site_id = os.environ.get('SOLAREDGE_SITE_ID',
-               os.environ.get('SOLAR_ARRAY_BARN_SITE_ID', '1241660'))
+    site_id = settings.raw('SOLAREDGE_SITE_ID',
+               settings.raw('SOLAR_ARRAY_BARN_SITE_ID', '1241660'))
     api_key = os.environ.get('SOLAREDGE_API_KEY',
                os.environ.get('SOLAR_ARRAY_BARN_API_KEY', ''))
     if not api_key:
@@ -252,8 +253,8 @@ def collect_franklin(test_mode=False, force=False):
 
     try:
         from pymodbus.client import ModbusTcpClient
-        host = os.getenv('MODBUS_HOST', '192.168.4.59')
-        port = int(os.getenv('MODBUS_PORT', '502'))
+        host = settings.raw('MODBUS_HOST', '192.168.4.59')
+        port = int(settings.raw('MODBUS_PORT', '502'))
 
         client = ModbusTcpClient(host, port=port, timeout=5)
         if client.connect():

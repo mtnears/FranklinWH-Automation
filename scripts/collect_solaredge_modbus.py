@@ -47,6 +47,7 @@ import argparse
 import json
 import logging
 import os
+import settings
 import signal
 import sys
 import time
@@ -93,7 +94,7 @@ else:
 # Configuration
 # =============================================================================
 
-SITE_ID = os.getenv('SOLAREDGE_SITE_ID', '1241660')
+SITE_ID = settings.raw('SOLAREDGE_SITE_ID', '1241660')
 
 # Default barn inverters. Each: (name, ip, port, unit, model)
 _DEFAULT_INVERTERS = [
@@ -104,7 +105,7 @@ _DEFAULT_INVERTERS = [
 
 def load_inverters() -> list:
     """Inverter list from SOLAREDGE_MODBUS_INVERTERS env override, else defaults."""
-    raw = os.getenv('SOLAREDGE_MODBUS_INVERTERS', '').strip()
+    raw = settings.raw('SOLAREDGE_MODBUS_INVERTERS', '').strip()
     if not raw:
         return list(_DEFAULT_INVERTERS)
     out = []

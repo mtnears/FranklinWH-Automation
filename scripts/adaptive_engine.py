@@ -30,6 +30,7 @@ Part of the v4.0 Adaptive Decision Engine.
 import json
 import os
 import logging
+import settings
 from config import configure_logging
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -86,8 +87,10 @@ OVERNIGHT_DRAIN_SOLAR_THRESHOLD_KW = 0.3   # kW below which solar is considered 
 # knee wastes time at reduced rate when solar could fill the same space more
 # efficiently during peak production hours.
 # Adjustable: lower if observing curtailment above 80%, raise if peak discharge
-# consistently needs more headroom. Overridden by env TAPER_CEILING_PCT.
-TAPER_CEILING_PCT = float(os.environ.get('TAPER_CEILING_PCT', '85'))
+# consistently needs more headroom. Setting: engine.taper_ceiling_pct (env TAPER_CEILING_PCT).
+def taper_ceiling_pct() -> float:
+    """Runtime read (v4.7): store or env through the settings accessor."""
+    return float(settings.raw('TAPER_CEILING_PCT', '85'))
 
 # Pre-peak one-way gate — once within this many hours of peak, if the engine
 # has already decided SOC is adequate and moved to TOU/SC, don't flip back to
@@ -142,7 +145,9 @@ CT_SC_COMMIT_MARGIN_PCT = 3.0
 # threshold. Higher = more conservative (favors TOU, more peak headroom).
 # Lower = more aggressive (favors SC, accepts risk of running out late
 # peak). 2.0 kWh ≈ 7% on a 27 kWh system.
-P45_SAFETY_MARGIN_KWH = float(os.environ.get('P45_SAFETY_MARGIN_KWH', '2.0'))
+def p45_safety_margin_kwh() -> float:
+    """Runtime read (v4.7): store or env through the settings accessor."""
+    return float(settings.raw('P45_SAFETY_MARGIN_KWH', '2.0'))
 
 # Minimum forecast solar surplus (kWh) before target tracking engages.
 # Below this, the system just parks in TOU and lets solar/grid handle it.
@@ -1570,14 +1575,15 @@ class AdaptiveEngine:
         # Forecast peak demand and decide whether battery can afford to
         # discharge through this partial-peak window while still covering peak.
         peak_demand_kwh = self._forecast_peak_demand(state)
-        threshold = peak_demand_kwh + P45_SAFETY_MARGIN_KWH
+        p45_margin = p45_safety_margin_kwh()
+        threshold = peak_demand_kwh + p45_margin
         # Energy EB bought today is earmarked for peak — it can't count toward
         # a pre-peak discharge surplus (buying at partial-peak then spending at
         # partial-peak is a pure round-trip loss).
         eb_kwh = self._eb_charged_kwh_today(state, battery_kwh)
         spendable_kwh = max(0.0, available_kwh - eb_kwh)
         metrics['p45_peak_demand_kwh'] = round(peak_demand_kwh, 1)
-        metrics['p45_safety_margin_kwh'] = round(P45_SAFETY_MARGIN_KWH, 1)
+        metrics['p45_safety_margin_kwh'] = round(p45_margin, 1)
         metrics['p45_threshold_kwh'] = round(threshold, 1)
         metrics['p45_eb_earmarked_kwh'] = round(eb_kwh, 1)
 
@@ -1585,7 +1591,7 @@ class AdaptiveEngine:
             return self._decide(
                 state, "self_consumption",
                 f"Partial-peak (pre-peak): {spendable_kwh:.1f}kWh available ≥ "
-                f"{peak_demand_kwh:.1f}kWh peak need + {P45_SAFETY_MARGIN_KWH:.1f}kWh margin — "
+                f"{peak_demand_kwh:.1f}kWh peak need + {p45_margin:.1f}kWh margin — "
                 f"discharging through",
                 confidence=0.85, priority=4,
                 action="switch_to_self_consumption", metrics=metrics,
@@ -1595,7 +1601,7 @@ class AdaptiveEngine:
         return self._decide(
             state, "time_of_use",
             f"Partial-peak (pre-peak): {spendable_kwh:.1f}kWh available{eb_note} < "
-            f"{peak_demand_kwh:.1f}kWh peak need + {P45_SAFETY_MARGIN_KWH:.1f}kWh margin — "
+            f"{peak_demand_kwh:.1f}kWh peak need + {p45_margin:.1f}kWh margin — "
             f"TOU to preserve battery for peak",
             confidence=0.85, priority=4,
             action="switch_to_tou", metrics=metrics,
@@ -1739,7 +1745,7 @@ class AdaptiveEngine:
         gap_kwh = plan.gap_kwh
         ceiling_pct = plan.morning_ceiling_pct
 
-        taper_cap = TAPER_CEILING_PCT
+        taper_cap = taper_ceiling_pct()
         # The taper ceiling bounds the GRID leg for every install. Export
         # systems used to grid-charge to the full plan ceiling, then export
         # the solar that grid energy displaced — a loss under NEM 3 export
@@ -1952,8 +1958,9 @@ class AdaptiveEngine:
         current_kwh = cap.kwh_at_soc(state.soc_percent)
         target_soc = self.target_soc
 
-        if target_soc > TAPER_CEILING_PCT:
-            target_soc = TAPER_CEILING_PCT
+        taper_cap = taper_ceiling_pct()
+        if target_soc > taper_cap:
+            target_soc = taper_cap
 
         target_kwh = cap.kwh_at_soc(target_soc)
 

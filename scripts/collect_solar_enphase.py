@@ -32,6 +32,7 @@ import argparse
 import json
 import logging
 import os
+import settings
 import signal
 import sys
 import time
@@ -114,29 +115,29 @@ def load_config(array_id: str = None) -> dict:
         prefix = f"SOLAR_ARRAY_{array_id.upper()}_"
         return {
             'array_id': array_id.lower(),
-            'name': os.getenv(f'{prefix}NAME', array_id.title()),
-            'type': os.getenv(f'{prefix}TYPE', 'enphase'),
-            'ip': os.getenv(f'{prefix}IP', ''),
-            'serial': os.getenv(f'{prefix}SERIAL', ''),
-            'email': os.getenv(f'{prefix}EMAIL', ''),
-            'password': os.getenv(f'{prefix}PASSWORD', ''),
-            'model': os.getenv(f'{prefix}MODEL', 'IQ8'),
-            'token_file': os.getenv(f'{prefix}TOKEN_FILE',
+            'name': settings.raw(f'{prefix}NAME', array_id.title()),
+            'type': settings.raw(f'{prefix}TYPE', 'enphase'),
+            'ip': settings.raw(f'{prefix}IP', ''),
+            'serial': settings.raw(f'{prefix}SERIAL', ''),
+            'email': settings.raw(f'{prefix}EMAIL', ''),
+            'password': settings.raw(f'{prefix}PASSWORD', ''),
+            'model': settings.raw(f'{prefix}MODEL', 'IQ8'),
+            'token_file': settings.raw(f'{prefix}TOKEN_FILE',
                                     f'/app/data/enphase_token_{array_id.lower()}.txt'),
-            'layout_file': os.getenv(f'{prefix}LAYOUT_FILE',
+            'layout_file': settings.raw(f'{prefix}LAYOUT_FILE',
                                      str(DATA_DIR / f'enphase_array_layout_{array_id.lower()}.json')),
         }
     return {
         'array_id': 'house',
-        'name': os.getenv('ENPHASE_ARRAY_NAME', 'Solar Array'),
+        'name': settings.raw('ENPHASE_ARRAY_NAME', 'Solar Array'),
         'type': 'enphase',
-        'ip': os.getenv('ENPHASE_ENVOY_IP', os.getenv('ENPHASE_IP', '')),
-        'serial': os.getenv('ENPHASE_ENVOY_SERIAL', ''),
-        'email': os.getenv('ENPHASE_EMAIL', ''),
-        'password': os.getenv('ENPHASE_PASSWORD', ''),
-        'model': os.getenv('ENPHASE_MODEL', 'IQ8'),
-        'token_file': os.getenv('ENPHASE_TOKEN_FILE', '/app/data/enphase_token.txt'),
-        'layout_file': os.getenv('ENPHASE_ARRAY_LAYOUT',
+        'ip': settings.raw('ENPHASE_ENVOY_IP', settings.raw('ENPHASE_IP', '')),
+        'serial': settings.raw('ENPHASE_ENVOY_SERIAL', ''),
+        'email': settings.raw('ENPHASE_EMAIL', ''),
+        'password': settings.raw('ENPHASE_PASSWORD', ''),
+        'model': settings.raw('ENPHASE_MODEL', 'IQ8'),
+        'token_file': settings.raw('ENPHASE_TOKEN_FILE', '/app/data/enphase_token.txt'),
+        'layout_file': settings.raw('ENPHASE_ARRAY_LAYOUT',
                                  str(DATA_DIR / 'enphase_array_layout.json')),
     }
 

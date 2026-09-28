@@ -43,6 +43,7 @@ Environment Variables:
 """
 
 import os
+import settings
 import sys
 import json
 import time
@@ -151,13 +152,13 @@ def get_config():
     """Get configuration from environment."""
     load_env()
     return {
-        "site_id": os.environ.get("SOLAREDGE_SITE_ID",
-                   os.environ.get("SOLAR_ARRAY_BARN_SITE_ID", "1241660")),
+        "site_id": settings.raw("SOLAREDGE_SITE_ID",
+                   settings.raw("SOLAR_ARRAY_BARN_SITE_ID", "1241660")),
         "username": os.environ.get("SOLAREDGE_USERNAME", ""),
         "password": os.environ.get("SOLAREDGE_PASSWORD", ""),
         "api_key": os.environ.get("SOLAREDGE_API_KEY",
                    os.environ.get("SOLAR_ARRAY_BARN_API_KEY", "")),
-        "modbus_enabled": os.environ.get("SOLAREDGE_MODBUS_ENABLED", "").strip().lower()
+        "modbus_enabled": settings.raw("SOLAREDGE_MODBUS_ENABLED", "").strip().lower()
                           in ("1", "true", "yes", "on"),
     }
 

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import logging
 import os
+import settings
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,7 +36,7 @@ try:
     SYSTEM_IDS = config.PVOUTPUT_SYSTEM_IDS
 except ImportError:
     API_KEY = os.getenv('PVOUTPUT_API_KEY', '')
-    SYSTEM_IDS = [s.strip() for s in os.getenv('PVOUTPUT_SYSTEM_IDS', '').split(',') if s.strip()]
+    SYSTEM_IDS = [s.strip() for s in settings.raw('PVOUTPUT_SYSTEM_IDS', '').split(',') if s.strip()]
 
 try:
     from db import store, init_db

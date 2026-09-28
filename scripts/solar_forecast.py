@@ -40,6 +40,7 @@ Part of the v4.0 Adaptive Decision Engine.
 import json
 import logging
 import os
+import settings
 import math
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field, asdict
@@ -207,14 +208,14 @@ class MorningPlan:
 
 def get_default_arrays() -> List[ArrayConfig]:
     """Build array config from environment or defaults. House array only."""
-    lat = float(os.getenv('FORECAST_LATITUDE', str(DEFAULT_LATITUDE)))
-    lon = float(os.getenv('FORECAST_LONGITUDE', str(DEFAULT_LONGITUDE)))
+    lat = float(settings.raw('FORECAST_LATITUDE', str(DEFAULT_LATITUDE)))
+    lon = float(settings.raw('FORECAST_LONGITUDE', str(DEFAULT_LONGITUDE)))
     return [ArrayConfig(
         name='house',
         latitude=lat, longitude=lon,
-        declination=int(os.getenv('FORECAST_HOUSE_TILT', str(HOUSE_ARRAY_TILT))),
-        azimuth=int(os.getenv('FORECAST_HOUSE_AZIMUTH', str(HOUSE_ARRAY_AZIMUTH))),
-        kwp=float(os.getenv('FORECAST_HOUSE_KWP', str(HOUSE_ARRAY_KWP))),
+        declination=int(settings.raw('FORECAST_HOUSE_TILT', str(HOUSE_ARRAY_TILT))),
+        azimuth=int(settings.raw('FORECAST_HOUSE_AZIMUTH', str(HOUSE_ARRAY_AZIMUTH))),
+        kwp=float(settings.raw('FORECAST_HOUSE_KWP', str(HOUSE_ARRAY_KWP))),
         feeds_battery=True,
     )]
 
@@ -363,7 +364,7 @@ class WeatherCalibration:
                  wu_station_id: str = None, wu_api_key: str = None,
                  db_module=None):
         self._db = db_module                        # db.py module (required source)
-        self.wu_station_id = wu_station_id or os.getenv('WEATHER_STATION_ID', '')
+        self.wu_station_id = wu_station_id or settings.raw('WEATHER_STATION_ID', '')
         self.wu_api_key = wu_api_key or os.getenv('WEATHER_API_KEY', '')
         self.house_kwp = house_kwp
         self._weather: Dict[str, dict] = {}

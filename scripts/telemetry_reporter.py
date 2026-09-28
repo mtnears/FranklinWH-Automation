@@ -38,6 +38,7 @@ Consent:
 import json
 import logging
 import os
+import settings
 import platform
 import sys
 import uuid
@@ -88,7 +89,7 @@ def get_consent_status() -> Dict[str, Any]:
       install_uuid: str | None
     """
     # 1. .env override always wins
-    env_val = os.getenv('TELEMETRY_ENABLED', '').strip().lower()
+    env_val = settings.raw('TELEMETRY_ENABLED', '').strip().lower()
     if env_val in ('true', '1', 'yes'):
         return {
             'status': 'env_override',
@@ -445,7 +446,7 @@ def _build_hardware_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
             total_kw = 0
             for arr_id in arrays:
                 cap_key = f'SOLAR_ARRAY_{arr_id.upper()}_CAPACITY_KW'
-                cap = float(os.getenv(cap_key, 0))
+                cap = float(settings.raw(cap_key, 0))
                 total_kw += cap
             if total_kw > 0:
                 info['solar_capacity_kw'] = round(total_kw, 2)
@@ -495,8 +496,8 @@ def _build_config_flags() -> Dict[str, Any]:
         flags['modbus_enabled'] = getattr(config, 'MODBUS_ENABLED', False)
         flags['emergency_prep_mode'] = getattr(config, 'EMERGENCY_PREP_MODE', False)
         flags['forecast_solar_enabled'] = getattr(config, 'FORECAST_ENABLED', False)
-        flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(os.getenv('METER2_ACCOUNT', ''))
-        flags['care_rate'] = getattr(config, 'CARE_RATE', False) or os.getenv('CARE_RATE', '').lower() in ('true', '1', 'yes')
+        flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(settings.raw('METER2_ACCOUNT', ''))
+        flags['care_rate'] = getattr(config, 'CARE_RATE', False) or settings.raw('CARE_RATE', '').lower() in ('true', '1', 'yes')
         flags['solar_export'] = getattr(config, 'SOLAR_EXPORT', False)
 
         # Dynamic pricing provider
@@ -517,7 +518,7 @@ def _build_config_flags() -> Dict[str, Any]:
         solar_arrays = getattr(config, 'SOLAR_ARRAYS', '')
         if solar_arrays:
             for arr_id in [a.strip() for a in solar_arrays.split(',') if a.strip()]:
-                arr_type = os.getenv(f'SOLAR_ARRAY_{arr_id.upper()}_TYPE', '')
+                arr_type = settings.raw(f'SOLAR_ARRAY_{arr_id.upper()}_TYPE', '')
                 if arr_type == 'enphase':
                     flags['enphase_enabled'] = True
                 elif arr_type == 'solaredge':
@@ -565,7 +566,7 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
       6. null
     """
     # Priority 1: .env override
-    user_region = os.getenv('TELEMETRY_REGION', None)
+    user_region = settings.raw('TELEMETRY_REGION', None)
 
     # Priority 2: consent file (dashboard country picker)
     consent_region = None
@@ -650,7 +651,7 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
             end = getattr(config, 'PEAK_END_HOUR', 0)
             info['peak_window_hours'] = (end - start) if end > start else (24 - start + end)
 
-        nem = os.getenv('NEM_VERSION', None)
+        nem = settings.raw('NEM_VERSION', None)
         if nem:
             info['nem_version'] = nem.lower()
     except ImportError:

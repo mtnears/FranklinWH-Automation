@@ -12,10 +12,10 @@ those remain authoritative until the Phase 2 consumer cutover):
 
   1. Creates the v4.6 config tables (app_config, solar_arrays, rate_plans,
      rate_seasons, rate_tiers, rate_windows, rate_holidays, app_state).
-  2. Maps every .env setting EXCEPT the 3 Franklin credentials into app_config,
-     recording whether each value came from the env ('env') or fell back to
-     the code default ('default') — the settings page uses this to flag
-     unreviewed defaults. Secrets are base64-OBSCURED (not encrypted).
+  2. Maps every .env SETTING (per the v4.7 settings registry) into app_config.
+     Secrets and infra never leave .env; unset keys get no row; retired keys
+     are not migrated. CARE_RATE/NEM_VERSION import as billing.discount_program
+     / billing.export_compensation.
   3. Builds solar_arrays rows from SOLAR_ARRAYS / SOLAR_ARRAY_<NAME>_* vars.
      --battery-array marks which array(s) physically charge the Franklin.
   4. Imports rate_schedule.json into the rate tables. Rejects the legacy
@@ -50,217 +50,19 @@ logger = logging.getLogger('migrate_v46')
 
 SCHEMA_VERSION = '4.6.0-phase1'
 
-# Env vars that NEVER migrate into the DB
-EXCLUDED_ENV = {
-    'FRANKLIN_USERNAME', 'FRANKLIN_PASSWORD', 'FRANKLIN_GATEWAY_ID',  # the 3 credentials — stay in .env
-    'BASE_DIR', 'LOG_DIR', 'DATA_DIR', 'WEB_DIR',                     # deployment topology — can't live in the DB they locate
-    'ENGINE_VERSION',                                                  # derived from VERSION file at runtime
-    'EMERGENCY_PREP_MODE',                                             # confirmed dead — intentionally dropped
-}
-
-# =============================================================================
-# .env -> app_config mapping
-# (env_var, key, type, category, default, is_secret, description)
-# Defaults mirror config.py except where v4.6 decisions reconcile them
-# (battery.count -> 1, engine.taper_ceiling_pct -> 85).
-# =============================================================================
-
-MAPPINGS = [
-    # --- battery ---
-    ('BATTERY_CAPACITY_KWH', 'battery.capacity_kwh', 'float', 'battery', 30.0, 0,
-     'Total usable battery capacity in kWh, all aPower units combined'),
-    ('CHARGE_RATE_PER_HOUR', 'battery.charge_rate_per_hour', 'float', 'battery', 32.0, 0,
-     'Battery charge rate in percent SOC per hour'),
-    ('BATTERY_COUNT', 'battery.count', 'int', 'battery', 1, 0,
-     'Number of aPower battery units'),
-    ('BACKUP_RESERVE_PCT', 'battery.backup_reserve_pct', 'float', 'battery', 20.0, 0,
-     'Minimum SOC reserved for outage backup'),
-    ('RESERVE_SOC_BACKUP', 'battery.reserve_soc_backup', 'int', 'battery', 100, 0,
-     'SOC target passed to franklinwh library in Emergency Backup mode'),
-    ('RESERVE_SOC_HOME', 'battery.reserve_soc_home', 'int', 'battery', 20, 0,
-     'Minimum SOC passed to franklinwh library in TOU/Self-Consumption mode'),
-
-    # --- features ---
-    ('SOLAR_ENABLED', 'features.solar', 'bool', 'features', True, 0,
-     'Solar-aware decision logic enabled'),
-    ('TOU_ENABLED', 'features.tou', 'bool', 'features', True, 0,
-     'Time-of-use rate optimization enabled'),
-    ('DYNAMIC_PRICING_ENABLED', 'features.dynamic_pricing', 'bool', 'features', False, 0,
-     'Real-time dynamic pricing (e.g. ComEd hourly) enabled'),
-    ('WEATHER_ENABLED', 'features.weather', 'bool', 'features', False, 0,
-     'Local weather station collection enabled'),
-    ('PVOUTPUT_ENABLED', 'features.pvoutput', 'bool', 'features', False, 0,
-     'PVOutput.org daily uploads enabled'),
-    ('ENPHASE_ENABLED', 'features.enphase_legacy', 'bool', 'features', False, 0,
-     'Legacy single-array Enphase flag (superseded by solar_arrays table)'),
-    ('ADAPTIVE_ENGINE_ENABLED', 'features.adaptive_engine', 'bool', 'features', False, 0,
-     'V4.0 adaptive decision engine (falls back to v3.5 logic on error)'),
-    ('SOLAREDGE_PANEL_MONITORING', 'features.solaredge_panel_monitoring', 'bool', 'features', False, 0,
-     'SolarEdge portal per-optimizer scraping enabled'),
-    ('FORECAST_ENABLED', 'features.forecast', 'bool', 'features', False, 0,
-     'Weather-aware solar forecasting enabled'),
-
-    # --- modbus ---
-    ('MODBUS_ENABLED', 'modbus.enabled', 'bool', 'modbus', False, 0,
-     'Local Modbus TCP polling of the aGate (authoritative data source)'),
-    ('MODBUS_HOST', 'modbus.host', 'str', 'modbus', '192.168.5.149', 0,
-     'aGate Modbus TCP host'),
-    ('MODBUS_PORT', 'modbus.port', 'int', 'modbus', 502, 0,
-     'aGate Modbus TCP port'),
-    ('MODBUS_TIMEOUT', 'modbus.timeout', 'float', 'modbus', 5.0, 0,
-     'Modbus request timeout in seconds'),
-    ('MODBUS_RETRY_ATTEMPTS', 'modbus.retry_attempts', 'int', 'modbus', 3, 0,
-     'Modbus retry attempts before giving up a cycle'),
-
-    # --- telemetry ---
-    ('TELEMETRY_ENABLED', 'telemetry.enabled', 'bool', 'telemetry', False, 0,
-     'Anonymous opt-in usage telemetry'),
-    ('TELEMETRY_ENDPOINT', 'telemetry.endpoint', 'str', 'telemetry',
-     'https://telemetry.example.com/franklin-automation', 0,
-     'Telemetry submission endpoint'),
-    ('TELEMETRY_INTERVAL_HOURS', 'telemetry.interval_hours', 'int', 'telemetry', 24, 0,
-     'Hours between telemetry submissions'),
-    ('TELEMETRY_REGION', 'telemetry.region', 'str', 'telemetry', '', 0,
-     'Coarse region code included in telemetry'),
-
-    # --- solar (battery-system level) ---
-    ('SOLAR_EXPORT', 'solar.export', 'bool', 'solar', False, 0,
-     'Charging STRATEGY flag, not capability: false = self-consumption '
-     '(continuous-target runs, grid charge capped at taper ceiling); '
-     'true = export-friendly (CT skipped, surplus exports for credit)'),
-    ('SOLAR_CAPACITY_KW', 'solar.capacity_kw', 'float', 'solar', 0.0, 0,
-     'Capacity (kW) of the battery-connected solar array ONLY — exclude '
-     'separately-metered arrays that cannot charge the battery'),
-    ('MIN_SOLAR_FOR_WAIT', 'solar.min_for_wait', 'float', 'solar', 0.5, 0,
-     'Minimum solar kW to consider production active'),
-    ('NEM_VERSION', 'solar.nem_version', 'str', 'solar', '', 0,
-     'Net metering version (nem1/nem2/nem3) — drives export economics'),
-
-    # --- rates / billing ---
-    ('CARE_RATE', 'rates.care_active', 'bool', 'rates', False, 0,
-     'CARE discount active on the battery-system meter'),
-    ('MULTI_METER', 'billing.multi_meter', 'bool', 'billing', False, 0,
-     'Multiple utility meters aggregate-billed (e.g. separate solar meter)'),
-
-    # --- tou (LEGACY — engine still reads these in v4.5.x; Phase 2 repoints
-    #     the engine at the rate plan windows and drains these. See issue #26.) ---
-    ('PEAK_START_HOUR', 'tou.peak_start_hour', 'int', 'tou_legacy', 17, 0,
-     'LEGACY engine peak start hour — superseded by rate plan windows after '
-     'Phase 2 repoint (#26)'),
-    ('PEAK_END_HOUR', 'tou.peak_end_hour', 'int', 'tou_legacy', 20, 0,
-     'LEGACY engine peak end hour — superseded by rate plan windows after '
-     'Phase 2 repoint (#26)'),
-    ('PEAK_DAYS', 'tou.peak_days', 'str', 'tou_legacy', 'weekdays', 0,
-     'LEGACY peak days — superseded by rate plan windows'),
-    ('PEAK2_START_HOUR', 'tou.peak2_start_hour', 'int', 'tou_legacy', None, 0,
-     'LEGACY optional second peak start hour'),
-    ('PEAK2_END_HOUR', 'tou.peak2_end_hour', 'int', 'tou_legacy', None, 0,
-     'LEGACY optional second peak end hour'),
-    ('PEAK2_DAYS', 'tou.peak2_days', 'str', 'tou_legacy', None, 0,
-     'LEGACY optional second peak days'),
-
-    # --- scheduling ---
-    ('CHECK_INTERVAL_MINUTES', 'scheduling.check_interval_minutes', 'int', 'scheduling', 0, 0,
-     'Polling interval override in minutes; 0 = auto-calculated from features'),
-    ('PEAK_TRANSITION_BUFFER_MINUTES', 'scheduling.peak_transition_buffer_minutes', 'int',
-     'scheduling', 10, 0, 'Minutes of buffer before/after peak transitions'),
-    ('HOME_MODE', 'scheduling.home_mode', 'str', 'scheduling', 'tou', 0,
-     "Default home mode: 'tou' or 'self_consumption'"),
-
-    # --- pricing (dynamic) ---
-    ('PRICING_PROVIDER', 'pricing.provider', 'str', 'pricing', 'comed', 0,
-     'Dynamic pricing provider'),
-    ('PRICE_THRESHOLD_CENTS', 'pricing.threshold_cents', 'float', 'pricing', 4.0, 0,
-     'Grid charge threshold in cents/kWh'),
-    ('PRICE_CEILING_CENTS', 'pricing.ceiling_cents', 'float', 'pricing', 10.0, 0,
-     'Price ceiling in cents/kWh'),
-    ('SOLAR_OVERRIDE_PRICE_CENTS', 'pricing.solar_override_cents', 'float', 'pricing', None, 0,
-     'Grid price at/below which to charge even with solar producing; unset = disabled'),
-
-    # --- weather ---
-    ('WEATHER_PROVIDER', 'weather.provider', 'str', 'weather', 'wunderground', 0,
-     'Weather data provider'),
-    ('WEATHER_STATION_ID', 'weather.station_id', 'str', 'weather', '', 0,
-     'Local weather station ID'),
-    ('WEATHER_API_KEY', 'weather.api_key', 'str', 'weather', '', 1,
-     'Weather provider API key'),
-    ('CLOUDY_THRESHOLD_PERCENT', 'weather.cloudy_threshold_percent', 'int', 'weather', 50, 0,
-     'Cloud cover percent above which a day is treated as cloudy'),
-
-    # --- forecast (battery-connected array physics) ---
-    ('FORECAST_LATITUDE', 'forecast.latitude', 'float', 'forecast', 38.91, 0,
-     'Site latitude for solar forecasting'),
-    ('FORECAST_LONGITUDE', 'forecast.longitude', 'float', 'forecast', -120.84, 0,
-     'Site longitude for solar forecasting'),
-    ('FORECAST_HOUSE_TILT', 'forecast.house_tilt', 'int', 'forecast', 22, 0,
-     'Battery-connected array tilt in degrees (0=flat)'),
-    ('FORECAST_HOUSE_AZIMUTH', 'forecast.house_azimuth', 'int', 'forecast', -65, 0,
-     'Battery-connected array azimuth (0=south, -90=east, 90=west)'),
-    ('FORECAST_HOUSE_KWP', 'forecast.house_kwp', 'float', 'forecast', 6.96, 0,
-     'Battery-connected array DC nameplate in kWp'),
-    ('FORECAST_SOLAR_API_KEY', 'forecast.solar_api_key', 'str', 'forecast', '', 1,
-     'Forecast.Solar API key (optional)'),
-
-    # --- pvoutput ---
-    ('PVOUTPUT_API_KEY', 'pvoutput.api_key', 'str', 'pvoutput', '', 1,
-     'PVOutput.org API key'),
-    ('PVOUTPUT_SYSTEM_IDS', 'pvoutput.system_ids', 'json', 'pvoutput', [], 0,
-     'PVOutput system IDs, one per array'),
-
-    # --- solaredge portal scraper ---
-    ('SOLAREDGE_SITE_ID', 'solaredge.site_id', 'str', 'solaredge', '', 0,
-     'SolarEdge portal site ID'),
-    ('SOLAREDGE_USERNAME', 'solaredge.username', 'str', 'solaredge', '', 0,
-     'SolarEdge portal login username'),
-    ('SOLAREDGE_PASSWORD', 'solaredge.password', 'str', 'solaredge', '', 1,
-     'SolarEdge portal login password'),
-
-    # --- engine tuning ---
-    ('TARGET_SOC', 'engine.target_soc', 'float', 'engine', 95.0, 0,
-     'Configured SOC target (solar-fed ceiling); grid charging stops at the '
-     'taper ceiling'),
-    ('SAFETY_MARGIN_HOURS', 'engine.safety_margin_hours', 'float', 'engine', 0.5, 0,
-     'Extra lead time (hours) for Emergency Backup grid charging before peak; higher starts EB earlier'),
-    ('CHARGING_STRATEGY', 'engine.charging_strategy', 'str', 'engine', 'balanced', 0,
-     'Charging strategy profile'),
-    ('TAPER_CEILING_PCT', 'engine.taper_ceiling_pct', 'float', 'engine', 85.0, 0,
-     'Maximum SOC the engine grid-charges to before letting solar finish; '
-     'above this, charge rate tapers and surplus solar is wasted on non-export'),
-    ('P45_SAFETY_MARGIN_KWH', 'engine.p45_safety_margin_kwh', 'float', 'engine', 2.0, 0,
-     'P4.5 partial-peak protection safety margin in kWh'),
-    ('DECISION_INTERVAL_MINUTES', 'engine.decision_interval_minutes', 'int', 'engine', 15, 0,
-     'Adaptive engine decision interval in minutes'),
-
-    # --- notifications ---
-    ('EMAIL_ENABLED', 'notify.email_enabled', 'bool', 'notify', False, 0,
-     'Email notifications enabled'),
-    ('SMTP_SERVER', 'notify.smtp_server', 'str', 'notify', 'smtp.gmail.com', 0,
-     'SMTP server'),
-    ('SMTP_PORT', 'notify.smtp_port', 'int', 'notify', 587, 0,
-     'SMTP port'),
-    ('SENDER_EMAIL', 'notify.sender_email', 'str', 'notify', '', 0,
-     'Notification sender address'),
-    ('SENDER_PASSWORD', 'notify.sender_password', 'str', 'notify', '', 1,
-     'SMTP app password'),
-    ('RECIPIENT_EMAIL', 'notify.recipient_email', 'str', 'notify', '', 0,
-     'Notification recipient address'),
-
-    # --- system ---
-    ('DEBUG_MODE', 'system.debug_mode', 'bool', 'system', False, 0,
-     'Verbose debug logging'),
-    ('API_MAX_RETRIES', 'system.api_max_retries', 'int', 'system', 5, 0,
-     'Cloud API max retries'),
-    ('API_RETRY_DELAY', 'system.api_retry_delay', 'int', 'system', 10, 0,
-     'Cloud API retry delay in seconds'),
-    ('TZ', 'system.tz', 'str', 'system', 'America/Los_Angeles', 0,
-     'System timezone'),
-    ('DASHBOARD_PORT', 'system.dashboard_port', 'int', 'system', 8100, 0,
-     'Dashboard HTTP port'),
-]
+# v4.7: the key set, types, classes and import conversions come from the
+# settings registry (settings.py). Only setting/detected keys are written.
+# Secrets and infra stay in .env and are never copied into the store;
+# retired keys are no longer migrated (existing rows are left alone and
+# ignored by the accessor). Unset keys get no row, so an install on the
+# store reads the same code defaults it read from .env.
+import settings as _settings
 
 # Per-array env keys lifted into dedicated columns (rest -> config_json)
 ARRAY_COLUMN_KEYS = {'NAME': 'name', 'TYPE': 'array_type', 'CAPACITY_KW': 'capacity_kw'}
-ARRAY_SECRET_KEYS = {'password', 'api_key'}
+# Per-array fields that stay in .env (secrets + infra) — never copied
+ARRAY_ENV_ONLY_KEYS = {k.lower() for k, (cls, _, _) in _settings.ARRAY_FIELDS.items()
+                       if cls not in _settings.STORE_CLASSES}
 
 
 # =============================================================================
@@ -314,21 +116,11 @@ def load_env(explicit_path: str = None):
 # =============================================================================
 
 def build_config_plan(env: dict) -> list:
-    """[(key, value, type, category, secret, source, description)] for app_config."""
+    """[(key, value, type, category, secret, source, description)] for app_config.
+    Registry-driven (settings.store_plan_from_env); only keys set in env."""
     plan = []
-    for env_var, key, vtype, category, default, secret, desc in MAPPINGS:
-        if env_var in env and env[env_var] != '':
-            value = env[env_var]
-            if vtype == 'json':
-                try:
-                    json.loads(value)
-                except (json.JSONDecodeError, TypeError):
-                    value = [item.strip() for item in value.split(',') if item.strip()]
-            plan.append((key, value, vtype, category, secret, 'env', desc))
-        else:
-            if default is None:
-                continue  # optional and unset — don't manufacture a row
-            plan.append((key, default, vtype, category, secret, 'default', desc))
+    for key, text, vtype, category, desc in _settings.store_plan_from_env(env)['set']:
+        plan.append((key, text, vtype, category, 0, 'env', desc))
     return plan
 
 
@@ -336,6 +128,7 @@ def build_array_plan(env: dict, battery_arrays: set) -> list:
     """One dict per solar array from SOLAR_ARRAYS / SOLAR_ARRAY_<NAME>_* vars."""
     ids = [a.strip().lower() for a in env.get('SOLAR_ARRAYS', '').split(',') if a.strip()]
     solar_export = env.get('SOLAR_EXPORT', 'false').strip().lower() in ('true', '1', 'yes', 'on')
+    legacy = {r['array_id']: r for r in _settings.array_plan_from_env(env)}
     arrays = []
     for aid in ids:
         prefix = f'SOLAR_ARRAY_{aid.upper()}_'
@@ -350,10 +143,11 @@ def build_array_plan(env: dict, battery_arrays: set) -> list:
                 row[col] = float(fval) if col == 'capacity_kw' else fval
             else:
                 lk = fkey.lower()
-                if lk in ARRAY_SECRET_KEYS:
-                    cfg[lk] = 'b64:' + base64.b64encode(fval.encode('utf-8')).decode('ascii')
-                else:
-                    cfg[lk] = fval
+                if lk in ARRAY_ENV_ONLY_KEYS:
+                    continue  # secrets/infra stay in .env
+                cfg[lk] = fval
+        for ck, cv in (legacy.get(aid, {}).get('cfg') or {}).items():
+            cfg.setdefault(ck, cv)  # legacy single-array aliases fill gaps only
         row['config_json'] = json.dumps(cfg) if cfg else None
         if battery_arrays:
             if aid in battery_arrays:
@@ -603,10 +397,9 @@ def main():
         print('.env source: NOT FOUND — falling back to process environment only')
 
     unknown = [k for k in file_keys
-               if k not in EXCLUDED_ENV
-               and not k.startswith('SOLAR_ARRAY')
+               if not k.startswith('SOLAR_ARRAY')
                and k != 'SOLAR_ARRAYS'
-               and k not in {m[0] for m in MAPPINGS}]
+               and k not in _settings.known_env_names()]
     if unknown:
         print(f'NOTE unmapped env keys (left in .env, not migrated): {sorted(unknown)}')
 
