@@ -200,7 +200,9 @@ function rowHtml(r){
   var h = '';
   if (r.kind === 'info') {
     return '<div class="row"><div class="lbl">' + esc(r.label) + infoBtn(r) + '</div>' +
-      '<div class="val">' + esc(r.value ?? '—') + '</div></div>';
+      '<div class="ctl"><div class="val">' + esc(r.value ?? '—') + '</div>' +
+      (r.hints || []).map(function(x){ return '<div class="hint ' + esc(x.level) + '">' + esc(x.text) + '</div>'; }).join('') +
+      '</div></div>';
   }
   if (r.show_if && String(currentValue(rowIndex[r.show_if]) ) !== 'true') return '';
   var envTag = r.env_name ? '<span class="env">' + esc(r.env_name) + '</span>' : '';

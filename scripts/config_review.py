@@ -395,10 +395,36 @@ def review_payload() -> Dict[str, Any]:
         cards['arrays'].append({'title': title, 'subtitle': subtitle, 'array_id': aid,
                                 'in_env': aid in env_ids, 'in_store': sa is not None,
                                 'rows': rows})
-    cards['arrays'].append({'title': 'Derived', 'rows': [
+    derived_rows = [
         info_row('Battery-charging solar (kWp)', settings._derived_text('SOLAR_CAPACITY_KW', None)
                  if settings.authority() == 'store' else os.environ.get('SOLAR_CAPACITY_KW'),
-                 'Sum of the arrays that charge the battery. Replaces SOLAR_CAPACITY_KW.')]})
+                 'Sum of the arrays that charge the battery. Replaces SOLAR_CAPACITY_KW.')]
+    try:
+        import solar_day
+        sds = solar_day.summary()
+        t = sds['today']
+        derived_rows.append(info_row(
+            'Solar day (learned)',
+            f"production {solar_day.fmt(t['start'])}-{solar_day.fmt(t['end'])} today "
+            f"(sunrise {solar_day.fmt(t['sunrise'])}, sunset {solar_day.fmt(t['sunset'])}; "
+            f"{t['source']}, {t['learned_days']} days)",
+            'When your battery-connected solar actually starts and stops, learned from your own '
+            'data relative to the real sunrise and sunset, so terrain, trees and clock changes '
+            'are handled automatically.'))
+        cap_row = info_row('Solar maximum (learned)',
+                           f"{sds['cap_kw']} kW (observed {sds['cap_observed_kw']}, "
+                           f"configured AC {sds['cap_store_kw']})",
+                           'The most your battery-connected arrays actually produce. Used to cap '
+                           'forecasts; never above the configured AC capacity.')
+        obs, st = sds.get('cap_observed_kw'), sds.get('cap_store_kw')
+        if obs and st and abs(st - obs) / obs > 0.10:
+            cap_row['hints'] = [{'level': 'warn', 'text':
+                                 f'Configured AC capacity {st} kW differs from the observed '
+                                 f'maximum {obs} kW by more than 10%. Check the array AC size.'}]
+        derived_rows.append(cap_row)
+    except Exception:
+        pass
+    cards['arrays'].append({'title': 'Derived', 'rows': derived_rows})
 
     # ---- Rates ----------------------------------------------------------------
     cards['rates'] = rates_cards()

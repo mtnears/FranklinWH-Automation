@@ -67,7 +67,8 @@ OPEN_METEO_SYSTEM_EFFICIENCY = 0.85 # Inverter + wiring + temperature derating
 FORECAST_CACHE_MAX_AGE_MIN = 60         # Re-fetch hourly
 CALIBRATION_MIN_DAYS = 14               # Minimum paired data points
 
-# House array defaults (battery-connected — the ONLY array that matters)
+# LAST-RESORT fallbacks only (logged when used). Real values come from
+# settings: the battery-charging array and site location in the store.
 HOUSE_ARRAY_KWP = 6.96                  # 16x Hyundai 435W
 HOUSE_ARRAY_TILT = 18                   # 4:12 roof pitch (~18.4°)
 HOUSE_ARRAY_AZIMUTH = 0                 # Due south (180° true; 0=S, -90=E, 90=W)
@@ -75,7 +76,9 @@ HOUSE_ARRAY_AZIMUTH = 0                 # Due south (180° true; 0=S, -90=E, 90=
 DEFAULT_LATITUDE = 38.91
 DEFAULT_LONGITUDE = -120.84
 
-# Sun schedule by month for ~39°N (PST/PDT hours)
+# Legacy sun schedule by month for ~39°N. Superseded by solar_day.py
+# (computed sunrise/sunset + learned production offsets); kept only as a
+# fallback if solar_day is unavailable.
 SUN_SCHEDULE = {
     1: (7.3, 17.2), 2: (6.9, 17.8), 3: (7.2, 19.4),
     4: (6.4, 19.8), 5: (5.9, 20.3), 6: (5.7, 20.5),
@@ -206,16 +209,63 @@ class MorningPlan:
 # Default array configuration
 # ---------------------------------------------------------------------------
 
+def _charging_array() -> dict:
+    """The battery-charging array from settings (store solar_arrays under store
+    authority). Returns {} when it cannot be determined."""
+    try:
+        if settings.authority() == 'store':
+            for a in settings._snap()['arrays']:
+                if a.get('charges_battery') == 1:
+                    return a
+        else:
+            import config_store
+            rows = config_store.solar_arrays.battery_connected()
+            if rows:
+                return rows[0]
+    except Exception:
+        pass
+    return {}
+
+
+_fallback_warned = set()
+
+
+def _warn_fallback(what: str, value):
+    if what not in _fallback_warned:
+        _fallback_warned.add(what)
+        logger.warning(f"solar forecast: {what} not configured - using fallback {value}. "
+                       f"Set it in the configuration review.")
+
+
 def get_default_arrays() -> List[ArrayConfig]:
-    """Build array config from environment or defaults. House array only."""
-    lat = float(settings.raw('FORECAST_LATITUDE', str(DEFAULT_LATITUDE)))
-    lon = float(settings.raw('FORECAST_LONGITUDE', str(DEFAULT_LONGITUDE)))
+    """The battery-charging array for the forecast, entirely from settings
+    (store under store authority). Module constants are last-resort fallbacks
+    and are logged when used."""
+    import solar_day
+    lat, lon, loc_src = solar_day.location()
+    if loc_src != 'settings':
+        _warn_fallback('site location', f'{lat},{lon}')
+    arr = _charging_array()
+    kwp = settings.raw('FORECAST_HOUSE_KWP')
+    if kwp in (None, '') and arr.get('capacity_kwp'):
+        kwp = arr['capacity_kwp']
+    if kwp in (None, ''):
+        kwp = HOUSE_ARRAY_KWP
+        _warn_fallback('battery-charging array DC size', kwp)
+    tilt = settings.raw('FORECAST_HOUSE_TILT')
+    if tilt in (None, ''):
+        tilt = HOUSE_ARRAY_TILT
+        _warn_fallback('array tilt', tilt)
+    az = settings.raw('FORECAST_HOUSE_AZIMUTH')
+    if az in (None, ''):
+        az = HOUSE_ARRAY_AZIMUTH
+        _warn_fallback('array azimuth', az)
     return [ArrayConfig(
-        name='house',
+        name=arr.get('array_id') or 'battery_array',
         latitude=lat, longitude=lon,
-        declination=int(settings.raw('FORECAST_HOUSE_TILT', str(HOUSE_ARRAY_TILT))),
-        azimuth=int(settings.raw('FORECAST_HOUSE_AZIMUTH', str(HOUSE_ARRAY_AZIMUTH))),
-        kwp=float(settings.raw('FORECAST_HOUSE_KWP', str(HOUSE_ARRAY_KWP))),
+        declination=int(float(tilt)),
+        azimuth=int(float(az)),
+        kwp=float(kwp),
         feeds_battery=True,
     )]
 
@@ -569,7 +619,11 @@ class WeatherCalibration:
         """Clear-sky kWh budget for the house array (south-facing baseline)."""
         month = dt.month
         eff = CLEAR_SKY_EFFICIENCY.get(month, 0.65)
-        sunrise, sunset = SUN_SCHEDULE.get(month, (7.0, 18.0))
+        try:
+            import solar_day
+            sunrise, sunset = solar_day.sun_times(dt)
+        except Exception:
+            sunrise, sunset = SUN_SCHEDULE.get(month, (7.0, 18.0))
         return self.house_kwp * eff * (sunset - sunrise)
 
     def get_today_weather(self) -> Optional[dict]:
@@ -661,7 +715,17 @@ class ClearSkyFallback:
             dt = date.today()
         month = dt.month
         eff = CLEAR_SKY_EFFICIENCY.get(month, 0.65)
-        sunrise, sunset = SUN_SCHEDULE.get(month, (7.0, 18.0))
+        # Shape: this install's learned production window for the date.
+        # Energy: the astronomical-day budget (same basis as calibration).
+        try:
+            import solar_day
+            astro_rise, astro_set = solar_day.sun_times(dt)
+            sd = solar_day.solar_day(dt)
+            sunrise, sunset = sd.start, sd.end
+            budget_scale = (astro_set - astro_rise) / max(0.5, sunset - sunrise)
+        except Exception:
+            sunrise, sunset = SUN_SCHEDULE.get(month, (7.0, 18.0))
+            budget_scale = 1.0
         solar_noon = (sunrise + sunset) / 2.0
         half_day = (sunset - sunrise) / 2.0
 
@@ -672,7 +736,8 @@ class ClearSkyFallback:
                 watts = 0.0
             else:
                 x = (h_mid - solar_noon) / half_day
-                watts = self.kwp * 1000.0 * eff * max(0, math.cos(x * math.pi / 2.0)) if abs(x) < 1.0 else 0.0
+                watts = (self.kwp * 1000.0 * eff * budget_scale
+                         * max(0, math.cos(x * math.pi / 2.0))) if abs(x) < 1.0 else 0.0
 
             hourly.append(HourlyForecast(hour=hour, watts=max(0, watts),
                                          watt_hours=max(0, watts), source='clear_sky'))

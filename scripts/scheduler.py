@@ -297,6 +297,16 @@ def job_daily_savings():
     run_script_with_args("calculate_daily_savings.py", ["--yesterday", "--quiet"], "Daily Savings")
 
 
+def job_forecast_history_morning():
+    """Record today's calibrated forecast and fill yesterday's actual."""
+    run_script_with_args("record_forecast_history.py", ["morning"], "Forecast History [morning]")
+
+
+def job_forecast_history_evening():
+    """Record tomorrow's forecast as it stands the evening before."""
+    run_script_with_args("record_forecast_history.py", ["evening"], "Forecast History [evening]")
+
+
 def job_solaredge_panels():
     """SolarEdge per-panel data collection - runs every 15 minutes if enabled.
     
@@ -459,6 +469,15 @@ def setup_schedule():
             log(_line)
     except Exception as _e:
         log(f"Config authority summary unavailable: {_e}")
+    try:
+        import solar_day as _sd
+        _s = _sd.summary()
+        _t = _s['today']
+        log(f"Solar day: sunrise {_sd.fmt(_t['sunrise'])}, sunset {_sd.fmt(_t['sunset'])}; "
+            f"production {_sd.fmt(_t['start'])}-{_sd.fmt(_t['end'])} "
+            f"({_t['source']}, {_t['learned_days']} days); solar cap {_s['cap_kw']} kW")
+    except Exception as _e:
+        log(f"Solar day summary unavailable: {_e}")
     
     # Get scheduling config
     buffer_minutes = config.PEAK_TRANSITION_BUFFER_MINUTES if CONFIG_LOADED else 10
@@ -606,6 +625,12 @@ def setup_schedule():
     # Daily savings - 00:05 AM (calculates previous day's savings with full data)
     schedule.every().day.at("00:05").do(job_daily_savings)
     _register("Daily Savings", "Daily at 00:05 AM (previous day)")
+
+    # Forecast history - durable forecast-vs-actual record (logs prune at 30 days)
+    if CONFIG_LOADED and getattr(config, 'FORECAST_ENABLED', False):
+        schedule.every().day.at("06:40").do(job_forecast_history_morning)
+        schedule.every().day.at("20:40").do(job_forecast_history_evening)
+        _register("Forecast History", "Daily at 06:40 (today + yesterday actual) and 20:40 (tomorrow)")
     
     # Solar health monitor - 20:30 (after sunset, full day's data available)
     # Runs for all solar arrays regardless of type (SolarEdge, Enphase, or both)

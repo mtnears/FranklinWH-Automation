@@ -579,8 +579,7 @@ class AdaptiveEngine:
             return self._morning_plan
 
         try:
-            battery_kwh = self.config.get('battery_capacity_kwh',
-                                          self.profile.capacity.total_capacity_kwh if hasattr(self.profile, 'capacity') else 30.0)
+            battery_kwh = self._battery_kwh()
             peak_start = self.config.get('peak_start_hour', 17)
 
             plan = self.forecast_engine.morning_plan(
@@ -619,7 +618,7 @@ class AdaptiveEngine:
         if drift_rate <= 0:
             return 0.0
 
-        battery_kwh = self.config.get('battery_capacity_kwh', 30.0)
+        battery_kwh = self._battery_kwh()
         return drift_rate * hours_to_peak / 100.0 * battery_kwh
 
     def enrich_state(self, state: SystemState) -> SystemState:
@@ -858,7 +857,7 @@ class AdaptiveEngine:
         if self.forecast_engine is not None:
             next_solar_kwh, next_solar_date = self._get_next_solar_day_forecast(state.timestamp)
             if next_solar_kwh is not None and next_solar_kwh > 0:
-                battery_kwh = self.config.get('battery_capacity_kwh', 27.2)
+                battery_kwh = self._battery_kwh()
                 battery_portion = min(next_solar_kwh * 0.85, battery_kwh * 0.95)
                 wx_score = self._get_forecast_wx_score(next_solar_date)
                 logger.info(f"CT next solar day forecast ({next_solar_date}): "
@@ -1098,6 +1097,11 @@ class AdaptiveEngine:
                 pass
 
         projected_soc = current_soc
+        try:
+            import solar_day
+            solar_cap_kw = solar_day.solar_cap_kw()
+        except Exception:
+            solar_cap_kw = None
 
         for step in range(min(steps, 12)):  # Cap at 12 hours lookahead
             hour = int(now_hour + step) % 24
@@ -1109,8 +1113,10 @@ class AdaptiveEngine:
                 # Fallback: use current solar, tapering off toward sunset
                 solar_kw = max(0, state.solar_kw * (1.0 - step * 0.15))
 
-            # Cap at array physical maximum (IQ8MC: 16 panels x 330W = 5.28 kW)
-            solar_kw = min(solar_kw, 5.3)
+            # Cap at this install's observed solar maximum (learned, bounded by
+            # the battery-charging arrays' AC capacity in settings)
+            if solar_cap_kw:
+                solar_kw = min(solar_kw, solar_cap_kw)
 
             # Load for this hour
             load_kw = self._hourly_load_kw[hour]
@@ -1127,29 +1133,41 @@ class AdaptiveEngine:
         return projected_soc
 
     def _get_solar_ramp_hour(self, timestamp: datetime) -> float:
-        """Get the hour when solar production exceeds average home load.
-
-        Uses SUN_SCHEDULE sunrise + a ramp offset. In March, sunrise is ~7 AM
-        but solar doesn't exceed ~2 kW load until ~10 AM. The offset accounts
-        for panel orientation, shading, and seasonal angle.
-        """
-        sunrise = 7.0
+        """Hour this install's solar typically reaches meaningful production
+        (~average home load). Learned from its own history relative to the
+        day's actual sunrise, so it follows the seasons and clock changes."""
         try:
+            import solar_day
+            return solar_day.solar_day(timestamp.date()).ramp
+        except Exception as e:
+            logger.debug(f"solar_day ramp unavailable ({e}); using SUN_SCHEDULE")
             from solar_forecast import SUN_SCHEDULE
             sunrise, _ = SUN_SCHEDULE.get(timestamp.month, (7.0, 18.0))
-        except ImportError:
-            pass
-        # Solar ramp to meaningful production: sunrise + 2.5-3h typically
-        return sunrise + 3.0
+            return sunrise + 3.0
 
     def _get_sunset_hour(self, timestamp: datetime) -> float:
-        """Get sunset hour for the current month."""
+        """Hour this install's solar production typically ENDS today (learned
+        offset before the day's actual sunset) - the end of useful solar, which
+        is what every caller means by 'sunset'."""
         try:
+            import solar_day
+            return solar_day.solar_day(timestamp.date()).end
+        except Exception as e:
+            logger.debug(f"solar_day end unavailable ({e}); using SUN_SCHEDULE")
             from solar_forecast import SUN_SCHEDULE
             _, sunset = SUN_SCHEDULE.get(timestamp.month, (7.0, 18.0))
             return sunset
-        except ImportError:
-            return 18.0
+
+    def _battery_kwh(self) -> float:
+        """Total battery capacity: engine config, then detected profile, then
+        the configured/detected value from settings (store or env)."""
+        cap = self.config.get('battery_capacity_kwh')
+        if cap:
+            return cap
+        cap = getattr(getattr(self.profile, 'capacity', None), 'total_capacity_kwh', None)
+        if cap:
+            return cap
+        return float(settings.get('battery.capacity_kwh'))
 
     def _evaluate_continuous_target(self, state: SystemState) -> Optional[Decision]:
         """Continuous target tracking — the unified headroom management method.
@@ -1165,11 +1183,7 @@ class AdaptiveEngine:
         Returns None when target tracking doesn't apply (no forecast, export
         system, or insufficient solar to matter).
         """
-        battery_kwh = self.config.get(
-            'battery_capacity_kwh',
-            getattr(getattr(self.profile, 'capacity', None),
-                    'total_capacity_kwh', 27.2)
-        )
+        battery_kwh = self._battery_kwh()
         backup_reserve = self._backup_reserve_pct(state)
 
         # --- Get forecast solar ---
@@ -1525,11 +1539,7 @@ class AdaptiveEngine:
         if not state.is_partial_peak:
             return None
 
-        battery_kwh = self.config.get(
-            'battery_capacity_kwh',
-            getattr(getattr(self.profile, 'capacity', None),
-                    'total_capacity_kwh', 27.2)
-        )
+        battery_kwh = self._battery_kwh()
         reserve_pct = self._backup_reserve_pct(state)
         available_kwh = max(
             0.0,
@@ -1756,11 +1766,7 @@ class AdaptiveEngine:
                 f"Taper ceiling cap: {ceiling_pct:.0f}% → {taper_cap:.0f}%"
             )
             ceiling_pct = taper_cap
-            battery_kwh = self.config.get(
-                'battery_capacity_kwh',
-                getattr(getattr(self.profile, 'capacity', None),
-                        'total_capacity_kwh', 30.0)
-            )
+            battery_kwh = self._battery_kwh()
             capped_target_kwh = battery_kwh * ceiling_pct / 100.0
             gap_kwh = max(0, capped_target_kwh - plan.current_kwh - plan.forecast_to_battery_kwh)
 
@@ -2153,10 +2159,7 @@ class AdaptiveEngine:
         then the learned grid curve, then a 5 kW default."""
         rate = self._eb_charge_rate_kw(state)
         if rate:
-            battery_kwh = self.config.get(
-                'battery_capacity_kwh',
-                getattr(getattr(self.profile, 'capacity', None),
-                        'total_capacity_kwh', 30.0))
+            battery_kwh = self._battery_kwh()
             kwh = max(0.0, target_pct - state.soc_percent) / 100.0 * battery_kwh
             return kwh / rate
         if hasattr(self.profile, 'time_to_charge_kwh'):
