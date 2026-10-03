@@ -3064,6 +3064,15 @@ function openGitHubIssue(){
 }
 
 // ===== VERSION & UPDATE CHECK =====
+// Version compare: numeric core, a pre-release (4.7.0-beta) sorts before its release (4.7.0)
+function cmpVer(a,b){
+    const p=v=>{const m=String(v||'').replace(/^v/,'').split('-');return {n:m[0].split('.').map(x=>parseInt(x,10)||0),pre:m.length>1}};
+    const x=p(a),y=p(b);
+    for(let i=0;i<Math.max(x.n.length,y.n.length);i++){const d=(x.n[i]||0)-(y.n[i]||0);if(d)return d>0?1:-1}
+    if(x.pre!==y.pre)return x.pre?-1:1;
+    return 0;
+}
+
 async function fetchVersionAndCheckUpdate(){
     // Fetch current version from scheduler API
     let currentVersion='--';
@@ -3080,7 +3089,7 @@ async function fetchVersionAndCheckUpdate(){
     try{
         const cached=JSON.parse(localStorage.getItem(cacheKey)||'{}');
         if(cached.ts && (now-cached.ts)<86400000){
-            if(cached.tag && cached.tag!==currentVersion && cached.url){
+            if(cached.tag && cmpVer(cached.tag,currentVersion)>0 && cached.url){
                 const b=document.getElementById('update-badge');
                 b.textContent=cached.tag+' Available';
                 b.dataset.url=cached.url;
@@ -3097,7 +3106,7 @@ async function fetchVersionAndCheckUpdate(){
         const tag=(d.tag_name||'').replace(/^v/,'');
         const url=d.html_url||'https://github.com/mtnears/FranklinWH-Automation/releases';
         localStorage.setItem(cacheKey,JSON.stringify({ts:now,tag:tag,url:url}));
-        if(tag && tag!==currentVersion){
+        if(tag && cmpVer(tag,currentVersion)>0){
             const b=document.getElementById('update-badge');
             b.textContent=tag+' Available';
             b.dataset.url=url;
