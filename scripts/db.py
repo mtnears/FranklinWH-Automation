@@ -505,11 +505,23 @@ def init_db():
         # One-time historical data cleanup. Idempotent — re-runs are no-ops
         # once the data is canonical. Wrapped in try/except so a migration
         # hiccup never blocks startup.
+        # init_db() runs at the start of every collector (Dashboard Data runs
+        # every minute), and the check is a full scan of system_readings, so
+        # once it has completed it is stamped in app_state and skipped.
+        # (A 90 s Dashboard Data run on 2026-10-01 was spent in this scan.)
         try:
-            with _safe_write() as wconn:
-                n = _backfill_normalize_modes(wconn)
-            if n:
-                logger.info(f"Mode normalization migration: {n} rows updated")
+            conn.execute("CREATE TABLE IF NOT EXISTS app_state "
+                         "(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)")
+            done = conn.execute("SELECT value FROM app_state WHERE key = ?",
+                                (MODE_BACKFILL_KEY,)).fetchone()
+            if not done:
+                with _safe_write() as wconn:
+                    n = _backfill_normalize_modes(wconn)
+                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    wconn.execute("INSERT OR REPLACE INTO app_state (key, value, updated_at) "
+                                  "VALUES (?, ?, ?)", (MODE_BACKFILL_KEY, f'{now} ({n} rows)', now))
+                if n:
+                    logger.info(f"Mode normalization migration: {n} rows updated")
         except Exception as e:
             logger.warning(f"Mode normalization migration failed: {e}")
     except Exception as e:
@@ -619,6 +631,9 @@ def normalize_mode(raw):
         return _MODE_NORMALIZE_MAP[raw]
     # Best-effort fallback: 'Some New Mode' -> 'some_new_mode'
     return raw.lower().replace('-', '_').replace(' ', '_') or None
+
+
+MODE_BACKFILL_KEY = 'migration.mode_normalized_at'
 
 
 def _backfill_normalize_modes(conn) -> int:

@@ -85,8 +85,16 @@ def compare_raw():
     settings.force_authority('store')
     for name in names:
         cls, key = classify(name)
+        # Unset (no env var / no store row) means the code default applies on
+        # that side, so compare effective values. Optional settings have no
+        # default: unset is itself the value.
+        ent = settings.BY_ENV.get(name)
+        dflt = settings.default_text(ent) if (ent and cls in settings.STORE_CLASSES
+                                              and not ent.optional) else None
         env_v = os.getenv(name)
-        store_v = settings._store_raw(name)
+        if env_v is None:
+            env_v = dflt
+        store_v = settings._store_raw(name, dflt)
         secret = cls == settings.SECRET
         if cls in settings.ENV_CLASSES:
             status = 'env-only'
