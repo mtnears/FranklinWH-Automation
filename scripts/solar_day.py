@@ -339,8 +339,9 @@ def summary() -> dict:
 
 
 def fmt(h: float) -> str:
-    hh = int(h)
-    return f'{hh:02d}:{int(round((h - hh) * 60)) % 60:02d}'
+    # Round to whole minutes first, so 6.9953 h is 07:00, not 06:00
+    m = int(round(h * 60))
+    return f'{(m // 60) % 24:02d}:{m % 60:02d}'
 
 
 if __name__ == '__main__':
