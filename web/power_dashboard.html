@@ -1231,7 +1231,7 @@
                     <option value="CA">Canada</option>
                     <option value="AU">Australia</option>
                     <option value="DE">Germany</option>
-                    <option value="UK">United Kingdom</option>
+                    <option value="GB">United Kingdom</option>
                     <option value="FR">France</option>
                     <option value="IT">Italy</option>
                     <option value="ES">Spain</option>
@@ -1239,7 +1239,6 @@
                     <option value="JP">Japan</option>
                     <option value="KR">South Korea</option>
                     <option value="NZ">New Zealand</option>
-                    <option value="OTHER">Other</option>
                 </select>
                 <div class="consent-region-hint" id="consent-region-hint"></div>
             </div>
@@ -3166,8 +3165,19 @@ function showConsentStep2(){
     document.getElementById('consent-step-1').style.display='none';
     document.getElementById('consent-step-2').style.display='block';
 
-    // Pre-select country based on Modbus grid detection
+    // Full ISO 3166-1 list from the server (same list as the configuration
+    // review); the static options are only a fallback.
     const sel=document.getElementById('consent-region-select');
+    if(!sel.dataset.full){
+        fetch('/api/v1/regions').then(r=>r.json()).then(d=>{
+            if(!d||!d.countries)return;
+            const keep=sel.value;
+            sel.innerHTML='<option value="">— Prefer not to say —</option>'+d.countries.map(c=>
+                '<option value="'+c.code+'">'+c.name.replace(/[&<>]/g,'')+'</option>').join('');
+            sel.value=keep; sel.dataset.full='1';
+        }).catch(()=>{});
+    }
+    // Pre-select country based on Modbus grid detection
     const hint=document.getElementById('consent-region-hint');
     if(_consentGridRegion==='north_america'){
         sel.value='US'; // Best guess for North America — user can change to CA

@@ -19,6 +19,10 @@ Fixes from the first live tester review.
 - **Engine behavior:** warns when Strategy is Export but no battery-charging array exports.
 - **Rates:** a "(midnight)" label on windows that end at 00:00, and a link to the Setup Checklist's new "Where to find your official rate schedule" section (PG&amp;E tariffs page). The PDF is now served at `/SETUP_CHECKLIST.pdf`.
 - **Weather:** relabeled as Weather Underground PWS, with help text on API keys and on using a nearby station. The Test now reports the station's distance from your site, and warns above 15 km.
+- **Telemetry country uses ISO 3166-1 alpha-2 codes** (US, CA, GB…). Both the review and the telemetry consent pop-up use the same 249-country list (`scripts/regions.py`, `GET /api/v1/regions`); the dropdown shows full names and stores the two-letter code.
+  - The consent pop-up's old "UK" becomes GB.
+  - `TELEMETRY_REGION` used to be a US *state* code (CA meant California), so the review flags 2-letter state values and asks you to pick your country.
+  - Telemetry's `region` field is now always a country code, with `region_scheme: iso3166-1`. The state inferred from the weather station is sent separately as ISO 3166-2 in `region_state` (e.g. US-CA).
 - **Readability:** muted text contrast raised from about 3.1:1 to about 6.4:1, on both the review and the dashboard. Help and footnote text on the review page goes from 12 px to 13 px.
 
 ### Fixes

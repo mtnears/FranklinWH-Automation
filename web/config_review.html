@@ -205,6 +205,8 @@ function control(r){
       var lab = (r.choice_labels || {})[c] || c;
       return '<option value="' + esc(c) + '"' + (String(v) === c ? ' selected' : '') + '>' + esc(lab) + '</option>';
     }).join('');
+    if (r.optional) o = '<option value=""' + (v == null || v === '' ? ' selected' : '') + '>' +
+      esc((r.choice_labels || {})[''] || 'Not set') + '</option>' + o;
     return '<select data-key="' + k + '">' + o + '</select>';
   }
   var num = ['int','float','float?'].indexOf(r.type) >= 0;

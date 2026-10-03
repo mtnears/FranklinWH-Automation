@@ -133,7 +133,7 @@ def set_consent(consented: bool, source: str = 'dashboard', region: str = None) 
     """Write consent choice to persistent file.
 
     Called by the dashboard modal or CLI. Generates a UUID on first call.
-    Region is the country code from the dashboard dropdown (e.g., "US", "CA").
+    Region is the ISO 3166-1 alpha-2 country code from the dashboard dropdown (e.g. "US", "GB").
     Returns the written consent record.
     """
     install_uuid = _get_or_create_uuid()
@@ -144,9 +144,14 @@ def set_consent(consented: bool, source: str = 'dashboard', region: str = None) 
         'install_uuid': install_uuid,
     }
 
-    # Store region if provided (from dashboard country picker)
+    # Store region if provided (from dashboard country picker), as ISO 3166-1
+    # alpha-2 (older pickers sent 'UK' and 'OTHER')
     if region:
-        record['region'] = region
+        import regions
+        code, _ = regions.normalize_country(region)
+        if code:
+            record['region'] = code
+        region = code
 
     # Preserve existing region if not being updated
     if not region and CONSENT_FILE.exists():
@@ -623,7 +628,7 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
 
     # Priority 4: derive country/region from TZ env var
     tz_region = None
-    if not (user_region or consent_region or station_region):
+    if True:   # always computed: the fallback when the other sources aren't country codes
         try:
             tz = os.getenv('TZ', '')
             if not tz:
@@ -648,8 +653,24 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
         if freq:
             grid_region = _infer_grid_region(freq, volt)
 
+    # v4.7.0-beta.2: 'region' is always an ISO 3166-1 alpha-2 country code
+    # (region_scheme says so). Older payloads could carry a US state code
+    # there (CA = California), which collided with country codes. The state
+    # derived from the weather station is sent separately as ISO 3166-2.
+    import regions
+    country = None
+    # tz_region 'EU'/'AS' are continents, not ISO codes ('AS' would read as
+    # American Samoa), so only its country answers count here.
+    for cand in (user_region, consent_region, tz_region if tz_region in ('US', 'AU') else None):
+        code, _ = regions.normalize_country(cand)
+        if code:
+            country = code
+            break
+    state_iso = f'US-{station_region}' if station_region and country in (None, 'US') else None
     info = {
-        'region': user_region or consent_region or station_region or tz_region or 'n/a',
+        'region': country or 'n/a',
+        'region_scheme': 'iso3166-1',
+        'region_state': state_iso or 'n/a',
         'region_station': station_region or 'n/a',
         'region_tz': tz_region or 'n/a',
         'grid_region': grid_region or 'n/a',

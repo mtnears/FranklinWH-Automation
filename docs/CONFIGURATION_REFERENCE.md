@@ -410,7 +410,7 @@ Anonymous, opt-in usage telemetry to help guide development.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TELEMETRY_ENABLED` | (popup) | Force on/off, or leave unset for dashboard popup |
-| `TELEMETRY_REGION` | — | Your state/region for aggregate stats (e.g., CA, IL, TX) |
+| `TELEMETRY_REGION` | — | Your country as an ISO 3166-1 two-letter code (e.g. US, CA, GB, AU). Before v4.7.0-beta.2 this was a US state code; state values are flagged by the configuration review. |
 | `MULTI_METER` | `false` | System has separate meters for different solar arrays |
 
 On first dashboard load, a one-time popup asks if you'd like to opt in. Your choice is saved and the popup never appears again. The `.env` overrides let you skip the popup entirely.

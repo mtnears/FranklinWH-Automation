@@ -1227,6 +1227,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._json_response(200, config_review.review_payload())
             except Exception as e:
                 self._json_response(200, {'available': False, 'reason': str(e)})
+        elif path == '/api/v1/regions':
+            import regions
+            self._json_response(200, {'scheme': 'iso3166-1', 'countries': [
+                {'code': c, 'name': n} for c, n in regions.ordered()]})
         elif path == '/api/v1/review/status':
             try:
                 import config_commit

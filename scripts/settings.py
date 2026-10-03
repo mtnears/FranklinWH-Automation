@@ -104,6 +104,9 @@ class Entry:
         return {'list': 'json', 'enum': 'str', 'float?': 'float'}.get(self.type, self.type)
 
 
+import regions as _regions  # noqa: E402  (ISO 3166-1 list, pure data)
+
+
 def _e(*a, **k) -> Entry:
     return Entry(*a, **k)
 
@@ -322,9 +325,11 @@ REGISTRY: List[Entry] = [
     # ---- I. Telemetry & system ----------------------------------------------
     _e('telemetry.enabled', ('TELEMETRY_ENABLED',), SETTING, 'bool', False, 'I',
        category='telemetry', help='Anonymous daily usage telemetry.'),
-    _e('telemetry.region', ('TELEMETRY_REGION',), SETTING, 'str', None, 'I',
-       category='telemetry', optional=True,
-       help='Coarse region code sent with telemetry. Blank = auto.'),
+    _e('telemetry.region', ('TELEMETRY_REGION',), SETTING, 'enum', None, 'I',
+       category='telemetry', optional=True, choices=tuple(c for c, _ in _regions.ordered()),
+       help='Your country, sent with anonymous telemetry as an ISO 3166-1 two-letter code '
+            '(US, CA, GB...). Blank = use the country chosen in the telemetry consent pop-up, '
+            'or work it out from the time zone.'),
     _e('system.debug_mode', ('DEBUG_MODE',), SETTING, 'bool', False, 'I', category='system',
        advanced=True, help='Verbose debug logging.'),
     _e(None, ('TELEMETRY_ENDPOINT',), INFRA, section='I'),

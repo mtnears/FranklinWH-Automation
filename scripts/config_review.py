@@ -70,7 +70,7 @@ LABELS = {
     'pricing.ceiling_cents': 'Price ceiling (¢/kWh)',
     'pricing.solar_override_cents': 'Solar override price (¢/kWh)',
     'telemetry.enabled': 'Anonymous telemetry',
-    'telemetry.region': 'Region',
+    'telemetry.region': 'Country',
     'system.debug_mode': 'Debug logging',
 }
 
@@ -482,6 +482,22 @@ def review_payload() -> Dict[str, Any]:
 
     # ---- Rates ----------------------------------------------------------------
     cards['rates'] = rates_cards()
+
+    # ---- Telemetry region: ISO 3166-1 country codes ------------------------------
+    try:
+        import regions
+        tr = rows_by_key['telemetry.region']
+        tr['choice_labels'] = dict(regions.ordered())
+        tr['choice_labels'][''] = 'Not set (use the consent choice or time zone)'
+        for side in ('proposed', 'store', 'env'):
+            if tr.get(side):
+                code, note = regions.normalize_country(tr[side])
+                if side == 'proposed':
+                    if note:
+                        tr['hints'].append({'level': 'warn', 'text': note})
+                    tr['proposed'] = code
+    except Exception:
+        pass
 
     # ---- Billing --------------------------------------------------------------
     dp = rows_by_key['billing.discount_program']

@@ -222,6 +222,8 @@ def _store_text(ent: settings.Entry, text: str) -> Tuple[Optional[str], Optional
             return 'false', None
         return None, f'expected on/off, got {s!r}'
     if ent.choices and s not in ent.choices:
+        if len(ent.choices) > 12:
+            return None, f'{s!r} is not one of the listed options'
         return None, f"{s!r} is not one of {', '.join(ent.choices)}"
     if typ in ('int', 'float', 'float?'):
         try:
