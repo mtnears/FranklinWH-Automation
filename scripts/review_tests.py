@@ -13,7 +13,7 @@ message is scrubbed of secret values before it is printed. Non-secret values
 the user may have just edited in the review (an IP, a station ID, system IDs)
 are passed in, so a test checks what the user is about to commit.
 
-Tests: modbus, envoy, franklin, solaredge, pvoutput, weather.
+Tests: modbus, envoy, franklin, solaredge, solaredge_site, pvoutput, weather.
 """
 
 import json
@@ -180,6 +180,51 @@ def t_solaredge(a):
     return msg
 
 
+def t_solaredge_site(a):
+    """A SolarEdge array card: the monitoring API (site ID + API key) and, when
+    local Modbus is on, each inverter's SunSpec status."""
+    import requests
+    aid = (a.get('array_id') or '').strip().lower()
+    key = (os.environ.get(f'SOLAR_ARRAY_{aid.upper()}_API_KEY') if aid else None) or \
+        os.environ.get('SOLAREDGE_API_KEY', '')
+    if not key:
+        raise ValueError('No SolarEdge API key in .env for this array')
+    site = (a.get('site_id') or (settings.raw(f'SOLAR_ARRAY_{aid.upper()}_SITE_ID', '') if aid else '')
+            or _solaredge_site() or '').strip()
+    if not site:
+        raise ValueError('No site ID set on this array card')
+    r = requests.get(f'https://monitoringapi.solaredge.com/site/{site}/details',
+                     params={'api_key': key}, timeout=TIMEOUT)
+    if r.status_code in (401, 403):
+        raise RuntimeError(f'API key rejected for site {site} (HTTP {r.status_code})')
+    if r.status_code != 200:
+        raise RuntimeError(f'Monitoring API: HTTP {r.status_code} for site {site}')
+    d = r.json().get('details') or {}
+    msg = (f"Site {site} \u201c{d.get('name', '?')}\u201d OK: {d.get('peakPower', '?')} kW peak, "
+           f"status {d.get('status', '?')}, last update {d.get('lastUpdateTime', '?')}.")
+    modbus = str(a.get('modbus') if a.get('modbus') not in (None, '')
+                 else settings.raw('SOLAREDGE_MODBUS_ENABLED', 'false')).strip().lower() == 'true'
+    if not modbus:
+        return msg + ' Local Modbus is off, so the inverters were not checked.'
+    import logging
+    logging.disable(logging.WARNING)
+    import collect_solaredge_modbus as sem
+    parts, bad = [], 0
+    for inv in sem.load_inverters():
+        d = sem.read_inverter(inv)
+        if not d:
+            bad += 1
+            parts.append(f"{inv['name']} ({inv['ip']}:{inv['port']}) no answer")
+            continue
+        w = d.get('ac_power_w')
+        parts.append(f"{inv['name']} {d.get('model') or ''} {d.get('status') or '?'}"
+                     + (f', {w / 1000:.2f} kW' if isinstance(w, (int, float)) else ''))
+    msg += ' Modbus: ' + '; '.join(parts) + '.'
+    if bad:
+        raise RuntimeError(msg)
+    return msg
+
+
 def t_pvoutput(a):
     import requests
     key = os.environ.get('PVOUTPUT_API_KEY', '')
@@ -250,7 +295,8 @@ def _km(lat1, lon1, lat2, lon2) -> float:
 
 
 TESTS = {'modbus': t_modbus, 'envoy': t_envoy, 'franklin': t_franklin,
-         'solaredge': t_solaredge, 'pvoutput': t_pvoutput, 'weather': t_weather}
+         'solaredge': t_solaredge, 'solaredge_site': t_solaredge_site,
+         'pvoutput': t_pvoutput, 'weather': t_weather}
 
 
 def run(args: dict) -> dict:
