@@ -93,6 +93,11 @@ class Entry:
     recommend: str = ''           # inline Configuration Health recommendation
     dev_aliases: Tuple[str, ...] = ()   # env names only dev tools read
     note: str = ''
+    # Site-specific values have no meaningful code default (they describe one
+    # install). default=None and required_if: 'always', or a bool key that
+    # must be true for the value to be needed. The review requires them and
+    # always stores them, so no install silently runs on another's values.
+    required_if: str = ''
 
     @property
     def store_type(self) -> str:
@@ -118,8 +123,8 @@ REGISTRY: List[Entry] = [
     _e('modbus.enabled', ('MODBUS_ENABLED',), SETTING, 'bool', False, 'A', category='modbus',
        help='Read the aGate directly over the local network (Modbus TCP) instead of '
             'the cloud API. Faster, and keeps working when the cloud is down.'),
-    _e('modbus.host', ('MODBUS_HOST',), SETTING, 'str', '192.168.5.149', 'A', category='modbus',
-       dev_aliases=('AGATE_IP',),
+    _e('modbus.host', ('MODBUS_HOST',), SETTING, 'str', None, 'A', category='modbus',
+       dev_aliases=('AGATE_IP',), required_if='modbus.enabled',
        help='IP address of the aGate on your network. Give it a DHCP reservation so it '
             'does not change. Needs a restart to apply.'),
     _e('modbus.port', ('MODBUS_PORT',), SETTING, 'int', 502, 'A', category='modbus',
@@ -246,30 +251,42 @@ REGISTRY: List[Entry] = [
        help='Sum of the battery-charging arrays (DC kWp where known, else AC kW).'),
     _e('features.solar', ('SOLAR_ENABLED',), DERIVED, 'bool', True, 'F',
        help='True if any array charges the battery.'),
-    _e('forecast.house_tilt', ('FORECAST_HOUSE_TILT',), SETTING, 'int', 22, 'F',
-       category='forecast', vmin=0, vmax=90,
+    _e('forecast.house_tilt', ('FORECAST_HOUSE_TILT',), SETTING, 'int', None, 'F',
+       category='forecast', vmin=0, vmax=90, required_if='features.forecast',
        help='Tilt of the battery-charging array in degrees (0 = flat).'),
-    _e('forecast.house_azimuth', ('FORECAST_HOUSE_AZIMUTH',), SETTING, 'int', -65, 'F',
-       category='forecast', vmin=-180, vmax=180,
+    _e('forecast.house_azimuth', ('FORECAST_HOUSE_AZIMUTH',), SETTING, 'int', None, 'F',
+       category='forecast', vmin=-180, vmax=180, required_if='features.forecast',
        help='Azimuth of the battery-charging array (0 = south, -90 = east, 90 = west).'),
-    _e('forecast.house_kwp', ('FORECAST_HOUSE_KWP',), SETTING, 'float', 6.96, 'F',
-       category='forecast', vmin=0, vmax=100,
+    _e('forecast.house_kwp', ('FORECAST_HOUSE_KWP',), SETTING, 'float', None, 'F',
+       category='forecast', vmin=0, vmax=100, required_if='features.forecast',
        help='DC nameplate (kWp) of the battery-charging array; the forecast input.'),
     _e(None, ('ENPHASE_ENABLED',), RETIRE, 'bool', False, 'J',
        note='Superseded by solar_arrays'),
 
     # ---- G. Forecast, weather & site ----------------------------------------
-    _e('forecast.latitude', ('FORECAST_LATITUDE',), SETTING, 'float', 38.91, 'G',
-       category='forecast', vmin=-90, vmax=90, help='Site latitude.'),
-    _e('forecast.longitude', ('FORECAST_LONGITUDE',), SETTING, 'float', -120.84, 'G',
-       category='forecast', vmin=-180, vmax=180, help='Site longitude.'),
+    _e('forecast.latitude', ('FORECAST_LATITUDE',), SETTING, 'float', None, 'G',
+       category='forecast', vmin=-90, vmax=90, required_if='always',
+       help='Site latitude (decimal degrees, north positive). Used for sunrise/sunset, the '
+            'learned solar day and the forecast.'),
+    _e('forecast.longitude', ('FORECAST_LONGITUDE',), SETTING, 'float', None, 'G',
+       category='forecast', vmin=-180, vmax=180, required_if='always',
+       help='Site longitude (decimal degrees, east positive, so the US is negative).'),
     _e('features.forecast', ('FORECAST_ENABLED',), SETTING, 'bool', False, 'G',
        category='features', help='Weather-aware solar forecasting (Open-Meteo).'),
     _e('features.weather', ('WEATHER_ENABLED',), SETTING, 'bool', False, 'G',
-       category='features', help='Collect observations from a local weather station.'),
+       category='features',
+       help='Collect current conditions from a Weather Underground personal weather station '
+            '(PWS) every 15 minutes. The forecast uses this history (solar radiation, cloud and '
+            'temperature) to calibrate itself to your site. Needs a weather.com PWS API key, which '
+            'Weather Underground issues to people who upload data from their own station.'),
     _e('weather.station_id', ('WEATHER_STATION_ID',), SETTING, 'str', '', 'G',
-       category='weather', help='Weather Underground station ID.'),
-    _e(None, ('WEATHER_API_KEY',), SECRET, section='G', help='Weather Underground API key.'),
+       category='weather',
+       help='Weather Underground PWS ID, for example KCAGEORG2. It can be your own station or any '
+            'nearby public station (your key works for any station ID). Test checks the ID and '
+            'reports how far the station is from your site.'),
+    _e(None, ('WEATHER_API_KEY',), SECRET, section='G',
+       help='weather.com API key for Weather Underground PWS data. Issued to station owners in '
+            'their Weather Underground account (Member settings, API Keys). Stays in .env.'),
 
     # ---- H. Integrations ----------------------------------------------------
     _e('features.pvoutput', ('PVOUTPUT_ENABLED',), SETTING, 'bool', False, 'H',
@@ -558,10 +575,18 @@ def _row_text(row: Optional[dict]) -> Optional[str]:
     return str(text)
 
 
+# Equivalent spellings of the same value (env vocabulary vs derived text)
+_SYNONYMS = {'PEAK_DAYS': {'everyday': 'all', 'daily': 'all', 'every_day': 'all',
+                           'weekday': 'weekdays', 'weekend': 'weekends'}}
+
+
 def _note_divergence(name: str, store_text: Optional[str]):
     env_text = os.environ.get(name)
     if env_text is None:
         return
+    syn = _SYNONYMS.get(name, {})
+    if syn:
+        env_text = syn.get(str(env_text).strip().lower(), env_text)
     if store_text is None or _norm(env_text) != _norm(store_text):
         _env_diverged[name] = (env_text, store_text)
 
@@ -638,7 +663,8 @@ def _derived_text(name: str, default: Optional[str]) -> Optional[str]:
         v = _row_text(snap['cfg'].get('billing.discount_program'))
         return 'true' if v == 'CARE' else 'false'
     if name == 'NEM_VERSION':
-        v = _row_text(snap['cfg'].get('billing.export_compensation'))
+        v = _row_text(snap['cfg'].get('billing.export_compensation')) or \
+            BY_KEY['billing.export_compensation'].default
         return {'net_metering': 'nem2', 'net_billing': 'nem3'}.get(v or '', default)
     if name in ('TOU_ENABLED', 'PEAK_START_HOUR', 'PEAK_END_HOUR', 'PEAK_DAYS'):
         w = _peak_window()
@@ -654,6 +680,16 @@ def _derived_text(name: str, default: Optional[str]) -> Optional[str]:
     return default
 
 
+def default_text(ent: 'Entry') -> Optional[str]:
+    """The registry default as env-style text (None when there is none)."""
+    d = ent.default
+    if d is None:
+        return None
+    if isinstance(d, bool):
+        return 'true' if d else 'false'
+    return str(d)
+
+
 def _store_raw(name: str, default: Optional[str] = None) -> Optional[str]:
     m = _ARRAY_RE.match(name)
     if m:
@@ -661,7 +697,7 @@ def _store_raw(name: str, default: Optional[str] = None) -> Optional[str]:
         if cls not in STORE_CLASSES:
             return os.getenv(name, default)
         text = _array_field_text(_array_for(array_id=m.group(1)), m.group(2))
-        _note_divergence(name, text)
+        _note_divergence(name, text if text is not None else default)
         return default if text is None else text
 
     if name in LEGACY_ARRAY_ALIASES:
@@ -669,7 +705,7 @@ def _store_raw(name: str, default: Optional[str] = None) -> Optional[str]:
         if ARRAY_FIELDS[fld][0] not in STORE_CLASSES:
             return os.getenv(name, default)
         text = _array_field_text(_array_for(array_type=atype), fld)
-        _note_divergence(name, text)
+        _note_divergence(name, text if text is not None else default)
         return default if text is None else text
 
     ent = BY_ENV.get(name)
@@ -684,7 +720,7 @@ def _store_raw(name: str, default: Optional[str] = None) -> Optional[str]:
         _note_divergence(name, text)
         return default if text is None else text
     text = _row_text(_snap()['cfg'].get(ent.key))
-    _note_divergence(name, text)
+    _note_divergence(name, text if text is not None else default)
     return default if text is None else text
 
 
@@ -838,7 +874,7 @@ def startup_summary() -> List[str]:
         # Touch every registered env name so divergence/retired sets fill.
         for ent in REGISTRY:
             for n in ent.env:
-                _store_raw(n)
+                _store_raw(n, default_text(ent))
         for aid in array_ids():
             for fld in ARRAY_FIELDS:
                 _store_raw(f'SOLAR_ARRAY_{aid.upper()}_{fld}')

@@ -7,6 +7,7 @@ config_admin.py — headless config store administration (v4.7)
     python3 /app/scripts/config_admin.py authority store [--force]
     python3 /app/scripts/config_admin.py authority env
     python3 /app/scripts/config_admin.py restore <config-snapshot-*.json> [--yes]
+    python3 /app/scripts/config_admin.py fill-site [--dry-run]
 
 sync        Make the store reproduce the current environment (.env via compose):
             the headless equivalent of the review's "accept all".
@@ -209,6 +210,15 @@ def cmd_authority(args):
         rows = dump.compare_raw() + dump.compare_billing()
         settings.force_authority(None)
         diffs = [r for r in rows if r['status'] == 'DIFF']
+        reviewed = config_store.app_state.get('review.completed_at')
+        if diffs and reviewed:
+            # The store holds a committed review; differences from .env are the
+            # user's reviewed choices, not drift.
+            print(f'Review committed {reviewed}; {len(diffs)} value(s) differ from .env '
+                  f'by choice (the store wins):')
+            for r in diffs:
+                print(f"  {r['name']}: env={r['env']!r} store={r['store']!r}")
+            diffs = []
         if diffs:
             print(f'REFUSED: {len(diffs)} DIFF row(s) between env and store:')
             for r in diffs:
@@ -251,6 +261,42 @@ def cmd_restore(args):
     return 0
 
 
+def cmd_fill_site(args):
+    """One-time repair for installs that committed the review before
+    site-specific settings lost their built-in defaults (v4.7.0-beta): a
+    value equal to the old default was stored as 'no row'. Writes such rows
+    from the .env value (source='user'); never overwrites an existing row."""
+    import config_commit
+    import config_review
+    store = {r['key']: r for r in db.query("SELECT * FROM app_config WHERE scope = 'global'")}
+    todo = []
+    for ent in settings.REGISTRY:
+        if not ent.required_if or not ent.key or ent.key in store:
+            continue
+        env_v = config_review._env_text(ent)
+        if env_v in (None, ''):
+            print(f'  skip   {ent.key}: not in .env either (set it in the review)')
+            continue
+        text, err = config_commit._store_text(ent, env_v)
+        if err:
+            print(f'  skip   {ent.key}: .env value {env_v!r} invalid ({err})')
+            continue
+        todo.append((ent, text))
+    for ent, text in todo:
+        print(f"  {'would set' if args.dry_run else 'set'}    {ent.key} = {text!r}   (from .env)")
+    if args.dry_run or not todo:
+        print('Nothing written.' if not todo or args.dry_run else '')
+        return 0
+    if not args.dry_run:
+        config_commit.take_snapshot('pre-fill-site')
+    for ent, text in todo:
+        config_store.app_config.set(ent.key, text, value_type=ent.store_type,
+                                    category=ent.category or ent.key.split('.')[0],
+                                    description=ent.help, is_secret=False, source='user')
+    print(f'{len(todo)} row(s) written. Takes effect on restart.')
+    return 0
+
+
 def cmd_status(args):
     flag = settings.read_authority_flag()
     print(f"config.authority flag : {flag}")
@@ -277,16 +323,19 @@ def main():
     a = sub.add_parser('authority')
     a.add_argument('value', choices=('env', 'store'))
     a.add_argument('--force', action='store_true', help='skip the peak guard')
+    f = sub.add_parser('fill-site')
+    f.add_argument('--dry-run', action='store_true')
     r = sub.add_parser('restore')
     r.add_argument('file', help='config-snapshot-*.json in data/backups (name or path)')
     r.add_argument('--yes', action='store_true')
     args = ap.parse_args()
-    writing = (args.cmd in ('authority', 'restore')) or (args.cmd == 'sync' and not args.dry_run)
+    writing = (args.cmd in ('authority', 'restore')) or \
+        (args.cmd in ('sync', 'fill-site') and not args.dry_run)
     if writing:
         db.init_db()
         config_store.init_config_schema()
     return {'status': cmd_status, 'sync': cmd_sync, 'authority': cmd_authority,
-            'restore': cmd_restore}[args.cmd](args)
+            'restore': cmd_restore, 'fill-site': cmd_fill_site}[args.cmd](args)
 
 
 if __name__ == '__main__':

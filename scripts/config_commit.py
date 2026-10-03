@@ -257,8 +257,9 @@ def _final(row: dict, edits: dict, choices: dict):
     key = row['key']
     if key in edits:
         v = edits[key]
-    elif row.get('status') == 'conflict' and choices.get(key) == 'store':
-        v = row.get('store')
+    elif row.get('status') == 'conflict':
+        c = choices.get(key) or row.get('prefer') or 'env'
+        v = row.get('store') if c == 'store' else row.get('env')
     else:
         v = row.get('proposed')
     return None if _blank(v) else str(v).strip()
@@ -272,7 +273,7 @@ def build_plan(edits: Dict[str, Any], choices: Dict[str, str]) -> Dict[str, Any]
     import config_review
 
     edits = {str(k): (None if v is None else str(v)) for k, v in (edits or {}).items()}
-    choices = {str(k): str(v) for k, v in (choices or {}).items()}
+    choices = {str(k): str(v) for k, v in (choices or {}).items() if str(v) in ('env', 'store')}
     payload = config_review.review_payload()
     rows: Dict[str, dict] = {}
     array_cards = []
@@ -311,6 +312,24 @@ def build_plan(edits: Dict[str, Any], choices: Dict[str, str]) -> Dict[str, Any]
             text = None         # left at the code default: no row
         settings_plan.append((ent.key, text, ent.store_type,
                               ent.category or ent.key.split('.')[0], ent.help))
+
+    # Site-specific values (no built-in default) must be set when needed.
+    final_text = {k: t for k, t, *_ in settings_plan}
+    for ent in settings.REGISTRY:
+        if not ent.required_if or ent.key not in final_text or final_text[ent.key] is not None:
+            continue
+        if ent.required_if != 'always':
+            ctl = settings.BY_KEY.get(ent.required_if)
+            ctl_text = final_text.get(ent.required_if)
+            if ctl_text is None and ctl is not None:
+                ctl_text = config_review._default_text(ctl)
+            if settings._bool_text(ctl_text or 'false') != 'true':
+                continue
+        label = (rows.get(ent.key) or {}).get('label', ent.key)
+        cond = '' if ent.required_if == 'always' else \
+            f" while {config_review.LABELS.get(ent.required_if, ent.required_if)} is on"
+        errors.append(f'{label} — required{cond}; it is specific to your site and has no '
+                      f'built-in default')
 
     # ---- arrays ---------------------------------------------------------------
     arrays_plan = []

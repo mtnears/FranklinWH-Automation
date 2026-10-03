@@ -219,8 +219,34 @@ def t_weather(a):
                            + (' (key rejected)' if r.status_code == 401 else ''))
     obs = (r.json().get('observations') or [{}])[0]
     temp = (obs.get('imperial') or {}).get('temp')
-    return (f"Station {station} OK: {temp}°F at {obs.get('obsTimeLocal', '?')}."
-            if temp is not None else f'Station {station} OK.')
+    where = obs.get('neighborhood') or ''
+    msg = (f"Station {station}{' (' + where + ')' if where else ''} OK: {temp}°F at "
+           f"{obs.get('obsTimeLocal', '?')}." if temp is not None else f'Station {station} OK.')
+    # Distance from the site location on the page (or settings)
+    try:
+        slat = float(a.get('lat') if a.get('lat') not in (None, '') else settings.raw('FORECAST_LATITUDE'))
+        slon = float(a.get('lon') if a.get('lon') not in (None, '') else settings.raw('FORECAST_LONGITUDE'))
+        olat, olon = float(obs['lat']), float(obs['lon'])
+    except (TypeError, ValueError, KeyError):
+        return msg + ' (Distance not checked: site location or station position unknown.)'
+    km = _km(slat, slon, olat, olon)
+    msg += f' {km:.1f} km from your site.'
+    if km > FAR_KM:
+        msg += (f' That is more than {FAR_KM} km away: check the station ID, or the site '
+                f'latitude/longitude on this step. A distant station still works, but its '
+                f'weather is less representative of yours.')
+    return msg
+
+
+FAR_KM = 15
+
+
+def _km(lat1, lon1, lat2, lon2) -> float:
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(h))
 
 
 TESTS = {'modbus': t_modbus, 'envoy': t_envoy, 'franklin': t_franklin,

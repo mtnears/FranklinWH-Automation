@@ -57,8 +57,8 @@ LABELS = {
     'forecast.latitude': 'Latitude',
     'forecast.longitude': 'Longitude',
     'features.forecast': 'Solar forecasting',
-    'features.weather': 'Weather station',
-    'weather.station_id': 'Station ID',
+    'features.weather': 'Weather Underground station (PWS)',
+    'weather.station_id': 'PWS station ID',
     'features.pvoutput': 'PVOutput uploads',
     'pvoutput.system_ids': 'PVOutput system IDs',
     'features.solaredge_panel_monitoring': 'SolarEdge panel health (portal)',
@@ -89,7 +89,7 @@ SECRET_LABELS = {
     'FRANKLIN_USERNAME': 'Franklin account',
     'FRANKLIN_PASSWORD': 'Franklin password',
     'FRANKLIN_GATEWAY_ID': 'Gateway ID',
-    'WEATHER_API_KEY': 'Weather API key',
+    'WEATHER_API_KEY': 'Weather Underground API key',
     'PVOUTPUT_API_KEY': 'PVOutput API key',
     'SOLAREDGE_USERNAME': 'SolarEdge portal login',
     'SOLAREDGE_PASSWORD': 'SolarEdge portal password',
@@ -220,16 +220,36 @@ def _status(env_v, store_v, typ):
     return 'match' if _canon(typ, env_v) == _canon(typ, store_v) else 'conflict'
 
 
+# Set per payload: has a review been committed on this install?
+_CTX = {'reviewed': False}
+
+
 def setting_row(ent: settings.Entry, store: Dict[str, dict], extra: dict = None) -> dict:
     env_v = _env_text(ent)
     store_v = settings._row_text(store.get(ent.key))
-    status = _status(env_v, store_v, ent.type)
-    if status in ('conflict', 'env_only', 'match'):
-        proposed = env_v
-    elif status == 'store_only':
+    prefer = 'env'
+    if _CTX['reviewed']:
+        # After a committed review the store is the reviewed configuration:
+        # 'no row' is a deliberate choice of the code default (or of 'not set'
+        # for optional values), and conflicts pre-select the store.
+        prefer = 'store'
+        if store_v is None:
+            store_v = None if ent.optional else _default_text(ent)
+        if env_v is None:
+            status = 'store_only' if store_v is not None else 'default'
+        elif store_v is None:
+            status = 'conflict'
+        else:
+            status = 'match' if _canon(ent.type, env_v) == _canon(ent.type, store_v) else 'conflict'
         proposed = store_v
     else:
-        proposed = None if ent.optional else _default_text(ent)
+        status = _status(env_v, store_v, ent.type)
+        if status in ('conflict', 'env_only', 'match'):
+            proposed = env_v
+        elif status == 'store_only':
+            proposed = store_v
+        else:
+            proposed = None if ent.optional else _default_text(ent)
     effective = settings.raw(ent.env[0]) if ent.env else (
         settings._row_text(settings._snap()['cfg'].get(ent.key))
         if settings.authority() == 'store' else env_v)
@@ -244,7 +264,14 @@ def setting_row(ent: settings.Entry, store: Dict[str, dict], extra: dict = None)
         'vmin': ent.vmin, 'vmax': ent.vmax, 'default': _default_text(ent),
         'env': env_v, 'store': store_v, 'effective': effective,
         'proposed': proposed, 'status': status, 'hints': [],
+        'required_if': ent.required_if, 'prefer': prefer,
     }
+    if ent.required_if and proposed in (None, ''):
+        row['hints'].append({'level': 'warn', 'text':
+                             'Required for this install: there is no built-in default '
+                             'because it is specific to your site.' +
+                             ('' if ent.required_if == 'always' else
+                              f' (needed while {LABELS.get(ent.required_if, ent.required_if)} is on)')})
     if extra:
         row.update(extra)
     return row
@@ -278,6 +305,8 @@ def info_row(label: str, value: Any, help_text: str = '') -> dict:
 
 def review_payload() -> Dict[str, Any]:
     store = _store_rows()
+    _CTX['reviewed'] = bool((_q("SELECT value FROM app_state WHERE key = 'review.completed_at'")
+                             or [{'value': None}])[0]['value'])
     by_screen: Dict[str, List[dict]] = {s[0]: [] for s in SCREENS}
     advanced_rows, legacy_rows = [], []
 
@@ -429,9 +458,23 @@ def review_payload() -> Dict[str, Any]:
                            'forecasts; never above the configured AC capacity.')
         obs, st = sds.get('cap_observed_kw'), sds.get('cap_store_kw')
         if obs and st and abs(st - obs) / obs > 0.10:
-            cap_row['hints'] = [{'level': 'warn', 'text':
-                                 f'Configured AC capacity {st} kW differs from the observed '
-                                 f'maximum {obs} kW by more than 10%. Check the array AC size.'}]
+            charging = [c for c in cards['arrays'] if c.get('array_id') and
+                        (s_arrays.get(c['array_id']) or {}).get('charges_battery') == 1]
+            non_export = bool(charging) and all(
+                (s_arrays.get(c['array_id']) or {}).get('exports') == 0 for c in charging)
+            text = (f'Configured AC capacity {st} kW differs from the observed maximum {obs} kW '
+                    f'by more than 10%. Check the array AC size against its nameplate.')
+            if non_export and obs < st:
+                text += (' This array does not export, so when the battery is full the Franklin '
+                         'curtails it and the observed maximum can stay well below nameplate. If '
+                         'the nameplate matches, leave it.')
+            hint = {'level': 'warn', 'text': text}
+            cap_row['hints'] = [hint]
+            # Also on the AC capacity row of the battery-charging array(s), where the fix is made
+            for c in charging:
+                for r in c['rows']:
+                    if r.get('key') == f"array.{c['array_id']}.capacity_kw":
+                        r['hints'].append(dict(hint))
         derived_rows.append(cap_row)
     except Exception:
         pass
@@ -603,6 +646,12 @@ def rates_cards() -> List[dict]:
         info_row('Prices today', ', '.join(f'{t} {c:.2f}¢' for t, c in sorted(
             res.tier_rates_cents.items())) if res else 'not resolved',
             res.source if res else ''),
+        dict(info_row('Check against your tariff',
+                      'Compare these prices and windows with the rate schedule named on your bill.',
+                      'Utilities publish their rate schedules (tariffs) as documents on their '
+                      'website. The Setup Checklist (Rates section) lists where to find them, '
+                      'for example the PG&E tariffs page.'),
+             link='/SETUP_CHECKLIST.pdf', link_text='Open the Setup Checklist (PDF)'),
     ]})
     return out
 

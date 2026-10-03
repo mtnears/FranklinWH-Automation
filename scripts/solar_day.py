@@ -95,6 +95,11 @@ def _tz():
     return datetime.now().astimezone().tzinfo
 
 
+# Last resort only, when no site location is configured (the review requires
+# one). Logged as a fallback by solar_forecast.
+FALLBACK_LAT, FALLBACK_LON = 38.91, -120.84
+
+
 def location() -> Tuple[float, float, str]:
     lat, lon = settings.raw('FORECAST_LATITUDE'), settings.raw('FORECAST_LONGITUDE')
     try:
@@ -102,8 +107,8 @@ def location() -> Tuple[float, float, str]:
             return float(lat), float(lon), 'settings'
     except ValueError:
         pass
-    ent_lat, ent_lon = settings.BY_KEY['forecast.latitude'], settings.BY_KEY['forecast.longitude']
-    return float(ent_lat.default), float(ent_lon.default), 'default'
+    # No site location configured: last-resort fallback (callers log it).
+    return FALLBACK_LAT, FALLBACK_LON, 'fallback'
 
 
 # =============================================================================

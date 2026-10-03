@@ -1327,7 +1327,8 @@ class APIHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as e:
             self._json_response(400, {'ok': False, 'message': f'Bad request: {e}'})
             return
-        allowed = ('test', 'host', 'ip', 'array_id', 'station_id', 'system_ids', 'site_id')
+        allowed = ('test', 'host', 'ip', 'array_id', 'station_id', 'system_ids', 'site_id',
+                   'lat', 'lon')
         args = {k: str(v)[:200] for k, v in args.items() if k in allowed and v is not None}
         try:
             r = subprocess.run([sys.executable, str(SCRIPT_DIR / 'review_tests.py'), json.dumps(args)],

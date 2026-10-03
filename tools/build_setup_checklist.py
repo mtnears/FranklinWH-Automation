@@ -217,7 +217,18 @@ SECTIONS = [
       dict(id='holidays', label='Holidays treated as off-peak?', tag='O', kind='yesno',
            what='Some plans price listed holidays as off-peak all day.',
            where='Tariff sheet, usually a footnote under the time periods.'),
-    ]
+    ],
+    # Official tariff sources. Add a utility only after checking its URL.
+    'resources_title': 'Where to find your official rate schedule',
+    'resources_intro': 'Your bill names the rate schedule (for example EV2-A or E-TOU-D). The '
+                       "utility's tariff document for that schedule is the authority for prices, "
+                       'windows and seasons; compare the review against it.',
+    'resources': [
+      ('PG&amp;E (California)',
+       'https://www.pge.com/tariffs/en.html#ELECTRIC%20RATE%20SCHEDULES',
+       'Open Electric Rate Schedules. Each residential schedule is a PDF (for example EV2 or '
+       'E-TOU-D); the price table and the time periods are on the first pages.'),
+    ],
   },
   {
     'title': '5. Utility & billing',
@@ -272,8 +283,11 @@ SECTIONS = [
            where='Right-click your home in Google Maps; the first line is latitude, longitude.'),
       dict(id='wu_station', label='Weather Underground station ID', tag='O', kind='text',
            keys=['weather.station_id', 'features.weather'],
-           what='A nearby personal weather station improves forecast calibration.',
-           where='wunderground.com/wundermap: pick a station close to you, for example KCAGEORG2.'),
+           what='A personal weather station (PWS) near you improves forecast calibration. It can be '
+                'your own station or any nearby public one; the review test shows how far it is '
+                'from your site.',
+           where='wunderground.com/wundermap: pick a station close to you, for example KCAGEORG2. '
+                 'Without a station and key, leave this off.'),
       dict(id='wu_key', label='Weather Underground API key', tag='C', kind='secret',
            keys=['WEATHER_API_KEY'], cond='Needed if you use a station.',
            what='Lets the automation read the station. Stays in .env.',
@@ -534,9 +548,9 @@ def intro_page():
         'stay in the .env file on your machine and the review never displays them. It is safer to '
         'tick the box than to write the value here. If you do write them, keep this file private.',
         '<b>Checking against the review.</b> After you gather the information, open the dashboard, '
-        'go to Settings and choose <i>Preview configuration review</i>. Step through the screens '
-        'and tick <i>Matches review</i> for each item that shows what you expected. Preview mode '
-        'saves nothing.',
+        'go to Settings and choose <i>Configuration review</i>. Step through the screens and tick '
+        '<i>Matches review</i> for each item that shows what you expected. Nothing is saved until '
+        'you press Commit on the last step (<i>Preview</i> never saves).',
     ]
     for b in body:
         s.append(Paragraph(b, sty['body']))
@@ -590,6 +604,13 @@ def build(out_path: Path):
             for it in sec['items'][1:]:
                 fid = f'{prefix}.{r}.{it["id"]}' if reps > 1 else f'{prefix}.{it["id"]}'
                 story.append(KeepTogether(item_block(it, fid)))
+            if sec.get('resources') and r == 0:
+                res = [Spacer(1, 4), Paragraph(sec['resources_title'], sty['label']),
+                       Paragraph(sec['resources_intro'], sty['small'])]
+                for name, url, note in sec['resources']:
+                    res.append(Paragraph(f'<b>{name}:</b> <link href="{url}" color="blue">'
+                                         f'<u>{url}</u></link><br/>{note}', sty['small']))
+                story.append(KeepTogether(res))
             story.append(Spacer(1, 6))
     story.append(Paragraph('Advanced settings', sty['h2']))
     story.append(Paragraph(ADVANCED_NOTE, sty['intro']))
