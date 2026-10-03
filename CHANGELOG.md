@@ -4,6 +4,29 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-beta.2 — October 2026 (branch `v4.7-config-review`)
+
+Fixes from the first live tester review.
+
+### Configuration review
+- **Site-specific settings no longer have built-in defaults.** These are latitude/longitude, the battery-array DC size, tilt and azimuth, and the aGate IP. The old defaults were the developer's own values, so a "matches" value was stored as "no row", and the forecast then logged "site location not configured" on every cycle.
+  - The review now requires these settings (the aGate IP only when Modbus is on; the array values only when forecasting is on) and always stores them.
+  - `config_admin.py fill-site` writes the missing rows once from `.env` for installs that committed beta.1.
+- **Re-reviewing after a commit pre-selects your reviewed values.** Previously "no row" (a value left at its default) read as "not in the store", so `.env` was pre-selected again. For example, a CARE discount you had removed came back.
+- **Out-of-range or missing values are flagged as you type.** Commit stays disabled until they're fixed, and the Summary lists them. The server checks still apply.
+- **The page reloads its data after a commit or rollback restart,** so the header and banner show the configuration that's actually running.
+- **Solar arrays:** the AC-capacity hint now also appears on the AC capacity row. On non-export battery arrays it explains that curtailment holds the observed maximum below nameplate.
+- **Engine behavior:** warns when Strategy is Export but no battery-charging array exports.
+- **Rates:** a "(midnight)" label on windows that end at 00:00, and a link to the Setup Checklist's new "Where to find your official rate schedule" section (PG&amp;E tariffs page). The PDF is now served at `/SETUP_CHECKLIST.pdf`.
+- **Weather:** relabeled as Weather Underground PWS, with help text on API keys and on using a nearby station. The Test now reports the station's distance from your site, and warns above 15 km.
+- **Readability:** muted text contrast raised from about 3.1:1 to about 6.4:1, on both the review and the dashboard. Help and footnote text on the review page goes from 12 px to 13 px.
+
+### Fixes
+- **Startup "`.env values ignored`" and `dump_effective_config.py`** compare effective values, so a setting that only falls back to the code default is no longer reported as a difference. `config_admin.py authority store` accepts reviewed differences once a review has been committed.
+- **`db.init_db()`'s historical mode-normalization scan** now runs once and is stamped in `app_state`. It used to scan all of `system_readings` at the start of every collector run, including Dashboard Data every minute.
+
+---
+
 ## v4.7.0-beta — October 2026 (branch `v4.7-config-review`)
 
 The configuration store becomes the source of truth, through a one-time guided review. Full notes: [docs/RELEASE_NOTES_v4.7.0-beta.md](docs/RELEASE_NOTES_v4.7.0-beta.md).
