@@ -8,6 +8,7 @@ config_admin.py — headless config store administration (v4.7)
     python3 /app/scripts/config_admin.py authority env
     python3 /app/scripts/config_admin.py restore <config-snapshot-*.json> [--yes]
     python3 /app/scripts/config_admin.py fill-site [--dry-run]
+    python3 /app/scripts/config_admin.py prune-retired [--dry-run]
 
 sync        Make the store reproduce the current environment (.env via compose):
             the headless equivalent of the review's "accept all".
@@ -31,6 +32,11 @@ authority   Set app_state['config.authority']. Takes effect on the next
             the peak guard only). 'env' is the rollback and always allowed.
             (The review's own commit does not use the env-vs-store DIFF check:
             reviewed edits differ from .env on purpose. See config_commit.py.)
+
+prune-retired
+            Delete app_config rows that no registry setting describes: names
+            the Phase-1 migration wrote that nothing reads any more (e.g.
+            rates.care_active, notify.*). Snapshot first; prints each row.
 
 restore     Put the config tables back from a snapshot. The review takes one
             before every commit (data/backups/config-snapshot-*.json); the
@@ -297,6 +303,24 @@ def cmd_fill_site(args):
     return 0
 
 
+def cmd_prune_retired(args):
+    store = {r['key']: r for r in db.query("SELECT * FROM app_config WHERE scope = 'global'")}
+    keys = settings.orphan_store_keys(store)
+    for k in keys:
+        r = store[k]
+        print(f"  {'would delete' if args.dry_run else 'delete'}  {k} = {r['value']!r} "
+              f"(source {r['source']})")
+    if args.dry_run or not keys:
+        print('Nothing deleted.' if keys else 'No retired rows in the store.')
+        return 0
+    import config_commit
+    snap = config_commit.take_snapshot('pre-prune')
+    _delete_config_rows(keys)
+    print(f'{len(keys)} row(s) deleted. Snapshot: {snap.name}. Nothing reads them, so no restart '
+          f'is needed.')
+    return 0
+
+
 def cmd_status(args):
     flag = settings.read_authority_flag()
     print(f"config.authority flag : {flag}")
@@ -325,17 +349,20 @@ def main():
     a.add_argument('--force', action='store_true', help='skip the peak guard')
     f = sub.add_parser('fill-site')
     f.add_argument('--dry-run', action='store_true')
+    pr = sub.add_parser('prune-retired')
+    pr.add_argument('--dry-run', action='store_true')
     r = sub.add_parser('restore')
     r.add_argument('file', help='config-snapshot-*.json in data/backups (name or path)')
     r.add_argument('--yes', action='store_true')
     args = ap.parse_args()
     writing = (args.cmd in ('authority', 'restore')) or \
-        (args.cmd in ('sync', 'fill-site') and not args.dry_run)
+        (args.cmd in ('sync', 'fill-site', 'prune-retired') and not args.dry_run)
     if writing:
         db.init_db()
         config_store.init_config_schema()
     return {'status': cmd_status, 'sync': cmd_sync, 'authority': cmd_authority,
-            'restore': cmd_restore, 'fill-site': cmd_fill_site}[args.cmd](args)
+            'restore': cmd_restore, 'fill-site': cmd_fill_site,
+            'prune-retired': cmd_prune_retired}[args.cmd](args)
 
 
 if __name__ == '__main__':

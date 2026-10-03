@@ -149,6 +149,21 @@ def _store_rows() -> Dict[str, dict]:
     return {r['key']: r for r in _q("SELECT * FROM app_config WHERE scope = 'global'")}
 
 
+def _state(key: str) -> Optional[str]:
+    return (_q("SELECT value FROM app_state WHERE key = ?", (key,)) or [{'value': None}])[0]['value']
+
+
+def store_written_at() -> Optional[str]:
+    """When the configuration store last changed: the newest write to settings,
+    arrays or rate plans (a review commit, a sync from .env, or an admin tool)."""
+    stamps = [(_q(sql) or [{'t': None}])[0]['t'] for sql in (
+        "SELECT MAX(updated_at) AS t FROM app_config",
+        "SELECT MAX(updated_at) AS t FROM solar_arrays",
+        "SELECT MAX(imported_at) AS t FROM rate_plans")]
+    stamps = [str(s) for s in stamps if s]
+    return max(stamps) if stamps else None
+
+
 def _store_arrays() -> List[dict]:
     out = []
     for a in _q("SELECT * FROM solar_arrays ORDER BY id"):
@@ -385,11 +400,18 @@ def review_payload() -> Dict[str, Any]:
     for aid in ids:
         sa = s_arrays.get(aid)
         rows = []
+        atype_now = ((sa or {}).get('array_type') or
+                     os.environ.get(f'SOLAR_ARRAY_{aid.upper()}_TYPE') or '').lower()
         for fld, (cls, where, name) in settings.ARRAY_FIELDS.items():
             env_name = f'SOLAR_ARRAY_{aid.upper()}_{fld}'
             if cls == settings.SECRET:
                 if os.environ.get(env_name) is not None:
                     rows.append(secret_row(env_name, ARRAY_FIELD_LABELS[fld]))
+                    if fld == 'API_KEY' and atype_now == 'solaredge':
+                        # Monitoring API (site ID + key), plus the inverters over
+                        # local Modbus when that is on
+                        rows[-1].update({'testable': True, 'test': 'solaredge_site',
+                                         'array_id': aid})
                 continue
             if cls == settings.INFRA:
                 continue
@@ -409,8 +431,6 @@ def review_payload() -> Dict[str, Any]:
                          'proposed': env_v if env_v is not None else store_v, 'status': st,
                          'readonly': fld == 'TYPE'})
             if fld == 'IP':
-                atype_now = ((sa or {}).get('array_type') or
-                             os.environ.get(f'SOLAR_ARRAY_{aid.upper()}_TYPE') or '').lower()
                 if atype_now == 'enphase':
                     rows[-1].update({'testable': True, 'test': 'envoy', 'array_id': aid})
         charges = sa.get('charges_battery') if sa else None
@@ -424,7 +444,17 @@ def review_payload() -> Dict[str, Any]:
                      'value': exports, 'help': 'Whether this array sends surplus to the grid.',
                      'status': 'store_only' if exports is not None else 'unreviewed'})
         if charges == 1:
-            rows.append(info_row('DC size in store (kWp)', sa.get('capacity_kwp')))
+            # The array row's DC size follows forecast.house_kwp on commit; show it
+            # only when the two differ (e.g. after an edit to one of them)
+            try:
+                same_kwp = abs(float(sa.get('capacity_kwp')) -
+                               float(rows_by_key['forecast.house_kwp']['proposed'])) < 0.005
+            except (TypeError, ValueError):
+                same_kwp = False
+            if not same_kwp:
+                rows.append(info_row('DC size in store (kWp)', sa.get('capacity_kwp'),
+                                     'The DC size on the array record. Committing sets it to '
+                                     'the DC size below.'))
             for k in ('forecast.house_kwp', 'forecast.house_tilt', 'forecast.house_azimuth'):
                 rows.append(rows_by_key[k])
         title = (sa or {}).get('name') or os.environ.get(f'SOLAR_ARRAY_{aid.upper()}_NAME') or aid
@@ -469,12 +499,17 @@ def review_payload() -> Dict[str, Any]:
                          'curtails it and the observed maximum can stay well below nameplate. If '
                          'the nameplate matches, leave it.')
             hint = {'level': 'warn', 'text': text}
-            cap_row['hints'] = [hint]
-            # Also on the AC capacity row of the battery-charging array(s), where the fix is made
+            # On the AC capacity row of the battery-charging array(s), where the fix
+            # is made; Derived only points there
+            placed_on = []
             for c in charging:
                 for r in c['rows']:
                     if r.get('key') == f"array.{c['array_id']}.capacity_kw":
                         r['hints'].append(dict(hint))
+                        placed_on.append(c['title'])
+            cap_row['hints'] = ([{'level': 'rec', 'text': 'Differs from the configured AC capacity '
+                                  'by more than 10%: see ' + ', '.join(placed_on) +
+                                  ' → AC capacity above.'}] if placed_on else [hint])
         derived_rows.append(cap_row)
     except Exception:
         pass
@@ -583,6 +618,7 @@ def review_payload() -> Dict[str, Any]:
                       [{'value': None}])[0]['value'],
         'review_completed_at': (_q("SELECT value FROM app_state WHERE key = 'review.completed_at'") or
                                 [{'value': None}])[0]['value'],
+        'store_written_at': store_written_at(),
         'screens': [{'id': sid, 'title': t, 'intro': intro, 'cards': cards.get(sid, [])}
                     for sid, t, intro in SCREENS],
         'summary': {'retired_in_env': retired, 'legacy_aliases_in_env': aliases,
@@ -663,7 +699,9 @@ def rates_cards() -> List[dict]:
             res.tier_rates_cents.items())) if res else 'not resolved',
             res.source if res else ''),
         dict(info_row('Check against your tariff',
-                      'Compare these prices and windows with the rate schedule named on your bill.',
+                      'Compare these prices and windows with the rate schedule named on your bill. '
+                      "The Setup Checklist includes a link to PG&E's rate schedules; links for "
+                      'other utilities will be added as we find them.',
                       'Utilities publish their rate schedules (tariffs) as documents on their '
                       'website. The Setup Checklist (Rates section) lists where to find them, '
                       'for example the PG&E tariffs page.'),

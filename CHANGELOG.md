@@ -4,6 +4,30 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-beta.3 — October 2026 (branch `v4.7-config-review`)
+
+Fixes from the beta.2 live test pass.
+
+### Dashboard
+- **Settings card shows every setting's value in effect.** `GET /api/v1/settings/config` listed only stored rows, so settings left at their built-in default (battery count, planning floor, solar fill ceiling) showed as `null`. It now lists every registry setting with its effective value and marks defaulted ones `source: default`.
+- **The Configuration line shows the source, the review and the counts** (for example "source store · reviewed 2026-10-03 10:27 (4.7.0-beta.2) · 48 settings: 20 set, 28 at default"), not the Phase-1 migration stamp. The same set/default count is used by the dashboard, Configuration health and the commit summary.
+- Labels match the review ("planning floor", "grid charge / solar fill ceiling"); Preview and Setup checklist are styled as buttons.
+
+### Configuration review
+- **Header shows when the store last changed** (a commit, sync or admin tool), not the last sync from `.env`.
+- **The step tabs wrap** instead of scrolling behind a scrollbar.
+- **A red dot marks any step with a value that needs fixing**, and the bottom bar shows how many need fixing with a link to the step.
+- **Rates:** each season shows "matches" or "edited (n)" with a revert; edited prices and times are outlined. The tariff row says the checklist links PG&amp;E's schedules, with other utilities to follow (also in the PDF).
+- **Solar arrays:** the AC-capacity warning appears once, on the array row (Derived points to it); "DC size in store" only shows when it differs from the DC size field.
+- Whole-number values show without a trailing ".0"; retyping the same number is not an edit.
+- **SolarEdge array cards have a Test:** the monitoring API (site ID and key: name, peak power, status, last update) and, with local Modbus on, each inverter's model, status and output.
+
+### Fixes
+- **`config_admin.py prune-retired`** deletes `app_config` rows no registry setting describes (Phase-1 names nothing reads, e.g. `rates.care_active`, `notify.*`). It snapshots first.
+- Configuration health checks read registry settings through `settings.get`, so defaulted values (battery count, strategy, export compensation) are seen; the NEM check uses `billing.export_compensation` instead of the retired `solar.nem_version` row.
+
+---
+
 ## v4.7.0-beta.2 — October 2026 (branch `v4.7-config-review`)
 
 Fixes from the first live tester review.

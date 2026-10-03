@@ -1029,13 +1029,13 @@
             </div>
             <div class="card"><div class="card-label">Automation Summary <span style="font-size:10px;color:var(--text-muted);font-weight:400">live from configuration store</span></div>
                 <div class="setting-note" style="margin-bottom:12px;color:var(--text-muted)">Read-only here. Settings are changed through the configuration review.</div>
-                <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><a href="/config_review.html" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.08);color:#d9ceff;font-size:13px;text-decoration:none">Configuration review →</a><a href="/config_review.html?preview=1" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--border-subtle);color:var(--text-secondary);font-size:13px;text-decoration:none">Preview (nothing saved)</a><a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" title="Printable / fillable list of everything the review asks for" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--border-subtle);color:var(--text-secondary);font-size:13px;text-decoration:none">Setup checklist (PDF)</a></div>
+                <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><a href="/config_review.html" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.08);color:#d9ceff;font-size:13px;text-decoration:none">Configuration review →</a><a href="/config_review.html?preview=1" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(79,143,255,.35);background:rgba(79,143,255,.08);color:#cfe0ff;font-size:13px;text-decoration:none">Preview (nothing saved)</a><a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" title="Printable / fillable list of everything the review asks for" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(79,143,255,.35);background:rgba(79,143,255,.08);color:#cfe0ff;font-size:13px;text-decoration:none">Setup checklist (PDF)</a></div>
                 <div class="info-row"><span class="info-key">Charging Strategy</span><span class="info-val" id="v46-strategy">--</span></div>
                 <div class="info-row"><span class="info-key">Peak Window (today)</span><span class="info-val" id="v46-peakwin">--</span></div>
                 <div class="info-row"><span class="info-key">Today's Rates</span><span class="info-val" id="v46-rates-today">--</span></div>
                 <div class="info-row"><span class="info-key">Battery</span><span class="info-val" id="v46-batt">--</span></div>
-                <div class="info-row"><span class="info-key">Grid-Charge Ceiling / Target</span><span class="info-val" id="v46-soc-pts">--</span></div>
-                <div class="info-row"><span class="info-key">Config Store</span><span class="info-val" id="v46-store">--</span></div>
+                <div class="info-row"><span class="info-key">Grid charge / solar fill ceiling</span><span class="info-val" id="v46-soc-pts">--</span></div>
+                <div class="info-row"><span class="info-key">Configuration</span><span class="info-val" id="v46-store">--</span></div>
             </div>
         </div>
         <div class="card" style="max-width:1100px;margin-top:var(--gap)"><div class="card-label">Configuration Health</div>
@@ -2352,9 +2352,10 @@ async function loadV46Settings(){
         setTextV46('v46-peakwin',t.peak_window?(t.peak_window.start+'–'+t.peak_window.end+' ('+t.peak_window.days+', '+(t.season||'year-round')+')'):'--');
         const tr=t.tier_rates_cents||{};setTextV46('v46-rates-today',Object.keys(tr).sort().map(k=>k+' '+tr[k].toFixed(2)+'¢').join(' · ')+(t.label?' ['+t.label+']':''));}
     if(cfg.available){const g=(k)=>{for(const c in cfg.categories){const f=cfg.categories[c].find(x=>x.key===k);if(f)return f.value}return null};
-        setTextV46('v46-batt',g('battery.count')+' × aPower = '+g('battery.capacity_kwh')+' kWh · reserve '+g('battery.backup_reserve_pct')+'%');
-        setTextV46('v46-soc-pts',g('engine.taper_ceiling_pct')+'% grid ceiling / '+g('engine.target_soc')+'% solar target');
-        setTextV46('v46-store',cfg.schema_version+' · '+cfg.counts.total+' keys ('+cfg.counts.from_env+' env, '+cfg.counts.defaults+' default'+(cfg.counts.user_edited?', '+cfg.counts.user_edited+' user':'')+') · migrated '+(cfg.migrated_at||'?'));}
+        setTextV46('v46-batt',g('battery.count')+' × aPower = '+g('battery.capacity_kwh')+' kWh · planning floor '+g('battery.backup_reserve_pct')+'%');
+        setTextV46('v46-soc-pts',g('engine.taper_ceiling_pct')+'% / '+g('engine.target_soc')+'%');
+        var c=cfg.counts,src=cfg.authority==='store'?'store':'.env';
+        setTextV46('v46-store','source '+src+(cfg.review_completed_at?' · reviewed '+String(cfg.review_completed_at).slice(0,16)+(cfg.review_completed_version?' ('+cfg.review_completed_version+')':''):' · not reviewed yet')+' · '+c.total+' settings: '+c.set+' set, '+c.defaults+' at default'+(cfg.store_written_at?' · last changed '+String(cfg.store_written_at).slice(0,16):''));}
     else{setTextV46('v46-store',cfg.reason||'not available')}
     // Rate Plan card
     const rpEl=document.getElementById('v46-rateplan');

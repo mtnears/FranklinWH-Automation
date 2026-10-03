@@ -222,7 +222,8 @@ SECTIONS = [
     'resources_title': 'Where to find your official rate schedule',
     'resources_intro': 'Your bill names the rate schedule (for example EV2-A or E-TOU-D). The '
                        "utility's tariff document for that schedule is the authority for prices, "
-                       'windows and seasons; compare the review against it.',
+                       'windows and seasons; compare the review against it. PG&amp;E is listed '
+                       'below; links for other utilities will be added as we find them.',
     'resources': [
       ('PG&amp;E (California)',
        'https://www.pge.com/tariffs/en.html#ELECTRIC%20RATE%20SCHEDULES',

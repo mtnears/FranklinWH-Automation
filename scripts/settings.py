@@ -787,6 +787,38 @@ def get(key: str, default: Any = None) -> Any:
     return coerce(raw(ent.env[0]), ent.type, fallback)
 
 
+def effective_settings(store_rows: Dict[str, dict]) -> List[Dict[str, Any]]:
+    """Every store-managed setting with the value that applies under the store.
+
+    store_rows: raw app_config rows by key (value as stored text). A setting with
+    no row (or a source='default' row) runs on its built-in default; it is still
+    a setting and is listed, so displays never show it as missing. One
+    definition of 'set' vs 'at default' for the dashboard, the health checks
+    and the commit summary.
+    """
+    out = []
+    for ent in REGISTRY:
+        if not ent.key or ent.cls not in STORE_CLASSES:
+            continue
+        row = store_rows.get(ent.key)
+        text = _row_text(row) if row else None
+        stored = text not in (None, '') and (row or {}).get('source') != 'default'
+        if text is None:
+            text = default_text(ent)
+        out.append({'key': ent.key, 'value': text, 'type': ent.type, 'cls': ent.cls,
+                    'category': ent.category or ent.key.split('.')[0], 'help': ent.help,
+                    'optional': ent.optional, 'stored': stored,
+                    'source': (row or {}).get('source') if stored else 'default',
+                    'updated_at': (row or {}).get('updated_at')})
+    return out
+
+
+def orphan_store_keys(store_rows: Dict[str, dict]) -> List[str]:
+    """app_config keys no registry entry describes (left by the Phase-1
+    migration under names nothing reads any more)."""
+    return sorted(k for k in store_rows if k not in BY_KEY)
+
+
 def array_ids() -> List[str]:
     s = raw('SOLAR_ARRAYS', '') or ''
     return [a.strip() for a in s.split(',') if a.strip()]

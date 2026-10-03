@@ -29,13 +29,17 @@ h1{font-size:18px;font-weight:600;letter-spacing:-.3px}
 a.back{color:var(--text-secondary);font-size:13px;text-decoration:none;border:1px solid var(--border-active);padding:6px 12px;border-radius:8px}
 .banner{margin:6px 0 14px;padding:10px 14px;border-radius:10px;font-size:13px;line-height:1.45;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.3);color:#d9ceff}
 .banner b{color:#fff}
-.steps{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;scrollbar-width:thin}
+.steps{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:6px;margin-bottom:14px}
 .step{flex:0 0 auto;display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:999px;border:1px solid var(--border-subtle);background:var(--bg-card);color:var(--text-muted);font-size:13px;cursor:pointer;white-space:nowrap}
 .step .n{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;background:var(--bg-elevated);color:var(--text-secondary)}
 .step.active{border-color:var(--accent-blue);color:var(--text-primary)}
 .step.active .n{background:var(--accent-blue);color:#081022}
 .step .dot{width:7px;height:7px;border-radius:50%;background:var(--accent-amber);display:none}
 .step.flag .dot{display:inline-block}
+.step.bad .dot{display:inline-block;background:var(--accent-red)}
+.fixlink{background:transparent;border:none;color:#f9a8a8;font-size:13px;cursor:pointer;text-decoration:underline;padding:0 0 0 6px}
+input.edited{border-color:rgba(167,139,250,.6)}
+.season h4 .badge,.season h4 .revert{margin-left:8px;font-weight:400}
 .screen-title{font-size:20px;font-weight:600;margin:4px 0 2px}
 .screen-intro{color:var(--text-secondary);font-size:13px;margin-bottom:14px}
 .card{background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:16px;margin-bottom:12px}
@@ -164,8 +168,13 @@ function currentValue(r){
   if (r.key in edits) return edits[r.key];
   return baseValue(r);
 }
+function isNum(r){ return ['int','float','float?'].indexOf(r.type) >= 0; }
+// 95.0 and 95 are the same number: show whole numbers without '.0' and do not
+// count retyping one as an edit
+function numText(v){ var s = v == null ? '' : String(v).trim(); return s !== '' && isFinite(Number(s)) ? String(Number(s)) : s; }
 function isEdited(r){
   if (!(r.key in edits)) return false;
+  if (isNum(r)) return numText(edits[r.key]) !== numText(baseValue(r));
   return String(edits[r.key] ?? '') !== String(baseValue(r) ?? '');
 }
 
@@ -209,7 +218,8 @@ function control(r){
       esc((r.choice_labels || {})[''] || 'Not set') + '</option>' + o;
     return '<select data-key="' + k + '">' + o + '</select>';
   }
-  var num = ['int','float','float?'].indexOf(r.type) >= 0;
+  var num = isNum(r);
+  if (num && !(r.key in edits)) v = numText(v);
   var attrs = num ? ' type="number" step="' + (r.type === 'int' ? '1' : 'any') + '"' +
       (r.vmin != null ? ' min="' + r.vmin + '"' : '') + (r.vmax != null ? ' max="' + r.vmax + '"' : '')
       : ' type="text"';
@@ -288,6 +298,7 @@ function testArgs(test, r){
   if (test === 'envoy') { a.ip = currentValue(r); a.array_id = r.array_id; }
   if (test === 'weather') { a.station_id = v('weather.station_id'); a.lat = v('forecast.latitude'); a.lon = v('forecast.longitude'); }
   if (test === 'pvoutput') a.system_ids = v('pvoutput.system_ids');
+  if (test === 'solaredge_site') { a.array_id = r.array_id; a.site_id = v('array.' + r.array_id + '.site_id'); a.modbus = v('solaredge.modbus_enabled'); }
   if (test === 'solaredge') Object.keys(rowIndex).forEach(function(k){ if (/^array\.[^.]+\.site_id$/.test(k) && !a.site_id) a.site_id = v(k); });
   Object.keys(a).forEach(function(k){ if (a[k] == null || a[k] === '') delete a[k]; });
   return a;
@@ -358,22 +369,25 @@ function ratePlanHtml(card){
     (p.net_metering ? ' · ' + esc(p.net_metering) : '') + ' · imported ' + esc(p.imported_at || '—') + '</div>';
   var mn = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   p.seasons.forEach(function(s, si){
+    var sk = seasonKeys(p, s), nEd = sk.filter(function(k){ return k in edits; }).length;
     h += '<div class="season"><h4>' + esc(s.name) + ' <span class="muted">' +
-      s.months.map(function(m){ return mn[m]; }).join(', ') + '</span></h4><div class="grid2">';
+      s.months.map(function(m){ return mn[m]; }).join(', ') + '</span>' +
+      (nEd ? '<span class="badge b-edited">edited (' + nEd + ')</span><button class="revert" data-revert-season="' + esc(sk.join(' ')) + '">revert</button>'
+           : '<span class="badge b-match">matches</span>') + '</h4><div class="grid2">';
     Object.keys(s.tiers).forEach(function(t){
       var key = 'rate.' + p.id + '.' + s.id + '.' + t;
       var v = key in edits ? edits[key] : s.tiers[t];
       h += '<div class="tier"><span class="tierchip t-' + esc(t) + '">' + esc(t.replace('_',' ')) + '</span>' +
         '<span><input type="number" step="0.001" data-rate="' + esc(key) + '" data-orig="' + esc(s.tiers[t]) +
-        '" value="' + esc(v) + '"' + (key in edits && rateInvalid(key) ? ' class="bad"' : '') + '> ¢</span></div>';
+        '" value="' + esc(v) + '"' + (key in edits ? (rateInvalid(key) ? ' class="bad"' : ' class="edited"') : '') + '> ¢</span></div>';
     });
     h += '</div><div class="wins">';
     s.windows.forEach(function(w){
       var ks = 'win.' + w.id + '.start', ke = 'win.' + w.id + '.end';
       h += '<div class="win"><span class="tierchip t-' + esc(w.tier) + '">' + esc(w.tier.replace('_',' ')) + '</span>' +
-        '<input type="time" data-rate="' + ks + '" data-orig="' + esc(w.start_time) + '" value="' + esc(ks in edits ? edits[ks] : w.start_time) + '">' +
+        '<input type="time"' + (ks in edits ? ' class="' + (rateInvalid(ks) ? 'bad' : 'edited') + '"' : '') + ' data-rate="' + ks + '" data-orig="' + esc(w.start_time) + '" value="' + esc(ks in edits ? edits[ks] : w.start_time) + '">' +
         '<span class="muted">to</span>' +
-        '<input type="time" data-rate="' + ke + '" data-orig="' + esc(w.end_time) + '" value="' + esc(ke in edits ? edits[ke] : w.end_time) + '">' +
+        '<input type="time"' + (ke in edits ? ' class="' + (rateInvalid(ke) ? 'bad' : 'edited') + '"' : '') + ' data-rate="' + ke + '" data-orig="' + esc(w.end_time) + '" value="' + esc(ke in edits ? edits[ke] : w.end_time) + '">' +
         ((ke in edits ? edits[ke] : w.end_time) === '00:00' ? '<span class="muted">(midnight)</span>' : '') +
         '<span class="muted">' + esc(daysLabel(w.days)) + '</span></div>';
     });
@@ -384,6 +398,24 @@ function ratePlanHtml(card){
     (shared && p.seasons.length > 1 ? ' The time windows are the same in every season, so changing a time changes it for all seasons.' : '') + '</div>';
   (card.hints || []).forEach(function(x){ h += '<div class="hint ' + esc(x.level) + '" style="margin-top:8px">' + esc(x.text) + '</div>'; });
   return h;
+}
+// Every editable key in one season block (its prices and its windows)
+function seasonKeys(p, s){
+  var out = Object.keys(s.tiers).map(function(t){ return 'rate.' + p.id + '.' + s.id + '.' + t; });
+  s.windows.forEach(function(w){ out.push('win.' + w.id + '.start', 'win.' + w.id + '.end'); });
+  return out;
+}
+// Which screens hold a value that blocks the commit
+function badScreens(){
+  var bad = {};
+  data.screens.forEach(function(sc, i){
+    sc.cards.forEach(function(c){
+      c.rows.forEach(function(r){ if (invalidReason(r)) bad[i] = true; });
+      if (c.kind === 'rate_plan') c.plan.seasons.forEach(function(s){
+        seasonKeys(c.plan, s).forEach(function(k){ if (k in edits && rateInvalid(k)) bad[i] = true; }); });
+    });
+  });
+  return Object.keys(bad).map(Number).sort(function(a, b){ return a - b; });
 }
 function daysLabel(d){
   var all = ['mon','tue','wed','thu','fri','sat','sun'];
@@ -575,11 +607,14 @@ function doRollback(){
 
 function render(){
   var sc = data.screens[cur];
+  var bads = badScreens();
   document.getElementById('steps').innerHTML = data.screens.map(function(s, i){
     var flag = s.cards.some(function(c){ return c.rows.some(function(r){
       return r.status === 'conflict' || (r.kind === 'flag' && r.value == null) ||
         (r.hints || []).some(function(x){ return x.level === 'warn'; }); }); });
-    return '<div class="step' + (i === cur ? ' active' : '') + (flag ? ' flag' : '') + '" data-i="' + i + '"><span class="n">' +
+    var bad = bads.indexOf(i) >= 0;
+    return '<div class="step' + (i === cur ? ' active' : '') + (bad ? ' bad' : flag ? ' flag' : '') + '" data-i="' + i + '"' +
+      (bad ? ' title="A value here needs fixing before you can commit"' : '') + '><span class="n">' +
       (i + 1) + '</span>' + esc(s.title) + '<span class="dot"></span></div>';
   }).join('');
   var h = '<div class="screen-title">' + esc(sc.title) + '</div><div class="screen-intro">' + esc(sc.intro) + '</div>';
@@ -602,8 +637,12 @@ function render(){
   nx.textContent = cur === data.screens.length - 2 ? 'Review summary' : 'Next';
   var nEdits = Object.keys(rowIndex).filter(function(k){ return isEdited(rowIndex[k]); }).length +
     Object.keys(edits).filter(function(k){ return /^(rate|win)\./.test(k); }).length;
-  document.getElementById('counts').textContent = 'Step ' + (cur + 1) + ' of ' + data.screens.length +
-    (nEdits ? ' · ' + nEdits + ' edit' + (nEdits > 1 ? 's' : '') : '');
+  var nBad = allInvalid().length;
+  var other = bads.filter(function(i){ return i !== cur; });
+  document.getElementById('counts').innerHTML = esc('Step ' + (cur + 1) + ' of ' + data.screens.length +
+    (nEdits ? ' · ' + nEdits + ' edit' + (nEdits > 1 ? 's' : '') : '')) +
+    (nBad ? ' · <span style="color:#f9a8a8">' + nBad + ' need' + (nBad > 1 ? '' : 's') + ' fixing</span>' +
+      (other.length ? '<button class="fixlink" data-goto="' + other[0] + '">go to ' + esc(data.screens[other[0]].title) + ' →</button>' : '') : '');
 }
 
 function go(i){ cur = Math.max(0, Math.min(data.screens.length - 1, i)); hidePop(); render(); window.scrollTo(0, 0);
@@ -639,6 +678,8 @@ document.addEventListener('click', function(e){
   if (fl && t.tagName === 'BUTTON') { var r = rowIndex[fl.dataset.flag]; r.value = t.textContent === 'Yes' ? 1 : 0;
     edits[fl.dataset.flag] = String(r.value); render(); return; }
   if (t.dataset.revert) { delete edits[t.dataset.revert]; render(); return; }
+  if (t.dataset.revertSeason) { t.dataset.revertSeason.split(' ').forEach(function(k){ delete edits[k]; }); render(); return; }
+  if (t.dataset.goto != null) { go(+t.dataset.goto); return; }
   var tb = t.closest('.test[data-test]'); if (tb && !tb.disabled) { runTest(tb.dataset.test, tb.dataset.tid); return; }
   if (t.id === 'disarm') { armed = null; render(); return; }
   if (t.id === 'do-commit') { if (armed === 'commit') { armed = null; doCommit(); } else { armed = 'commit'; render(); } return; }
@@ -668,8 +709,11 @@ function load(){
     if (!data || !data.available) throw new Error((data && data.reason) || 'review unavailable');
     data.screens.forEach(function(s){ s.cards.forEach(function(c){ c.rows.forEach(function(r){
       if (r.key) rowIndex[r.key] = r; else if (r.kind === 'secret' || r.kind === 'info') rowIndex[r.env_name || r.label] = r; }); }); });
+    var synced = data.synced_at && data.store_written_at && data.synced_at >= data.store_written_at;
     document.getElementById('meta').textContent = 'Config source now: ' + data.authority +
-      (data.synced_at ? ' · store last synced ' + data.synced_at : '') + ' · loaded ' + data.generated_at;
+      (data.store_written_at ? ' · store last ' + (synced ? 'synced from .env ' : 'changed ') + data.store_written_at
+                             : (data.synced_at ? ' · store last synced ' + data.synced_at : '')) +
+      ' · loaded ' + data.generated_at;
     var b = document.getElementById('banner');
     b.style.display = 'block';
     var checklist = '<div style="margin-top:6px">Gathering your details first? The <a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" ' +

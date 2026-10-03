@@ -908,29 +908,39 @@ def settings_config_payload():
     if not _V46_SETTINGS_AVAILABLE:
         return _v46_unavailable()
     try:
-        rows = _cfgstore.app_config.get_all()  # secrets arrive redacted
-        if not rows:
+        # Every registry setting with the value that applies, including the
+        # ones left at their built-in default (no row). Listing only stored
+        # rows showed defaulted settings as null on the dashboard.
+        import config_review
+        store = config_review._store_rows()
+        if not store:
             return {'available': False,
                     'reason': 'app_config empty — run migrate_v46.py'}
+        eff = settings.effective_settings(store)
         categories = {}
-        for r in rows:
-            categories.setdefault(r['category'] or 'other', []).append({
-                'key': r['key'], 'value': r['value'],
-                'type': r['value_type'], 'source': r['source'],
-                'secret': bool(r['is_secret']),
-                'description': r['description'],
-                'updated_at': r['updated_at'],
+        for e in eff:
+            categories.setdefault(e['category'] or 'other', []).append({
+                'key': e['key'], 'value': settings.coerce(e['value'], e['type'], None),
+                'type': e['type'], 'source': e['source'], 'stored': e['stored'],
+                'secret': False, 'description': e['help'], 'updated_at': e['updated_at'],
             })
+        st = _cfgstore.app_state
         return {
             'available': True,
-            'schema_version': _cfgstore.app_state.get('schema_version'),
-            'migrated_at': _cfgstore.app_state.get('migration.phase1_completed_at'),
+            'authority': st.get('config.authority') or 'env',
+            'review_completed_at': st.get('review.completed_at'),
+            'review_completed_version': st.get('review.completed_version'),
+            'store_written_at': config_review.store_written_at(),
+            'schema_version': st.get('schema_version'),
+            'migrated_at': st.get('migration.phase1_completed_at'),
             'categories': categories,
             'counts': {
-                'total': len(rows),
-                'from_env': sum(1 for r in rows if r['source'] == 'env'),
-                'defaults': sum(1 for r in rows if r['source'] == 'default'),
-                'user_edited': sum(1 for r in rows if r['source'] == 'user'),
+                'total': len(eff),
+                'set': sum(1 for e in eff if e['stored']),
+                'defaults': sum(1 for e in eff if not e['stored']),
+                'from_env': sum(1 for e in eff if e['stored'] and e['source'] == 'env'),
+                'user_edited': sum(1 for e in eff if e['stored'] and e['source'] == 'user'),
+                'orphans': len(settings.orphan_store_keys(store)),
             },
         }
     except Exception as e:
@@ -1051,8 +1061,11 @@ def settings_recommendations_payload():
                 'Peak window check unavailable', str(e))
 
         # --- #21 Item A: SOLAR_EXPORT strategy vs plan/NEM ---
-        solar_export = cfg.get('solar.export', False)
-        nem = (cfg.get('solar.nem_version') or '').lower()
+        # Registry settings resolve through settings.get, so a setting at its
+        # built-in default (no row) is still seen.
+        solar_export = bool(settings.get('solar.export'))
+        nem = {'net_metering': 'nem2', 'net_billing': 'nem3'}.get(
+            settings.get('billing.export_compensation') or '', '')
         plan = _cfgstore.rate_plans.get_active_plan()
         export_capable = bool(plan and plan['export_capable'])
         strategy = ('export-friendly (continuous-target subsystem SKIPPED; '
@@ -1117,8 +1130,8 @@ def settings_recommendations_payload():
                 'The engine must know which array feeds the battery.')
 
         # --- battery capacity consistency ---
-        cap = cfg.get('battery.capacity_kwh')
-        count = cfg.get('battery.count')
+        cap = settings.get('battery.capacity_kwh')
+        count = settings.get('battery.count')
         if cap and count:
             expected = count * 13.6
             if abs(cap - expected) > 0.5:
@@ -1128,7 +1141,7 @@ def settings_recommendations_payload():
                     f'configured {cap} kWh. Verify which is wrong.')
 
         # --- solar capacity semantics (battery-connected only) ---
-        solar_cap = cfg.get('solar.capacity_kw')
+        solar_cap = settings.get('solar.capacity_kw')
         bc = [a for a in arrays if a['charges_battery'] == 1]
         if solar_cap and bc:
             bc_kw = sum(a['capacity_kw'] or 0 for a in bc)
@@ -1144,11 +1157,16 @@ def settings_recommendations_payload():
                     f'separately-metered arrays were summed in — the engine then '
                     f'overestimates chargeable solar.')
 
-        # --- unreviewed defaults ---
-        defaults = [r['key'] for r in cfg.get_all() if r['source'] == 'default']
+        # --- settings at their built-in default (same count as the dashboard
+        # and the commit summary) ---
+        import config_review
+        eff = settings.effective_settings(config_review._store_rows())
+        defaults = [e['key'] for e in eff if not e['stored']]
+        reviewed = _cfgstore.app_state.get('review.completed_at')
         if defaults:
             add('info', 'unreviewed_defaults',
-                f'{len(defaults)} settings are code defaults (never explicitly set)',
+                f'{len(defaults)} of {len(eff)} settings use the built-in default' +
+                (f' (reviewed {reviewed})' if reviewed else ' (never explicitly set)'),
                 ', '.join(sorted(defaults)))
 
         if not any(r['severity'] in ('conflict', 'warning') for r in recs):
@@ -1332,7 +1350,7 @@ class APIHandler(BaseHTTPRequestHandler):
             self._json_response(400, {'ok': False, 'message': f'Bad request: {e}'})
             return
         allowed = ('test', 'host', 'ip', 'array_id', 'station_id', 'system_ids', 'site_id',
-                   'lat', 'lon')
+                   'lat', 'lon', 'modbus')
         args = {k: str(v)[:200] for k, v in args.items() if k in allowed and v is not None}
         try:
             r = subprocess.run([sys.executable, str(SCRIPT_DIR / 'review_tests.py'), json.dumps(args)],
