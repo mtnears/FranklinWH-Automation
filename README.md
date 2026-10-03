@@ -10,6 +10,17 @@ Adaptive charging system that optimizes for Time-of-Use (TOU) electricity rates,
 
 ---
 
+## v4.7.0-beta — Configuration Review (beta branch)
+
+On the `v4.7-config-review` branch, for existing installs that want to try it. New installs should stay on `main` for now.
+- A one-time guided **configuration review** moves your settings from `.env` into the app, checking each one on the way. `.env` keeps only credentials, keys and deployment values.
+- Live **Test** buttons check your aGate, Envoy, Franklin, SolarEdge, PVOutput and Weather Underground connections.
+- A backup is taken before every commit, and one click switches you back to `.env`.
+
+The branch also replaces the fixed sunrise/sunset table with a **solar day learned from your own data**; the old table ran about 55 minutes late. A setup checklist to fill in before you start is in [docs/SETUP_CHECKLIST.pdf](docs/SETUP_CHECKLIST.pdf). Upgrade steps and details: [docs/RELEASE_NOTES_v4.7.0-beta.md](docs/RELEASE_NOTES_v4.7.0-beta.md).
+
+---
+
 ## What's New in v4.6
 
 ### v4.6.2 — Charging Behavior Fixes (September 2026)

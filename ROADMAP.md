@@ -7,9 +7,15 @@ Planned features and improvements. Items are listed in rough priority order. Con
 ## 🔧 In Progress
 
 ### Configuration Editing + Guided Setup (built on v4.6)
-**Priority: High**
+**Priority: High** · **Status: v4.7.0-beta on the `v4.7-config-review` branch**
 
-v4.6 shipped the configuration foundation: a DB-resident config store, one canonical rate resolver, and a **read-only** Settings page with configuration-health validation. The next major step builds the *write* path on top of it — editing configuration from the UI, and a guided setup wizard for new installs that builds your rate schedule from a utility/plan picker instead of hand-editing JSON. This is also when `.env` stops being the source of truth for settings: completing a one-time configuration review moves every setting into the store, and `.env` keeps only credentials, API keys and deployment values (ports, paths, timezone). Rolling back is a single flag. Gated on the v4.6 store and validation checks proving themselves across community configurations first — see "How you can help" in the [v4.6.0 release notes](https://github.com/mtnears/FranklinWH-Automation/releases).
+**Beta (v4.7.0-beta):** the one-time configuration review is built and in testing with existing installs. Committing it moves every setting into the store and switches the system to it; `.env` keeps only credentials, keys and deployment values. The review includes live connection tests, a backup before every commit, and one-click rollback to `.env`. See the [beta release notes](docs/RELEASE_NOTES_v4.7.0-beta.md). The branch merges to `main` once at least two existing installs have completed the review. Still to come after the merge:
+- the **setup wizard for new installs**, which builds the rate schedule from a utility/plan picker;
+- **per-meter rate plans**, for aggregated billing with a second meter on a different schedule;
+- **season-aware rate history**;
+- **re-scheduling pre/post-peak checks daily** for plans whose peak window changes by season.
+
+Background — v4.6 shipped the configuration foundation: a DB-resident config store, one canonical rate resolver, and a **read-only** Settings page with configuration-health validation. The next major step builds the *write* path on top of it — editing configuration from the UI, and a guided setup wizard for new installs that builds your rate schedule from a utility/plan picker instead of hand-editing JSON. This is also when `.env` stops being the source of truth for settings: completing a one-time configuration review moves every setting into the store, and `.env` keeps only credentials, API keys and deployment values (ports, paths, timezone). Rolling back is a single flag. Gated on the v4.6 store and validation checks proving themselves across community configurations first — see "How you can help" in the [v4.6.0 release notes](https://github.com/mtnears/FranklinWH-Automation/releases).
 
 ### Direct Battery Power Register 
 **Priority: Medium**

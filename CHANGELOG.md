@@ -4,6 +4,39 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-beta — October 2026 (branch `v4.7-config-review`)
+
+The configuration store becomes the source of truth, through a one-time guided review. Full notes: [docs/RELEASE_NOTES_v4.7.0-beta.md](docs/RELEASE_NOTES_v4.7.0-beta.md).
+
+### Configuration review
+- **Settings registry (`settings.py`)** classifies every setting. Settings and detected values move to the store. Secrets, deployment values and dev-tool names stay in `.env`, and retired keys are ignored. Every consumer reads through one accessor; `check_settings_access.py` enforces that.
+- **Review screens (`web/config_review.html`, `GET /api/v1/review`)** cover 11 steps. Each step shows the `.env` value, the store value, the value in effect and the proposed value, with help and hints. `?preview=1` saves nothing.
+- **Commit (`config_commit.py`, `POST /api/v1/review/commit`):**
+  - Values are validated on the server against the registry.
+  - The config tables are snapshotted before writing, and everything is written in one transaction.
+  - The store is then checked against what was reviewed, and the rate plan must resolve. A failure restores the snapshot.
+  - Committing sets `config.authority=store` and restarts the scheduler in place (`os.execv`, between jobs).
+  - Refused within the peak guard (−20/+5 min).
+  - Values at their code default are not stored.
+  - An install without a rate plan in the store gets `rate_schedule.json` imported.
+- **Rollback (`POST /api/v1/review/rollback`, or `config_admin.py authority env`):** the store is kept. `config_admin.py restore <snapshot> --yes` restores an earlier configuration.
+- **Live tests (`review_tests.py`, `POST /api/v1/review/test`)** for Modbus, Envoy, Franklin cloud, SolarEdge, PVOutput and Weather Underground. They run in a subprocess with a timeout and use the secrets from `.env`. Results are scrubbed of secrets before they're returned.
+- **Dashboard:** a banner asks you to take the review until it has been committed and the system runs on the store.
+- **Telemetry:** adds `config_authority`, `review_completed` and `review_completed_version`.
+- **`config_admin.py sync`:** leaves rate plans edited in the review alone unless `--overwrite-user`.
+- **`docs/SETUP_CHECKLIST.pdf`:** a fillable checklist generated from the registry (`tools/build_setup_checklist.py`).
+
+### Solar day and forecast
+- **Learned solar day (`solar_day.py`):** production start, ramp and end are learned relative to the computed sunrise and sunset, replacing the fixed `SUN_SCHEDULE` table, which ran about 55–85 min late on sunset. The learned solar cap (p99.9 of observed output, capped at the configured AC size) replaces the hardcoded 5.3 kW.
+- **`forecast_history` table (`record_forecast_history.py`, 06:40 / 20:40):** durable evening and morning forecasts alongside the actual production.
+- **The forecast array, site, battery capacity and solar cap** come from settings and detected hardware instead of code constants.
+
+### Fixes
+- **`rate_schedule.json`:** an invalid file now logs the file, line and column and raises, instead of failing silently.
+- **Dashboard update badge:** versions are now compared numerically, so a beta or newer install is never offered an older release.
+
+---
+
 ## v4.6.3 — September 2026
 
 Emergency Backup timing on three-tier rate plans. Engine and rate-schedule changes only (`adaptive_engine.py`, `rate_schedule.py`); no new settings.
