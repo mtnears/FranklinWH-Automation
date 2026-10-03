@@ -22,7 +22,7 @@ Then open the dashboard. A banner asks you to take the review; **Settings → Co
 You don't need to run `migrate_v46.py` first. If your install never ran it, the review imports `data/rate_schedule.json` when you commit.
 
 ### Before you start
-- **Print or open `docs/SETUP_CHECKLIST.pdf`.** It lists every setting the review asks about, with room to note your values.
+- **Print or fill in the Setup Checklist.** It lists every setting the review asks about, what each is for and where to find it, with room to note your values. It ships with the install as `docs/SETUP_CHECKLIST.pdf` and is linked from the review page, the dashboard banner and Settings (served at `/SETUP_CHECKLIST.pdf`). Fill it in on screen in any PDF reader and save a copy, or print it.
 - **If your rate file was set up for CARE (or another discount), check the Rates and Utility & billing steps carefully.** The review shows your plan's prices and windows exactly as the engine will use them. If you have left the discount program, or your utility's prices changed since you wrote `rate_schedule.json`, fix it here. The Billing step warns you when the discount setting disagrees with your latest rate history.
 - **Commit outside the peak window.** Commits are refused from 20 minutes before peak until 5 minutes after it ends, so a restart can never land on a peak transition.
 

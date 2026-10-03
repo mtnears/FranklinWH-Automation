@@ -1029,7 +1029,7 @@
             </div>
             <div class="card"><div class="card-label">Automation Summary <span style="font-size:10px;color:var(--text-muted);font-weight:400">live from configuration store</span></div>
                 <div class="setting-note" style="margin-bottom:12px;color:var(--text-muted)">Read-only here. Settings are changed through the configuration review.</div>
-                <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><a href="/config_review.html" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.08);color:#d9ceff;font-size:13px;text-decoration:none">Configuration review →</a><a href="/config_review.html?preview=1" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--border-subtle);color:var(--text-secondary);font-size:13px;text-decoration:none">Preview (nothing saved)</a></div>
+                <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><a href="/config_review.html" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.08);color:#d9ceff;font-size:13px;text-decoration:none">Configuration review →</a><a href="/config_review.html?preview=1" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--border-subtle);color:var(--text-secondary);font-size:13px;text-decoration:none">Preview (nothing saved)</a><a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" title="Printable / fillable list of everything the review asks for" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--border-subtle);color:var(--text-secondary);font-size:13px;text-decoration:none">Setup checklist (PDF)</a></div>
                 <div class="info-row"><span class="info-key">Charging Strategy</span><span class="info-val" id="v46-strategy">--</span></div>
                 <div class="info-row"><span class="info-key">Peak Window (today)</span><span class="info-val" id="v46-peakwin">--</span></div>
                 <div class="info-row"><span class="info-key">Today's Rates</span><span class="info-val" id="v46-rates-today">--</span></div>
@@ -3083,7 +3083,8 @@ async function checkConfigReview(){
         if(st.review_completed_at && st.authority==='store')return;
         document.getElementById('review-banner-text').innerHTML=st.review_completed_at
             ?'<b>Configuration review:</b> this system is running on .env again. Take the review to move back to the reviewed configuration.'
-            :'<b>New in '+(st.version||'v4.7')+':</b> please take the configuration review (about 10 minutes). Every setting is checked once and then managed by the app instead of .env.';
+            :'<b>New in '+(st.version||'v4.7')+':</b> please take the configuration review (about 10 minutes). Every setting is checked once and then managed by the app instead of .env. '+
+             '<a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" style="background:none;color:#d9ceff;padding:0;font-weight:400;text-decoration:underline">Printable checklist</a>';
         document.getElementById('review-banner').style.display='flex';
     }catch(e){}
 }

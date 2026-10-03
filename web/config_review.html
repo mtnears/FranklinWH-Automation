@@ -672,12 +672,16 @@ function load(){
       (data.synced_at ? ' · store last synced ' + data.synced_at : '') + ' · loaded ' + data.generated_at;
     var b = document.getElementById('banner');
     b.style.display = 'block';
+    var checklist = '<div style="margin-top:6px">Gathering your details first? The <a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" ' +
+      'style="color:#fff">Setup Checklist (PDF)</a> lists everything this review asks for, what each item is for and where to find it. ' +
+      'Print it and write on it, or fill it in on screen in any PDF reader and save a copy.</div>';
     b.innerHTML = PREVIEW
       ? '<b>Preview.</b> This is the review every install will go through. Change anything you like to see how it behaves — nothing is saved, and the system keeps running on its current configuration.'
       : (data.review_completed_at && data.authority === 'store'
         ? '<b>Review completed ' + esc(data.review_completed_at) + '.</b> You can go through it again at any time; committing again replaces the saved configuration.'
         : '<b>Check every step.</b> Values are pre-filled from your current setup; where .env and the store disagree, .env is pre-selected. ' +
           'Nothing is saved until you press Commit on the Summary step.');
+    b.innerHTML += checklist;
     try { var s = +sessionStorage.getItem('review.step'); if (s >= 0 && s < data.screens.length) cur = s; } catch(e) {}
     render();
   }).catch(function(err){
