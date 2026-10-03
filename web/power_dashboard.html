@@ -40,6 +40,10 @@
         .header-time { font-family: var(--font-mono); font-size: 13px; color: var(--text-secondary); }
 
         /* Override banner */
+        .review-banner { display: none; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; padding: 9px 24px; background: linear-gradient(90deg,rgba(167,139,250,.14),rgba(79,143,255,.06)); border-bottom: 1px solid rgba(167,139,250,.3); font-size: 13px; color: #d9ceff; flex-shrink: 0; }
+        .review-banner b { color: #fff; }
+        .review-banner a { padding: 5px 12px; border-radius: 8px; background: rgba(167,139,250,.9); color: #120a2a; font-weight: 600; text-decoration: none; }
+        .review-banner button { background: transparent; border: none; color: #b7a8e8; font-size: 12px; cursor: pointer; text-decoration: underline; }
         .override-banner { display: none; align-items: center; justify-content: center; gap: 12px; padding: 10px 24px; background: linear-gradient(90deg,rgba(248,113,113,.12),rgba(248,113,113,.06)); border-bottom: 1px solid rgba(248,113,113,.2); font-size: 13px; color: var(--accent-red); font-weight: 500; flex-shrink: 0; }
         .override-banner.active { display: flex; }
         .override-banner .cancel-btn { background: rgba(248,113,113,.15); border: 1px solid rgba(248,113,113,.3); color: var(--accent-red); padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: var(--font-body); }
@@ -609,6 +613,7 @@
             <div class="header-time" id="clock">--:--:--</div>
         </div>
     </header>
+    <div class="review-banner" id="review-banner"><span id="review-banner-text"></span><a href="/config_review.html">Start the review</a><button onclick="dismissReviewBanner()">Later</button></div>
     <div class="override-banner" id="override-banner"><span id="override-text"></span><button class="cancel-btn" onclick="cancelOverride()">Cancel Override</button></div>
     <nav class="tab-bar">
         <div class="tab-bar-left">
@@ -1023,8 +1028,8 @@
                 <div class="setting-group"><label>Theme</label><select class="setting-input" id="s-theme" onchange="saveSettings()"><option value="dark">Dark</option><option value="oled">OLED Black</option></select></div>
             </div>
             <div class="card"><div class="card-label">Automation Summary <span style="font-size:10px;color:var(--text-muted);font-weight:400">live from configuration store</span></div>
-                <div class="setting-note" style="margin-bottom:12px;color:var(--accent-amber)">⚠ Read-only — configuration editing arrives with the guided setup</div>
-                <div style="margin-bottom:12px"><a href="/config_review.html?preview=1" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.08);color:#d9ceff;font-size:13px;text-decoration:none">Preview configuration review →</a></div>
+                <div class="setting-note" style="margin-bottom:12px;color:var(--text-muted)">Read-only here. Settings are changed through the configuration review.</div>
+                <div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap"><a href="/config_review.html" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.08);color:#d9ceff;font-size:13px;text-decoration:none">Configuration review →</a><a href="/config_review.html?preview=1" style="display:inline-block;padding:7px 14px;border-radius:8px;border:1px solid var(--border-subtle);color:var(--text-secondary);font-size:13px;text-decoration:none">Preview (nothing saved)</a></div>
                 <div class="info-row"><span class="info-key">Charging Strategy</span><span class="info-val" id="v46-strategy">--</span></div>
                 <div class="info-row"><span class="info-key">Peak Window (today)</span><span class="info-val" id="v46-peakwin">--</span></div>
                 <div class="info-row"><span class="info-key">Today's Rates</span><span class="info-val" id="v46-rates-today">--</span></div>
@@ -1256,6 +1261,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     update(); startDash(); startLogAR(); loadOV();
     checkTelemetryConsent();
     fetchVersionAndCheckUpdate();
+    checkConfigReview();
     // Show Solar Array tab if any solar data is available
     (async()=>{
         let found=false;
@@ -3064,6 +3070,29 @@ function openGitHubIssue(){
 }
 
 // ===== VERSION & UPDATE CHECK =====
+// ===== v4.7 CONFIGURATION REVIEW PROMPT =====
+// Shown until the guided review has been committed and the system runs on the
+// store. "Later" hides it for this browser session only.
+async function checkConfigReview(){
+    try{
+        if(sessionStorage.getItem('fwh_review_later'))return;
+    }catch(e){}
+    try{
+        const r=await fetch('/api/v1/review/status',{cache:'no-store'});
+        if(!r.ok)return;
+        const st=await r.json();
+        if(st.review_completed_at && st.authority==='store')return;
+        document.getElementById('review-banner-text').innerHTML=st.review_completed_at
+            ?'<b>Configuration review:</b> this system is running on .env again. Take the review to move back to the reviewed configuration.'
+            :'<b>New in '+(st.version||'v4.7')+':</b> please take the configuration review (about 10 minutes). Every setting is checked once and then managed by the app instead of .env.';
+        document.getElementById('review-banner').style.display='flex';
+    }catch(e){}
+}
+function dismissReviewBanner(){
+    document.getElementById('review-banner').style.display='none';
+    try{sessionStorage.setItem('fwh_review_later','1')}catch(e){}
+}
+
 // Version compare: numeric core, a pre-release (4.7.0-beta) sorts before its release (4.7.0)
 function cmpVer(a,b){
     const p=v=>{const m=String(v||'').replace(/^v/,'').split('-');return {n:m[0].split('.').map(x=>parseInt(x,10)||0),pre:m.length>1}};

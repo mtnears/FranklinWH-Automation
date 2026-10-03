@@ -551,6 +551,27 @@ def _build_config_flags() -> Dict[str, Any]:
     except ImportError:
         pass
 
+    # v4.7: configuration review rollout. config_authority is what the running
+    # scheduler uses (env | store); review_completed says the guided review was
+    # committed on this install at some point (it stays set after a rollback,
+    # which shows as review_completed true + authority env).
+    flags['config_authority'] = None
+    flags['review_completed'] = False
+    flags['review_completed_version'] = None
+    try:
+        flags['config_authority'] = settings.authority()
+        import sqlite3
+        conn = sqlite3.connect(f'file:{settings.db_path()}?mode=ro', uri=True, timeout=5)
+        try:
+            rows = dict(conn.execute("SELECT key, value FROM app_state WHERE key IN "
+                                     "('review.completed_at', 'review.completed_version')").fetchall())
+        finally:
+            conn.close()
+        flags['review_completed'] = bool(rows.get('review.completed_at'))
+        flags['review_completed_version'] = rows.get('review.completed_version')
+    except Exception:
+        pass
+
     return flags
 
 

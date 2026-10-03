@@ -1227,6 +1227,12 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._json_response(200, config_review.review_payload())
             except Exception as e:
                 self._json_response(200, {'available': False, 'reason': str(e)})
+        elif path == '/api/v1/review/status':
+            try:
+                import config_commit
+                self._json_response(200, config_commit.status())
+            except Exception as e:
+                self._json_response(500, {'error': str(e)})
         elif path.startswith('/api/data-export/available'):
             self._get_data_export_available()
         elif path.startswith('/api/data-export'):
@@ -1245,8 +1251,97 @@ class APIHandler(BaseHTTPRequestHandler):
             self._generate_diagnostic_bundle()
         elif self.path == '/api/telemetry-consent':
             self._set_telemetry_consent()
+        elif self.path == '/api/v1/review/commit':
+            self._review_commit()
+        elif self.path == '/api/v1/review/rollback':
+            self._review_rollback()
+        elif self.path == '/api/v1/review/test':
+            self._review_test()
         else:
             self._json_response(404, {'error': 'Not found'})
+
+    # ---- v4.7 configuration review: commit / rollback / live tests ----------
+
+    def _read_json_body(self, limit=256 * 1024):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        if length > limit:
+            raise ValueError('request too large')
+        body = self.rfile.read(length) if length else b'{}'
+        data = json.loads(body or b'{}')
+        if not isinstance(data, dict):
+            raise ValueError('expected a JSON object')
+        return data
+
+    def _review_commit(self):
+        try:
+            payload = self._read_json_body()
+        except (ValueError, json.JSONDecodeError) as e:
+            self._json_response(400, {'ok': False, 'reason': f'Bad request: {e}'})
+            return
+        try:
+            import config_commit
+            edits = payload.get('edits') or {}
+            choices = payload.get('choices') or {}
+            if not isinstance(edits, dict) or not isinstance(choices, dict):
+                raise config_commit.CommitRefused(400, 'edits and choices must be objects')
+            result = config_commit.commit(edits, choices, dry_run=bool(payload.get('dry_run')))
+            self._json_response(200, result)
+            try:
+                self._log_commit(result)
+            except Exception as le:
+                log(f"Review commit: done (summary log failed: {le})")
+        except Exception as e:
+            code = getattr(e, 'code', 500)
+            reason = getattr(e, 'reason', str(e))
+            errors = getattr(e, 'errors', [])
+            log(f"Review commit refused ({code}): {reason}" +
+                (f" [{'; '.join(errors[:5])}]" if errors else ''))
+            self._json_response(code, {'ok': False, 'reason': reason, 'errors': errors})
+
+    def _log_commit(self, result):
+        s = result['summary']
+        if result.get('dry_run'):
+            log(f"Review commit dry run: {s['settings_written']} settings, "
+                f"{len(s['arrays'])} arrays, {s['rate_edits']} rate edits")
+        else:
+            log(f"REVIEW COMMITTED: {s['settings_written']} settings written, "
+                f"{s['settings_at_default']} at default, arrays {', '.join(s['arrays']) or '-'}, "
+                f"{s['rate_edits']} rate edits, {len(s['differ_from_env'])} differ from .env; "
+                f"snapshot {s['snapshot']}; authority {s['previous_authority']} -> store; "
+                f"restarting")
+
+    def _review_rollback(self):
+        try:
+            import config_commit
+            result = config_commit.rollback_to_env()
+            log(f"REVIEW ROLLBACK: authority {result['previous_authority']} -> env "
+                f"(store data kept); restarting")
+            self._json_response(200, result)
+        except Exception as e:
+            log(f"Review rollback failed: {e}")
+            self._json_response(500, {'ok': False, 'reason': str(e)})
+
+    def _review_test(self):
+        try:
+            args = self._read_json_body(limit=8 * 1024)
+        except (ValueError, json.JSONDecodeError) as e:
+            self._json_response(400, {'ok': False, 'message': f'Bad request: {e}'})
+            return
+        allowed = ('test', 'host', 'ip', 'array_id', 'station_id', 'system_ids', 'site_id')
+        args = {k: str(v)[:200] for k, v in args.items() if k in allowed and v is not None}
+        try:
+            r = subprocess.run([sys.executable, str(SCRIPT_DIR / 'review_tests.py'), json.dumps(args)],
+                               capture_output=True, text=True, timeout=45, cwd=str(SCRIPT_DIR))
+            lines = [l for l in r.stdout.strip().splitlines() if l.startswith('{')]
+            result = json.loads(lines[-1]) if lines else {
+                'ok': False, 'message': 'The test did not report a result', 'ms': 0}
+        except subprocess.TimeoutExpired:
+            result = {'ok': False, 'message': 'Timed out after 45 s', 'ms': 45000}
+        except Exception as e:
+            result = {'ok': False, 'message': f'Test could not run: {type(e).__name__}', 'ms': 0}
+        log(f"  Review test {args.get('test')}: {'PASS' if result.get('ok') else 'FAIL'} "
+            f"({result.get('ms', 0)} ms)")
+        self._json_response(200, result)
 
     def do_DELETE(self):
         if self.path == '/api/override':
@@ -2157,11 +2252,46 @@ def start_api_server():
     """Start the internal API server in a background thread."""
     try:
         server = HTTPServer(('0.0.0.0', API_PORT), APIHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True, name='api-server')
         thread.start()
         log(f"  API server listening on port {API_PORT}")
     except Exception as e:
         log(f"  WARNING: Could not start API server: {e}")
+
+
+def _restart_if_requested():
+    """v4.7: re-exec this process in place after a review commit/rollback.
+
+    Called from the main loop between jobs, so no decision or collector run is
+    cut off (they run synchronously in this thread). Background helper threads
+    (mode switches, layout refreshes) get up to 2 minutes to finish. The
+    container keeps running throughout, so this does not depend on the compose
+    restart policy; the new process reads config.authority fresh.
+    """
+    try:
+        import config_commit
+    except Exception:
+        return
+    reason = config_commit.restart_pending()
+    if not reason:
+        return
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        busy = [t.name for t in threading.enumerate()
+                if t is not threading.main_thread() and t.name != 'api-server' and t.is_alive()]
+        if not busy:
+            break
+        time.sleep(2)
+    log(f"Restarting scheduler in place ({reason}); "
+        f"config.authority -> {settings.read_authority_flag()}")
+    try:
+        import db as db_mod
+        db_mod.close()
+    except Exception:
+        pass
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 def main():
@@ -2180,6 +2310,7 @@ def main():
     while True:
         try:
             schedule.run_pending()
+            _restart_if_requested()
             time.sleep(10)  # Check every 10 seconds
         except KeyboardInterrupt:
             log("Scheduler stopped by user")

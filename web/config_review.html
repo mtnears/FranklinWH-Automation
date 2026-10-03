@@ -75,7 +75,19 @@ input:focus,select:focus{outline:none;border-color:var(--accent-blue)}
 .hint.rec{background:rgba(79,143,255,.06);color:#a9c6ff}
 .muted{color:var(--text-muted);font-size:12px}
 .val{font-size:14px;color:var(--text-secondary);padding-top:6px}
-.test{background:transparent;border:1px dashed var(--border-active);color:var(--text-muted);border-radius:8px;padding:5px 10px;font-size:12px;cursor:not-allowed}
+.test{background:transparent;border:1px solid var(--border-active);color:var(--text-secondary);border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer}
+.test:hover{border-color:var(--accent-blue);color:var(--accent-blue)}
+.test:disabled{border-style:dashed;color:var(--text-muted);cursor:not-allowed}
+.tres{font-size:12px;border-radius:8px;padding:6px 10px;line-height:1.4}
+.tres.ok{background:rgba(52,211,153,.06);color:#8fe3c3}
+.tres.fail{background:rgba(248,113,113,.08);color:#f9a8a8}
+.tres.run{color:var(--text-muted)}
+.foot{font-size:12px;color:var(--text-muted);margin-top:10px;line-height:1.5;border-top:1px solid var(--border-subtle);padding-top:10px}
+.foot code{font-family:ui-monospace,monospace;color:var(--text-secondary)}
+.cstat{margin-top:10px;font-size:13px;line-height:1.5}
+.cstat ul{margin:6px 0 0 18px}
+.cstat.ok{color:#8fe3c3}.cstat.fail{color:#f9a8a8}.cstat.run{color:var(--text-secondary)}
+.btn.danger{border-color:rgba(248,113,113,.45);color:#f9a8a8;background:transparent}
 .revert{background:transparent;border:none;color:var(--accent-purple);font-size:12px;cursor:pointer;text-decoration:underline}
 .pop{position:fixed;z-index:50;max-width:340px;background:var(--bg-elevated);border:1px solid var(--border-active);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;color:var(--text-secondary);box-shadow:0 12px 30px rgba(0,0,0,.45);display:none}
 .pop b{color:var(--text-primary)}
@@ -134,6 +146,9 @@ var data = null, recs = [], cur = 0;
 var edits = {};      // key -> value (string) the user typed
 var choice = {};     // key -> 'env' | 'store' for conflicts
 var rowIndex = {};   // key -> row
+var tests = {};      // row id -> {cls, msg}
+var commit = null;   // {cls, html} status of the commit / rollback
+var armed = null;    // 'commit' | 'rollback' once clicked; second click confirms
 
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
@@ -196,6 +211,40 @@ function control(r){
   return '<input' + attrs + ' data-key="' + k + '" value="' + esc(v ?? '') + '" placeholder="' + esc(ph) + '">';
 }
 
+function rid(r){ return r.key || r.env_name || r.label; }
+function testBtn(r){
+  if (!r.testable || !r.test) return '';
+  var off = r.kind === 'secret' && !r.set;
+  var running = (tests[rid(r)] || {}).cls === 'run';
+  return '<button class="test" data-test="' + esc(r.test) + '" data-tid="' + esc(rid(r)) + '"' +
+    (off || running ? ' disabled' : '') + ' title="' + (off ? 'Not set in .env' : 'Runs a live check from the server; secrets never leave it') + '">' +
+    (running ? 'Testing…' : 'Test') + '</button>';
+}
+function testRes(r){
+  var t = tests[rid(r)];
+  return t && t.cls !== 'run' ? '<div class="tres ' + t.cls + '">' + (t.cls === 'ok' ? '✓ ' : '✗ ') + esc(t.msg) + '</div>' : '';
+}
+function testArgs(test, r){
+  var a = {test: test}, v = function(k){ return rowIndex[k] ? currentValue(rowIndex[k]) : null; };
+  if (test === 'modbus') a.host = v('modbus.host');
+  if (test === 'envoy') { a.ip = currentValue(r); a.array_id = r.array_id; }
+  if (test === 'weather') a.station_id = v('weather.station_id');
+  if (test === 'pvoutput') a.system_ids = v('pvoutput.system_ids');
+  if (test === 'solaredge') Object.keys(rowIndex).forEach(function(k){ if (/^array\.[^.]+\.site_id$/.test(k) && !a.site_id) a.site_id = v(k); });
+  Object.keys(a).forEach(function(k){ if (a[k] == null || a[k] === '') delete a[k]; });
+  return a;
+}
+function runTest(test, id){
+  var r = rowIndex[id]; if (!r) return;
+  tests[id] = {cls: 'run'}; render();
+  fetch('/api/v1/review/test', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(testArgs(test, r))})
+    .then(function(x){ return x.json(); })
+    .then(function(j){ tests[id] = {cls: j.ok ? 'ok' : 'fail', msg: (j.message || '') + (j.ms ? ' (' + (j.ms / 1000).toFixed(1) + ' s)' : '')}; })
+    .catch(function(e){ tests[id] = {cls: 'fail', msg: 'Test request failed: ' + e.message}; })
+    .then(render);
+}
+
 function rowHtml(r){
   var h = '';
   if (r.kind === 'info') {
@@ -211,8 +260,7 @@ function rowHtml(r){
   if (r.kind === 'secret') {
     h += '<div class="ctl-line"><span class="val" style="padding:0">' +
       (r.set ? (r.shown ? esc(r.shown) : '••••••••') : '<span style="color:var(--accent-red)">not set</span>') +
-      '</span>' + badge(r) + (r.testable ? '<button class="test" disabled title="Live tests arrive in the next build">Test</button>' : '') +
-      '</div>';
+      '</span>' + badge(r) + testBtn(r) + '</div>' + testRes(r);
   } else if (r.kind === 'flag') {
     var yes = r.value === 1 || r.value === true, no = r.value === 0 || r.value === false;
     h += '<div class="ctl-line"><div class="seg" data-flag="' + esc(r.key) + '">' +
@@ -221,7 +269,7 @@ function rowHtml(r){
   } else {
     h += '<div class="ctl-line">' + control(r) + badge(r) +
       (isEdited(r) ? '<button class="revert" data-revert="' + esc(r.key) + '">revert</button>' : '') +
-      (r.testable ? '<button class="test" disabled title="Live tests arrive in the next build">Test</button>' : '') + '</div>';
+      testBtn(r) + '</div>' + testRes(r);
     if (r.status === 'conflict') {
       var c = choice[r.key] || 'env';
       h += '<div class="conflict"><label><input type="radio" name="c_' + esc(r.key) + '" data-choice="' + esc(r.key) +
@@ -248,15 +296,15 @@ function ratePlanHtml(card){
     h += '<div class="season"><h4>' + esc(s.name) + ' <span class="muted">' +
       s.months.map(function(m){ return mn[m]; }).join(', ') + '</span></h4><div class="grid2">';
     Object.keys(s.tiers).forEach(function(t){
-      var key = 'rate.' + si + '.' + t;
+      var key = 'rate.' + p.id + '.' + s.id + '.' + t;
       var v = key in edits ? edits[key] : s.tiers[t];
       h += '<div class="tier"><span class="tierchip t-' + esc(t) + '">' + esc(t.replace('_',' ')) + '</span>' +
         '<span><input type="number" step="0.001" data-rate="' + esc(key) + '" data-orig="' + esc(s.tiers[t]) +
         '" value="' + esc(v) + '"> ¢</span></div>';
     });
     h += '</div><div class="wins">';
-    s.windows.forEach(function(w, wi){
-      var ks = 'win.' + si + '.' + wi + '.start', ke = 'win.' + si + '.' + wi + '.end';
+    s.windows.forEach(function(w){
+      var ks = 'win.' + w.id + '.start', ke = 'win.' + w.id + '.end';
       h += '<div class="win"><span class="tierchip t-' + esc(w.tier) + '">' + esc(w.tier.replace('_',' ')) + '</span>' +
         '<input type="time" data-rate="' + ks + '" data-orig="' + esc(w.start_time) + '" value="' + esc(ks in edits ? edits[ks] : w.start_time) + '">' +
         '<span class="muted">to</span>' +
@@ -265,7 +313,10 @@ function ratePlanHtml(card){
     });
     h += '</div></div>';
   });
-  h += '<div class="muted" style="margin-top:10px">Prices and times can be changed; adding or removing tiers, windows or seasons waits for the setup wizard.</div>';
+  var shared = p.seasons.some(function(s){ return s.windows.some(function(w){ return w.shared; }); });
+  h += '<div class="muted" style="margin-top:10px">Prices and times can be changed; adding or removing tiers, windows or seasons waits for the setup wizard.' +
+    (shared && p.seasons.length > 1 ? ' The time windows are the same in every season, so changing a time changes it for all seasons.' : '') + '</div>';
+  (card.hints || []).forEach(function(x){ h += '<div class="hint ' + esc(x.level) + '" style="margin-top:8px">' + esc(x.text) + '</div>'; });
   return h;
 }
 function daysLabel(d){
@@ -274,6 +325,13 @@ function daysLabel(d){
   if (d.join() === all.slice(0,5).join()) return 'weekdays';
   if (d.join() === 'sat,sun') return 'weekends';
   return d.join(', ');
+}
+
+function secretFoot(c){
+  if (!c.rows.some(function(r){ return r.kind === 'secret'; })) return '';
+  return '<div class="foot">Passwords, keys and logins stay in <code>.env</code> and are never sent to this page; ' +
+    'it only shows whether each one is set. To change one, edit <code>.env</code> on the host, then run ' +
+    '<code>docker compose up -d</code>, come back and press Test.</div>';
 }
 
 function summaryHtml(){
@@ -296,12 +354,14 @@ function summaryHtml(){
   h += '<div class="card"><div class="card-h"><span class="card-t">Your edits</span></div>';
   h += (edited.length || rateEdits.length) ? '<ul class="sumlist">' + edited.map(function(r){
       return '<li><b>' + esc(r.label) + '</b><code>' + esc(r.proposed ?? '—') + '</code> → <code>' + esc(edits[r.key] || '(blank)') + '</code></li>'; }).join('') +
-      rateEdits.map(function(k){ return '<li><b>' + esc(k) + '</b> → <code>' + esc(edits[k]) + '</code></li>'; }).join('') + '</ul>'
+      rateEdits.map(function(k){ return '<li><b>' + esc(rateLabel(k)) + '</b> → <code>' + esc(edits[k]) + '</code></li>'; }).join('') + '</ul>'
     : '<div class="muted">No edits.</div>';
   h += '</div>';
   var hints = [];
   Object.keys(rowIndex).forEach(function(k){ (rowIndex[k].hints || []).forEach(function(x){
     if (x.level === 'warn') hints.push({label: rowIndex[k].label, text: x.text}); }); });
+  data.screens.forEach(function(sc){ sc.cards.forEach(function(c){ (c.hints || []).forEach(function(x){
+    if (x.level === 'warn') hints.push({label: c.title, text: x.text}); }); }); });
   if (hints.length || unreviewed.length) {
     h += '<div class="card"><div class="card-h"><span class="card-t">Worth a look</span></div><ul class="sumlist">' +
       hints.map(function(x){ return '<li><b>' + esc(x.label) + '</b>' + esc(x.text) + '</li>'; }).join('') +
@@ -323,12 +383,116 @@ function summaryHtml(){
         return '<li><span class="badge ' + (r.severity === 'conflict' ? 'b-conflict' : r.severity === 'warning' ? 'b-review' : 'b-default') +
           '">' + esc(r.severity) + '</span><b>' + esc(r.title) + '</b></li>'; }).join('') + '</ul></div>';
   }
-  h += '<div class="card"><div class="card-h"><span class="card-t">Commit</span></div>' +
-    '<div class="muted" style="font-size:13px;line-height:1.5">' + (PREVIEW
-      ? 'Preview mode. Nothing will be saved and the system keeps running exactly as it is (config source: <b>' + esc(data.authority) + '</b>).'
-      : 'Committing arrives in the next build. For now this page is read-only.') +
-    '</div><div style="margin-top:10px"><button class="btn primary" disabled>Commit and restart</button></div></div>';
+  h += commitCardHtml(unreviewed);
   return h;
+}
+
+function rateLabel(k){
+  var m = /^rate\.(\d+)\.(\d+)\.(.+)$/.exec(k), w = /^win\.(\d+)\.(start|end)$/.exec(k), out = k;
+  data.screens.forEach(function(sc){ sc.cards.forEach(function(c){
+    if (c.kind !== 'rate_plan') return;
+    c.plan.seasons.forEach(function(s){
+      if (m && +m[1] === c.plan.id && +m[2] === s.id) out = c.plan.name + ' · ' + s.name + ' · ' + m[3].replace('_', ' ') + ' price (¢)';
+      s.windows.forEach(function(x){ if (w && +w[1] === x.id) out = c.plan.name + ' · ' + x.tier.replace('_', ' ') + ' window ' + w[2] + (x.shared ? ' (all seasons)' : ''); });
+    });
+  }); });
+  return out;
+}
+
+function commitCardHtml(unreviewed){
+  var h = '<div class="card"><div class="card-h"><span class="card-t">Commit</span></div>';
+  if (PREVIEW) {
+    return h + '<div class="muted" style="font-size:13px;line-height:1.5">Preview mode. Nothing will be saved and the system keeps running exactly as it is (config source: <b>' +
+      esc(data.authority) + '</b>). Open the review without <code>?preview=1</code> to commit.</div>' +
+      '<div style="margin-top:10px"><button class="btn primary" disabled>Commit and restart</button></div></div>';
+  }
+  var blocked = unreviewed.length > 0, busy = commit && commit.cls === 'run';
+  h += '<div class="muted" style="font-size:13px;line-height:1.6">Committing saves everything above as your configuration and makes it the ' +
+    'source the system runs on (<b>store</b>). A copy of the current configuration is saved first. The automation then restarts itself ' +
+    'in place, which takes about 10–30 seconds; decisions and collectors pick up where they left off. ' +
+    'Commits are refused from 20 minutes before peak until 5 minutes after it.</div>';
+  if (blocked) h += '<div class="hint warn" style="margin-top:8px">Answer the yes/no questions on the Solar arrays step first.</div>';
+  h += '<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">' +
+    '<button class="btn primary" id="do-commit"' + (blocked || busy ? ' disabled' : '') + '>' +
+    (armed === 'commit' ? 'Click again to commit' : 'Commit and restart') + '</button>';
+  if (armed === 'commit') h += '<button class="btn" id="disarm">Cancel</button>';
+  h += '</div>';
+  if (commit && commit.where === 'commit') h += '<div class="cstat ' + commit.cls + '">' + commit.html + '</div>';
+  h += '</div>';
+  if (data.authority === 'store') {
+    h += '<div class="card"><div class="card-h"><span class="card-t">Switch back to .env</span></div>' +
+      '<div class="muted" style="font-size:13px;line-height:1.6">Runs the system on <code>.env</code> again, exactly as before the review. ' +
+      'Nothing in the store is deleted, so you can come back and commit later. Same as <code>config_admin.py authority env</code> plus a restart.</div>' +
+      '<div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn danger" id="do-rollback"' + (busy ? ' disabled' : '') + '>' +
+      (armed === 'rollback' ? 'Click again to switch to .env' : 'Switch back to .env') + '</button>' +
+      (armed === 'rollback' ? '<button class="btn" id="disarm">Cancel</button>' : '') + '</div>' +
+      (commit && commit.where === 'rollback' ? '<div class="cstat ' + commit.cls + '">' + commit.html + '</div>' : '') + '</div>';
+  }
+  return h;
+}
+
+function setCommit(where, cls, html){ commit = {where: where, cls: cls, html: html}; render(); }
+
+function waitForRestart(where, before, want){
+  var t0 = Date.now();
+  (function poll(){
+    fetch('/api/v1/review/status', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(st){
+      if (st.process_started_at && st.process_started_at !== before && st.authority === want) {
+        setCommit(where, 'ok', (where === 'commit'
+          ? '✓ Committed and restarted. The system now runs on the store (since ' + esc(st.process_started_at) + ').'
+          : '✓ Restarted on .env (since ' + esc(st.process_started_at) + '). Your store data is kept.') +
+          ' <a href="/" style="color:inherit">Back to the dashboard</a>');
+        return;
+      }
+      throw new Error('not yet');
+    }).catch(function(){
+      if (Date.now() - t0 > 180000) {
+        setCommit(where, 'fail', 'Saved, but the restart has not been confirmed after 3 minutes. Check the System Logs tab ' +
+          '(look for "Restarting scheduler in place"); if nothing is there, restart the container: <code>docker compose restart franklin-automation</code>.');
+        return;
+      }
+      setTimeout(poll, 3000);
+    });
+  })();
+}
+
+function doCommit(){
+  var before = null;
+  setCommit('commit', 'run', 'Checking and saving…');
+  fetch('/api/v1/review/status', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(st){
+    before = st.process_started_at;
+    var ch = {};
+    Object.keys(choice).forEach(function(k){ if (choice[k] === 'store') ch[k] = 'store'; });
+    return fetch('/api/v1/review/commit', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({edits: edits, choices: ch})});
+  }).then(function(r){ return r.json().then(function(j){ return {code: r.status, j: j}; }); }).then(function(res){
+    var j = res.j;
+    if (!j.ok) {
+      setCommit('commit', 'fail', '✗ ' + esc(j.reason || ('HTTP ' + res.code)) +
+        ((j.errors || []).length ? '<ul>' + j.errors.map(function(e){ return '<li>' + esc(e) + '</li>'; }).join('') + '</ul>' : '') +
+        (res.code === 409 || res.code === 400 ? '' : '<div class="muted">Nothing was changed.</div>'));
+      return;
+    }
+    var s = j.summary;
+    setCommit('commit', 'run', 'Saved: ' + s.settings_written + ' settings, ' + s.settings_at_default + ' left at their defaults, ' +
+      s.arrays.length + ' array' + (s.arrays.length === 1 ? '' : 's') + (s.rate_edits ? ', ' + s.rate_edits + ' rate edit' + (s.rate_edits === 1 ? '' : 's') : '') +
+      (s.differ_from_env.length ? '; ' + s.differ_from_env.length + ' now differ from .env (the store wins)' : '') +
+      '. Backup: <code>' + esc(s.snapshot) + '</code>. Restarting…');
+    waitForRestart('commit', before, 'store');
+  }).catch(function(e){ setCommit('commit', 'fail', '✗ Commit request failed: ' + esc(e.message)); });
+}
+
+function doRollback(){
+  var before = null;
+  setCommit('rollback', 'run', 'Switching to .env…');
+  fetch('/api/v1/review/status', {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(st){
+    before = st.process_started_at;
+    return fetch('/api/v1/review/rollback', {method: 'POST'});
+  }).then(function(r){ return r.json(); }).then(function(j){
+    if (!j.ok) { setCommit('rollback', 'fail', '✗ ' + esc(j.reason || 'Rollback failed')); return; }
+    setCommit('rollback', 'run', 'Switched to .env. Restarting…');
+    waitForRestart('rollback', before, 'env');
+  }).catch(function(e){ setCommit('rollback', 'fail', '✗ Request failed: ' + esc(e.message)); });
 }
 
 function render(){
@@ -349,6 +513,7 @@ function render(){
     if (!coll) {
       if (c.kind === 'rate_plan') h += ratePlanHtml(c);
       h += c.rows.map(rowHtml).join('');
+      h += secretFoot(c);
     }
     h += '</div>';
   });
@@ -396,6 +561,10 @@ document.addEventListener('click', function(e){
   if (fl && t.tagName === 'BUTTON') { var r = rowIndex[fl.dataset.flag]; r.value = t.textContent === 'Yes' ? 1 : 0;
     edits[fl.dataset.flag] = String(r.value); render(); return; }
   if (t.dataset.revert) { delete edits[t.dataset.revert]; render(); return; }
+  var tb = t.closest('.test[data-test]'); if (tb && !tb.disabled) { runTest(tb.dataset.test, tb.dataset.tid); return; }
+  if (t.id === 'disarm') { armed = null; render(); return; }
+  if (t.id === 'do-commit') { if (armed === 'commit') { armed = null; doCommit(); } else { armed = 'commit'; render(); } return; }
+  if (t.id === 'do-rollback') { if (armed === 'rollback') { armed = null; doRollback(); } else { armed = 'rollback'; render(); } return; }
 });
 document.addEventListener('change', function(e){
   var t = e.target;
@@ -422,7 +591,10 @@ function load(){
     b.style.display = 'block';
     b.innerHTML = PREVIEW
       ? '<b>Preview.</b> This is the review every install will go through. Change anything you like to see how it behaves — nothing is saved, and the system keeps running on its current configuration.'
-      : '<b>Read-only for now.</b> Open with <code>?preview=1</code> to try edits. Committing arrives in the next build.';
+      : (data.review_completed_at && data.authority === 'store'
+        ? '<b>Review completed ' + esc(data.review_completed_at) + '.</b> You can go through it again at any time; committing again replaces the saved configuration.'
+        : '<b>Check every step.</b> Values are pre-filled from your current setup; where .env and the store disagree, .env is pre-selected. ' +
+          'Nothing is saved until you press Commit on the Summary step.');
     try { var s = +sessionStorage.getItem('review.step'); if (s >= 0 && s < data.screens.length) cur = s; } catch(e) {}
     render();
   }).catch(function(err){

@@ -27,7 +27,7 @@ import settings  # noqa: E402
 # compare/import env by design, and the standalone dev tools.
 EXEMPT = {
     'settings.py', 'check_settings_access.py', 'dump_effective_config.py',
-    'config_admin.py', 'migrate_v46.py', 'config_review.py',
+    'config_admin.py', 'migrate_v46.py', 'config_review.py', 'review_tests.py',
     'modbus_collect.py', 'modbus_cloud_compare.py', 'modbus_register_logger.py',
     'modbus_discovery.py', 'probe_reserve.py',
 }

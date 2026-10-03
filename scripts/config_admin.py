@@ -6,6 +6,7 @@ config_admin.py — headless config store administration (v4.7)
     python3 /app/scripts/config_admin.py sync [--dry-run] [--overwrite-user] [--skip-rates]
     python3 /app/scripts/config_admin.py authority store [--force]
     python3 /app/scripts/config_admin.py authority env
+    python3 /app/scripts/config_admin.py restore <config-snapshot-*.json> [--yes]
 
 sync        Make the store reproduce the current environment (.env via compose):
             the headless equivalent of the review's "accept all".
@@ -27,6 +28,13 @@ authority   Set app_state['config.authority']. Takes effect on the next
             'store' refuses unless the rate plan resolves, the effective-config
             dump shows no DIFF rows, and we are not near peak (--force skips
             the peak guard only). 'env' is the rollback and always allowed.
+            (The review's own commit does not use the env-vs-store DIFF check:
+            reviewed edits differ from .env on purpose. See config_commit.py.)
+
+restore     Put the config tables back from a snapshot. The review takes one
+            before every commit (data/backups/config-snapshot-*.json); the
+            current config is snapshotted again before restoring. Rate plans
+            edited in the review are kept by sync unless --overwrite-user.
 """
 
 import argparse
@@ -128,7 +136,13 @@ def cmd_sync(args):
     if not args.skip_rates:
         import migrate_v46
         rs, rs_path = migrate_v46.load_rate_schedule()
-        if rs:
+        reviewed = db.query("SELECT name FROM rate_plans WHERE source = 'review' AND name = ?",
+                            ((rs or {}).get('name'),)) if rs else []
+        if reviewed and not args.overwrite_user:
+            print(f"  KEEP   rate plan '{rs.get('name')}' (edited in the review; "
+                  f"--overwrite-user to re-import {rs_path})")
+            rs = None
+        elif rs:
             errs, warns = migrate_v46.validate_rate_schedule(rs, False)
             for w in warns:
                 print(f'  WARN   rate schedule: {w}')
@@ -214,6 +228,29 @@ def cmd_authority(args):
     return 0
 
 
+def cmd_restore(args):
+    import config_commit
+    path = Path(args.file)
+    if not path.is_absolute() and not path.exists():
+        path = settings.db_path().parent / 'backups' / args.file
+    if not path.exists():
+        print(f'Snapshot not found: {args.file}')
+        snaps = sorted((settings.db_path().parent / 'backups').glob('config-snapshot-*.json'))
+        for p in snaps[-10:]:
+            print(f'  {p.name}')
+        return 1
+    if not args.yes:
+        print(f'Would restore the config tables from {path.name}. Re-run with --yes.')
+        return 0
+    before = config_commit.take_snapshot('pre-restore')
+    counts = config_commit.restore_snapshot(path)
+    print(f'Restored from {path.name}: ' + ', '.join(f'{t} {n}' for t, n in counts.items()))
+    print(f'(current config saved first as {before.name})')
+    print(f"config.authority is now {settings.read_authority_flag()}. "
+          'Takes effect on restart: docker compose restart franklin-automation')
+    return 0
+
+
 def cmd_status(args):
     flag = settings.read_authority_flag()
     print(f"config.authority flag : {flag}")
@@ -240,12 +277,16 @@ def main():
     a = sub.add_parser('authority')
     a.add_argument('value', choices=('env', 'store'))
     a.add_argument('--force', action='store_true', help='skip the peak guard')
+    r = sub.add_parser('restore')
+    r.add_argument('file', help='config-snapshot-*.json in data/backups (name or path)')
+    r.add_argument('--yes', action='store_true')
     args = ap.parse_args()
-    writing = (args.cmd == 'authority') or (args.cmd == 'sync' and not args.dry_run)
+    writing = (args.cmd in ('authority', 'restore')) or (args.cmd == 'sync' and not args.dry_run)
     if writing:
         db.init_db()
         config_store.init_config_schema()
-    return {'status': cmd_status, 'sync': cmd_sync, 'authority': cmd_authority}[args.cmd](args)
+    return {'status': cmd_status, 'sync': cmd_sync, 'authority': cmd_authority,
+            'restore': cmd_restore}[args.cmd](args)
 
 
 if __name__ == '__main__':

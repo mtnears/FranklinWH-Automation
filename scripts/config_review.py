@@ -6,9 +6,10 @@ Builds everything the review screens need from the settings registry:
 for every row, the value in .env, the value in the store, what is in effect
 now, and the value the review proposes (conflicts pre-select .env).
 
-Phase 2 is display + preview only. Nothing here writes. The page opens in
-preview mode on demand (config_review.html?preview=1) whatever the authority
-flag is, so the review can be QA'd while an install runs on the store.
+Nothing here writes. Committing is config_commit.py (POST /api/v1/review/commit)
+and the Test buttons are review_tests.py (POST /api/v1/review/test). The page
+opens in preview mode on demand (config_review.html?preview=1), where nothing
+is saved whatever the authority flag is.
 
 Served by scheduler.py at GET /api/v1/review.
 """
@@ -259,8 +260,12 @@ def secret_row(name: str, label: str = None, help_text: str = '') -> dict:
             'label': label or SECRET_LABELS.get(name, name),
             'help': help_text or (ent.help if ent else ''),
             'set': bool(v), 'shown': shown, 'status': 'env',
-            'testable': name in ('FRANKLIN_USERNAME', 'WEATHER_API_KEY', 'PVOUTPUT_API_KEY',
-                                 'SOLAREDGE_USERNAME')}
+            'testable': name in SECRET_TESTS, 'test': SECRET_TESTS.get(name)}
+
+
+# Secret row -> live test run with it (review_tests.py)
+SECRET_TESTS = {'FRANKLIN_USERNAME': 'franklin', 'WEATHER_API_KEY': 'weather',
+                'PVOUTPUT_API_KEY': 'pvoutput', 'SOLAREDGE_USERNAME': 'solaredge'}
 
 
 def info_row(label: str, value: Any, help_text: str = '') -> dict:
@@ -298,6 +303,7 @@ def review_payload() -> Dict[str, Any]:
     for k in ('modbus.enabled', 'modbus.host'):
         gw_rows.append(rows_by_key[k])
     rows_by_key['modbus.enabled']['testable'] = True
+    rows_by_key['modbus.enabled']['test'] = 'modbus'
     if profile:
         gw_rows.append(info_row('Batteries on this aGate',
                                 f"{profile.get('battery_count', '?')} × aPower "
@@ -372,7 +378,12 @@ def review_payload() -> Dict[str, Any]:
                          'env': env_v, 'store': store_v, 'effective': store_v if
                          settings.authority() == 'store' else env_v,
                          'proposed': env_v if env_v is not None else store_v, 'status': st,
-                         'readonly': fld == 'TYPE', 'testable': fld == 'IP'})
+                         'readonly': fld == 'TYPE'})
+            if fld == 'IP':
+                atype_now = ((sa or {}).get('array_type') or
+                             os.environ.get(f'SOLAR_ARRAY_{aid.upper()}_TYPE') or '').lower()
+                if atype_now == 'enphase':
+                    rows[-1].update({'testable': True, 'test': 'envoy', 'array_id': aid})
         charges = sa.get('charges_battery') if sa else None
         exports = sa.get('exports') if sa else None
         rows.append({'kind': 'flag', 'key': f'array.{aid}.charges_battery',
@@ -511,6 +522,8 @@ def review_payload() -> Dict[str, Any]:
         'authority': settings.authority(),
         'synced_at': (_q("SELECT value FROM app_state WHERE key = 'config.synced_at'") or
                       [{'value': None}])[0]['value'],
+        'review_completed_at': (_q("SELECT value FROM app_state WHERE key = 'review.completed_at'") or
+                                [{'value': None}])[0]['value'],
         'screens': [{'id': sid, 'title': t, 'intro': intro, 'cards': cards.get(sid, [])}
                     for sid, t, intro in SCREENS],
         'summary': {'retired_in_env': retired, 'legacy_aliases_in_env': aliases,
@@ -526,7 +539,10 @@ def rates_cards() -> List[dict]:
     plans = _q("SELECT * FROM rate_plans WHERE active = 1 ORDER BY id")
     if not plans:
         return [{'title': 'Rate plan', 'rows': [info_row(
-            'No rate plan imported', 'Run config_admin.py sync to import rate_schedule.json.')]}]
+            'Not in the store yet',
+            'Your data/rate_schedule.json is imported when you commit, so the store runs on the '
+            'same prices and windows you have today. Check that file before committing; prices '
+            'and times can be edited here after that.')]}]
     out = []
     today = datetime.now().strftime('%Y-%m-%d')
     win = rate_config.peak_window_for_date(today)
@@ -546,19 +562,34 @@ def rates_cards() -> List[dict]:
             for r in _q("SELECT tier, rate_cents FROM rate_tiers WHERE plan_id = ? AND season_id = ?",
                         (pid, s['id'])):
                 tiers[r['tier']] = r['rate_cents']
-            wins = _q("SELECT tier, days_json, start_time, end_time FROM rate_windows "
+            wins = _q("SELECT id, tier, days_json, start_time, end_time, season_id FROM rate_windows "
                       "WHERE plan_id = ? AND season_id = ? ORDER BY start_time", (pid, s['id'])) or \
-                _q("SELECT tier, days_json, start_time, end_time FROM rate_windows "
+                _q("SELECT id, tier, days_json, start_time, end_time, season_id FROM rate_windows "
                    "WHERE plan_id = ? AND season_id IS NULL ORDER BY start_time", (pid,))
             for w in wins:
                 try:
                     w['days'] = json.loads(w.pop('days_json'))
                 except (json.JSONDecodeError, TypeError):
                     w['days'] = []
-            seasons.append({'name': s['name'], 'months': months, 'tiers': tiers, 'windows': wins})
+                # A year-round window is shown under every season; editing it changes all of them
+                w['shared'] = w.pop('season_id') is None
+            seasons.append({'id': s['id'], 'name': s['name'], 'months': months, 'tiers': tiers,
+                            'windows': wins})
+        hints = []
+        if i == 0 and res and win and win.season:
+            plan_tiers = next((s['tiers'] for s in seasons if s['name'] == win.season), {})
+            for t in ('peak', 'off_peak'):
+                pv, rv = plan_tiers.get(t), res.tier_rates_cents.get(t)
+                if pv is not None and rv is not None and abs(pv - rv) > 0.0005:
+                    hints.append({'level': 'warn', 'text':
+                                  f"Today's {t.replace('_', '-')} price in effect is {rv:.3f}¢ from "
+                                  f"rate history, not the plan's {pv:.3f}¢. Rate history overrides "
+                                  f"peak and off-peak, so editing those two here will not change what "
+                                  f"the engine uses until the history row is updated."})
         out.append({'title': plan['name'], 'subtitle':
                     ('Battery meter · drives the engine' if i == 0 else 'Billing only'),
-                    'kind': 'rate_plan', 'plan': {
+                    'kind': 'rate_plan', 'hints': hints, 'plan': {
+                        'id': pid, 'source': plan.get('source'),
                         'name': plan['name'], 'default_tier': plan.get('default_tier'),
                         'export_capable': bool(plan.get('export_capable')),
                         'net_metering': plan.get('net_metering'),
