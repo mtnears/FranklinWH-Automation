@@ -86,10 +86,11 @@ async def collect_cloud_data(test_mode=False):
     start_time = time.time()
 
     try:
-        fetcher = TokenFetcher(username, password)
-        client = Client(fetcher, gateway_id)
+        from cloud_token import make_client, note_success
+        client = make_client(username, password, gateway_id)
 
         stats = await client.get_stats()
+        note_success(client)
         if not stats:
             log.error("No stats returned from cloud API")
             return False
@@ -234,6 +235,20 @@ async def collect_cloud_data(test_mode=False):
         return True
 
     except Exception as e:
+        msg = str(e)
+        login_down = 'appUserOrInstallerLogin' in msg or 'Bad Gateway' in msg
+        local_on = False
+        try:
+            import local_gateway
+            local_on = local_gateway.LocalGateway().enabled
+        except Exception:
+            pass
+        if login_down and local_on:
+            # Franklin's login service is down; the local connection carries
+            # readings and control, so this is not a failure of the install.
+            log.warning("Cloud enrichment skipped: Franklin cloud login unavailable "
+                        "(local connection in use)")
+            return True
         log.error(f"Cloud API collection failed: {e}")
         return False
 

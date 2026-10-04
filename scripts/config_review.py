@@ -25,11 +25,11 @@ import settings
 
 LABELS = {
     'local.enabled': 'Local connection',
-    'local.host': 'aGate IP (local connection)',
+    'local.host': 'Local connection IP override',
     'local.port': 'Local connection port',
     'local.timeout': 'Local connection timeout (s)',
     'modbus.enabled': 'Modbus connection',
-    'modbus.host': 'aGate IP (Modbus)',
+    'modbus.host': 'aGate IP address',
     'modbus.port': 'Modbus port',
     'modbus.timeout': 'Modbus timeout (s)',
     'system.api_max_retries': 'Cloud API retries',
@@ -348,7 +348,7 @@ def review_payload() -> Dict[str, Any]:
     # ---- Connection: one gateway card -------------------------------------
     gw_rows = [secret_row('FRANKLIN_USERNAME'), secret_row('FRANKLIN_PASSWORD'),
                secret_row('FRANKLIN_GATEWAY_ID')]
-    for k in ('local.enabled', 'local.host', 'modbus.enabled', 'modbus.host'):
+    for k in ('modbus.host', 'local.enabled', 'modbus.enabled'):
         gw_rows.append(rows_by_key[k])
     rows_by_key['local.enabled']['testable'] = True
     rows_by_key['local.enabled']['test'] = 'local'

@@ -763,6 +763,16 @@ async def _do_mode_switch(mode_name: str) -> bool:
     return ok
 
 
+def _refresh_dashboard_data():
+    """Rebuild power_dashboard_data.json now (after an override switch) so the
+    mode badge updates within seconds instead of at the next minute tick."""
+    try:
+        subprocess.run([sys.executable, str(SCRIPT_DIR / 'generate_dashboard_data.py')],
+                       capture_output=True, timeout=60, cwd=str(SCRIPT_DIR))
+    except Exception as e:
+        log(f"  Dashboard refresh after switch failed: {e}")
+
+
 def switch_mode_sync(mode_name: str) -> bool:
     """Synchronous wrapper for mode switching."""
     try:
@@ -1487,6 +1497,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     log(f"  Override mode switch OK: {mode}")
                 else:
                     log(f"  Override mode switch FAILED: {mode}")
+                _refresh_dashboard_data()
 
             threading.Thread(target=do_switch, daemon=True).start()
 
@@ -1505,11 +1516,11 @@ class APIHandler(BaseHTTPRequestHandler):
             log(f"  Override cancelled")
 
             # Run a smart decision immediately to restore correct mode
-            threading.Thread(
-                target=run_script,
-                args=("smart_decision.py", "Smart Decision [override cancelled]"),
-                daemon=True
-            ).start()
+            def decide_then_refresh():
+                run_script("smart_decision.py", "Smart Decision [override cancelled]")
+                _refresh_dashboard_data()
+
+            threading.Thread(target=decide_then_refresh, daemon=True).start()
 
             self._json_response(200, {'status': 'ok', 'override': {'active': False}})
         except Exception as e:

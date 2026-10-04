@@ -468,6 +468,8 @@ class Config:
             features.append(f"Dynamic Pricing ({self.PRICING_PROVIDER})")
         if self.MODBUS_ENABLED:
             features.append(f"Modbus TCP ({self.MODBUS_HOST}:{self.MODBUS_PORT})")
+        if self.LOCAL_ENABLED and (self.LOCAL_HOST or self.MODBUS_HOST):
+            features.append(f"Local connection ({self.LOCAL_HOST or self.MODBUS_HOST})")
         if self.WEATHER_ENABLED:
             features.append(f"Weather ({self.WEATHER_STATION_ID})")
         if self.FORECAST_HOUSE_KWP > 0:

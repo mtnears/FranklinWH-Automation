@@ -132,7 +132,18 @@ def t_franklin(a):
     async def go():
         client = Client(TokenFetcher(user, pw), gw)
         return await client.get_stats()
-    stats = asyncio.run(asyncio.wait_for(go(), timeout=25))
+    try:
+        stats = asyncio.run(asyncio.wait_for(go(), timeout=25))
+    except Exception as e:
+        msg = str(e)
+        if 'appUserOrInstallerLogin' in msg or 'Bad Gateway' in msg or re.search(r'Server error .5\d\d', msg):
+            code = re.search(r"\b(5\d\d)\b", msg)
+            raise RuntimeError(
+                "Franklin's cloud login is not answering"
+                + (f' (server error {code.group(1)})' if code else '')
+                + '. This is on Franklin\'s side, not your account. The automation does not need '
+                  'it while the local connection works; the cloud is only a last-resort fallback.')
+        raise
     if not stats:
         raise RuntimeError('Logged in, but the gateway returned no data')
     soc = getattr(getattr(stats, 'current', None), 'battery_soc', None)

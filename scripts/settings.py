@@ -128,8 +128,9 @@ REGISTRY: List[Entry] = [
             'the cloud API. Faster, and keeps working when the cloud is down.'),
     _e('modbus.host', ('MODBUS_HOST',), SETTING, 'str', None, 'A', category='modbus',
        dev_aliases=('AGATE_IP',), required_if='modbus.enabled',
-       help='IP address of the aGate on your network. Give it a DHCP reservation so it '
-            'does not change. Needs a restart to apply.'),
+       help='IP address of the aGate on your home network. Both the local connection and '
+            'Modbus use it. Use the wired address if the aGate has both wired and Wi-Fi, '
+            'and give it a DHCP reservation so it does not change. Needs a restart to apply.'),
     _e('modbus.port', ('MODBUS_PORT',), SETTING, 'int', 502, 'A', category='modbus',
        advanced=True, vmin=1, vmax=65535, dev_aliases=('AGATE_PORT',),
        help='Modbus TCP port on the aGate. Almost always 502.'),
@@ -140,11 +141,12 @@ REGISTRY: List[Entry] = [
        help='Talk to the aGate directly over your home network for readings and mode '
             'changes (local connection). Works without Modbus and without the Franklin '
             'cloud. When Modbus is also on, Modbus double-checks every reading and mode '
-            'change. The cloud is only used if the local connection fails.'),
+            'change. The cloud is only used if the local connection fails. With no aGate '
+            'IP entered, Test searches your network for the aGate.'),
     _e('local.host', ('LOCAL_HOST',), SETTING, 'str', None, 'A', category='local',
-       optional=True,
-       help='IP address of the aGate for the local connection. Leave blank to use the '
-            'Modbus IP. The Test button can find the aGate on your network.'),
+       optional=True, advanced=True,
+       help='Only if the local connection must use a different address than the aGate IP '
+            'on the Connection step (rare). Leave blank to use the aGate IP.'),
     _e('local.port', ('LOCAL_PORT',), SETTING, 'int', 9000, 'A', category='local',
        advanced=True, vmin=1, vmax=65535,
        help='Port for the local connection. Leave at the default.'),

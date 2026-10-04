@@ -4,6 +4,18 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-rc.2 — October 2026 (branch `v4.7-rc`)
+
+Fixes from the rc.1 live test.
+
+- **Configuration review, Connection step:** one **aGate IP address** row, used by both the local connection and Modbus, followed by the Local connection and Modbus switches, each with its own Test. A separate local-connection address is now an Advanced override, for the rare aGate that is only reachable on another interface.
+- **Franklin account Test:** when Franklin's cloud login is down it now says so in plain words (server error, Franklin's side, not needed while the local connection works) instead of a raw HTTP error.
+- **Cloud collector:** reuses the saved session token. While Franklin's login is down and the local connection is working, it logs one warning instead of failing every 15 minutes.
+- **Dashboard:** rebuilt immediately after an override switch or cancel, so the mode badge updates within seconds.
+- The engine's Features line lists the local connection.
+
+---
+
 ## v4.7.0-rc.1 — October 2026 (branch `v4.7-rc`)
 
 The engine no longer depends on the Franklin cloud to run your battery.
