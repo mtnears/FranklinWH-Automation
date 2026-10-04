@@ -656,7 +656,26 @@ def generate_dashboard_data():
     # Add extended block if API provided it
     if battery_status and 'extended' in battery_status:
         dashboard_data['extended'] = battery_status['extended']
-    
+
+    # v4.7: connection channels + failed mode-switch alert
+    try:
+        import channel_stats
+        alert = None
+        ap = channel_stats._data_dir() / 'control_alert.json'
+        if ap.exists():
+            alert = json.loads(ap.read_text())
+        st = channel_stats.channel_status()
+        today = st.get('today', {})
+        dashboard_data['connection'] = {
+            'alert': alert,
+            'last': st.get('last', {}),
+            'recent_switches': st.get('recent_switches', []),
+            'ops': today.get('ops', {}),
+            'crosscheck': today.get('crosscheck', {}),
+        }
+    except Exception as e:
+        dashboard_data['connection'] = {'error': str(e)[:200]}
+
     return dashboard_data
 
 

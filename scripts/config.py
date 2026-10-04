@@ -162,6 +162,12 @@ class Config:
     MODBUS_PORT: int = field(default_factory=lambda: get_int('MODBUS_PORT', 502))
     MODBUS_TIMEOUT: float = field(default_factory=lambda: get_float('MODBUS_TIMEOUT', 5.0))
     MODBUS_RETRY_ATTEMPTS: int = field(default_factory=lambda: get_int('MODBUS_RETRY_ATTEMPTS', 3))
+
+    # ===== v4.7: Local connection (readings + mode changes without the cloud) =====
+    LOCAL_ENABLED: bool = field(default_factory=lambda: get_bool('LOCAL_ENABLED', True))
+    LOCAL_HOST: str = field(default_factory=lambda: settings.raw('LOCAL_HOST', ''))
+    LOCAL_PORT: int = field(default_factory=lambda: get_int('LOCAL_PORT', 9000))
+    LOCAL_TIMEOUT: float = field(default_factory=lambda: get_float('LOCAL_TIMEOUT', 8.0))
     
     # ===== NEW: Telemetry Options =====
     TELEMETRY_ENABLED: bool = field(default_factory=lambda: get_bool('TELEMETRY_ENABLED', False))
@@ -354,13 +360,16 @@ class Config:
         """Validate configuration and return list of error messages."""
         errors = []
         
-        # Required credentials
-        if not self.FRANKLIN_USERNAME:
-            errors.append("FRANKLIN_USERNAME is required")
-        if not self.FRANKLIN_PASSWORD:
-            errors.append("FRANKLIN_PASSWORD is required")
-        if not self.FRANKLIN_GATEWAY_ID:
-            errors.append("FRANKLIN_GATEWAY_ID is required")
+        # Franklin cloud credentials: required unless the local connection can
+        # reach the aGate (v4.7). With a local host the cloud is only a fallback.
+        local_ok = self.LOCAL_ENABLED and bool(self.LOCAL_HOST or settings.raw('MODBUS_HOST', ''))
+        if not local_ok:
+            if not self.FRANKLIN_USERNAME:
+                errors.append("FRANKLIN_USERNAME is required")
+            if not self.FRANKLIN_PASSWORD:
+                errors.append("FRANKLIN_PASSWORD is required")
+            if not self.FRANKLIN_GATEWAY_ID:
+                errors.append("FRANKLIN_GATEWAY_ID is required")
         
         # Battery configuration
         if self.BATTERY_CAPACITY_KWH <= 0:

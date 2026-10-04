@@ -357,6 +357,13 @@ def job_collect_system_snapshot():
     run_script("collect_modbus.py", "SQLite Modbus Collection")
 
 
+def job_collect_local():
+    """Local connection reading every 5 minutes: the system record when Modbus
+    is not configured, otherwise a local/Modbus comparison for reliability
+    tracking (v4.7)."""
+    run_script("collect_local.py", "Local Connection Collection")
+
+
 def job_collect_weather_db():
     """SQLite Weather collector - runs every 15 minutes.
     Stores WU observations + updates daily aggregates in franklin.db.
@@ -649,6 +656,10 @@ def setup_schedule():
     if modbus_enabled and Path(SCRIPT_DIR / "collect_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every(5).minutes.do(job_collect_system_snapshot)
         _register("SQLite Modbus Collection", "Every 5 min")
+    local_enabled = getattr(config, 'LOCAL_ENABLED', True) if CONFIG_LOADED else True
+    if local_enabled and Path(SCRIPT_DIR / "collect_local.py").exists():
+        schedule.every(5).minutes.do(job_collect_local)
+        _register("Local Connection Collection", "Every 5 min")
     if se_modbus_enabled and Path(SCRIPT_DIR / "collect_solaredge_modbus.py").exists() and Path(SCRIPT_DIR / "db.py").exists():
         schedule.every(5).minutes.do(job_collect_solaredge_modbus)
         _register("SolarEdge Modbus Collection", "Every 5 min")
@@ -734,54 +745,22 @@ else:
 
 
 async def _do_mode_switch(mode_name: str) -> bool:
-    """Switch the gateway to the specified mode using the franklinwh library.
-    
+    """Switch the gateway to the specified mode and confirm it on the hardware.
+
+    v4.7: goes through the shared DataSourceManager, so overrides use the
+    same channel order as the engine (local connection, then the cloud with
+    saved-token reuse) and only report success when the aGate confirms.
+
     Args:
         mode_name: 'emergency_backup', 'self_consumption', or 'time_of_use'
-    
-    Returns: True if switch succeeded
     """
-    from franklinwh import Client, TokenFetcher, Mode
-    # Patch Mode.payload to echo back the user's current Storm Hedge setting
-    # rather than the library's hardcoded "1". The current value is read
-    # from the cloud before set_mode() and stashed on the Mode object as
-    # _stromen_preserve. See richo/franklinwh-python#8.
-    _stromen_orig = getattr(Mode.payload, "_stromen_patched", None) or Mode.payload
-    def _stromen_fix(self, gateway, _o=_stromen_orig):
-        p = _o(self, gateway)
-        p["stromEn"] = getattr(self, "_stromen_preserve", "0")
-        return p
-    _stromen_fix._stromen_patched = _stromen_orig
-    Mode.payload = _stromen_fix
-    
-    fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
-    client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
-    
-    # Read current Storm Hedge state and per-mode reserves from the cloud so
-    # the switch preserves the user's app settings.
-    sw_status = None
-    try:
-        sw_status = await client._switch_status()
-        current_stromen = str(sw_status.get("stromEn", 0))
-    except Exception as e:
-        log(f"  Could not read current stromEn, defaulting to '0': {e}")
-        current_stromen = "0"
-    
-    factories = {
-        'emergency_backup': Mode.emergency_backup,
-        'self_consumption': Mode.self_consumption,
-        'time_of_use': Mode.time_of_use,
-    }
-    if mode_name not in factories:
+    if mode_name not in ('emergency_backup', 'self_consumption', 'time_of_use'):
         raise ValueError(f"Unknown mode: {mode_name}")
-    from data_sources import preserved_mode_soc
-    soc, soc_source = preserved_mode_soc(mode_name, sw_status)
-    mode_obj = factories[mode_name](soc=soc)
-    log(f"  Mode switch to {mode_name}: reserve {soc}% from {soc_source}")
-    
-    mode_obj._stromen_preserve = current_stromen
-    await client.set_mode(mode_obj)
-    return True
+    from data_sources import DataSourceManager
+    mgr = DataSourceManager()
+    ok = await mgr.switch_mode(mode_name)
+    log(f"  Mode switch to {mode_name}: {'confirmed' if ok else 'FAILED'}")
+    return ok
 
 
 def switch_mode_sync(mode_name: str) -> bool:
@@ -841,6 +820,16 @@ def _read_latest_soc() -> float:
         pass
 
     # DB miss or stale — try cloud API with 30 sec cache
+    try:
+        from local_gateway import LocalGateway
+        gw = LocalGateway()
+        if gw.enabled:
+            soc = gw.read().get('soc_pct')
+            if soc is not None:
+                return float(soc)
+    except Exception:
+        pass
+
     return _read_soc_from_cloud()
 
 
@@ -863,11 +852,10 @@ def _read_soc_from_cloud() -> float:
         if not all([username, password, gateway_id]):
             return None
 
-        from franklinwh import Client, TokenFetcher
+        from cloud_token import make_client
 
         async def _fetch():
-            fetcher = TokenFetcher(username, password)
-            client = Client(fetcher, gateway_id)
+            client = make_client(username, password, gateway_id)
             return await client.get_stats()
 
         stats = asyncio.run(_fetch())

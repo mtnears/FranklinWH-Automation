@@ -295,6 +295,7 @@ function testRes(r){
 function testArgs(test, r){
   var a = {test: test}, v = function(k){ return rowIndex[k] ? currentValue(rowIndex[k]) : null; };
   if (test === 'modbus') a.host = v('modbus.host');
+  if (test === 'local') a.host = v('local.host') || v('modbus.host');
   if (test === 'envoy') { a.ip = currentValue(r); a.array_id = r.array_id; }
   if (test === 'weather') { a.station_id = v('weather.station_id'); a.lat = v('forecast.latitude'); a.lon = v('forecast.longitude'); }
   if (test === 'pvoutput') a.system_ids = v('pvoutput.system_ids');

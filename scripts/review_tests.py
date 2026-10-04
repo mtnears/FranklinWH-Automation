@@ -13,7 +13,7 @@ message is scrubbed of secret values before it is printed. Non-secret values
 the user may have just edited in the review (an IP, a station ID, system IDs)
 are passed in, so a test checks what the user is about to commit.
 
-Tests: modbus, envoy, franklin, solaredge, solaredge_site, pvoutput, weather.
+Tests: local, modbus, envoy, franklin, solaredge, solaredge_site, pvoutput, weather.
 """
 
 import json
@@ -294,7 +294,42 @@ def _km(lat1, lon1, lat2, lon2) -> float:
     return 6371.0 * 2 * math.asin(math.sqrt(h))
 
 
-TESTS = {'modbus': t_modbus, 'envoy': t_envoy, 'franklin': t_franklin,
+def t_local(a):
+    """Local connection: handshake + one reading. With no address set, look
+    for the aGate on the configured subnets and report what was found."""
+    import local_gateway as lg
+    if not lg.LIB_AVAILABLE:
+        raise RuntimeError('The local connection package is not installed in this image. '
+                           'Rebuild with the current requirements.txt.')
+    host = (a.get('host') or '').strip() or settings.raw('LOCAL_HOST', '') \
+        or settings.raw('MODBUS_HOST', '') or lg.found_host()
+    found_note = ''
+    if not host:
+        for hint in lg.subnet_hints():
+            hosts = lg.discover(hint)
+            if hosts:
+                host = hosts[0]
+                lg.save_found_host(host)
+                found_note = f'Found the aGate at {host}. '
+                break
+        if not host:
+            raise RuntimeError('No aGate address set and none found on the local network. '
+                               'Enter the aGate IP and test again.')
+    host = _need_host(host, 'aGate IP')
+    gw = lg.LocalGateway(host=host, enabled=True)
+    try:
+        flow = gw.probe()
+    except Exception as e:
+        raise RuntimeError(f'No local connection to {host}: {e}. Check the IP; the aGate '
+                           'must be on the same network as this server.')
+    mode = lg.MODE_LABEL.get(flow.get('mode'), flow.get('mode_name') or '?')
+    progs = ', '.join(p['name'] for p in flow.get('programmes', []) if p.get('name'))
+    soc = flow.get('soc_pct')
+    return (f"{found_note}aGate at {host} answered on the local connection. "
+            f"Battery {soc:.1f}%, mode {mode}" + (f'. Modes available: {progs}.' if progs else '.'))
+
+
+TESTS = {'local': t_local, 'modbus': t_modbus, 'envoy': t_envoy, 'franklin': t_franklin,
          'solaredge': t_solaredge, 'solaredge_site': t_solaredge_site,
          'pvoutput': t_pvoutput, 'weather': t_weather}
 

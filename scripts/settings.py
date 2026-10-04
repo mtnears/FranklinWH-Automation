@@ -136,6 +136,21 @@ REGISTRY: List[Entry] = [
     _e('modbus.timeout', ('MODBUS_TIMEOUT',), SETTING, 'float', 5.0, 'A', category='modbus',
        advanced=True, vmin=0.5, vmax=60,
        help='Seconds to wait for the aGate to answer a Modbus request.'),
+    _e('local.enabled', ('LOCAL_ENABLED',), SETTING, 'bool', True, 'A', category='local',
+       help='Talk to the aGate directly over your home network for readings and mode '
+            'changes (local connection). Works without Modbus and without the Franklin '
+            'cloud. When Modbus is also on, Modbus double-checks every reading and mode '
+            'change. The cloud is only used if the local connection fails.'),
+    _e('local.host', ('LOCAL_HOST',), SETTING, 'str', None, 'A', category='local',
+       optional=True,
+       help='IP address of the aGate for the local connection. Leave blank to use the '
+            'Modbus IP. The Test button can find the aGate on your network.'),
+    _e('local.port', ('LOCAL_PORT',), SETTING, 'int', 9000, 'A', category='local',
+       advanced=True, vmin=1, vmax=65535,
+       help='Port for the local connection. Leave at the default.'),
+    _e('local.timeout', ('LOCAL_TIMEOUT',), SETTING, 'float', 8.0, 'A', category='local',
+       advanced=True, vmin=1, vmax=60,
+       help='Seconds to wait for the aGate to answer on the local connection.'),
     _e('system.api_max_retries', ('API_MAX_RETRIES',), SETTING, 'int', 5, 'A', category='system',
        advanced=True, vmin=0, vmax=20,
        help='How many times a failed Franklin cloud API call is retried.'),

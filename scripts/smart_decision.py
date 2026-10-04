@@ -668,6 +668,16 @@ def _read_latest_soc() -> float:
     except Exception:
         pass
 
+    try:
+        from local_gateway import LocalGateway
+        gw = LocalGateway()
+        if gw.enabled:
+            soc = gw.read().get('soc_pct')
+            if soc is not None:
+                return float(soc)
+    except Exception:
+        pass
+
     return _read_soc_from_cloud()
 
 
@@ -692,11 +702,10 @@ def _read_soc_from_cloud() -> float:
         if not all([username, password, gateway_id]):
             return None
 
-        from franklinwh import Client, TokenFetcher
+        from cloud_token import make_client
 
         async def _fetch():
-            fetcher = TokenFetcher(username, password)
-            client = Client(fetcher, gateway_id)
+            client = make_client(username, password, gateway_id)
             return await client.get_stats()
 
         stats = _asyncio.run(_fetch())

@@ -614,6 +614,7 @@
         </div>
     </header>
     <div class="review-banner" id="review-banner"><span id="review-banner-text"></span><a href="/config_review.html">Start the review</a><button onclick="dismissReviewBanner()">Later</button></div>
+    <div class="override-banner" id="control-alert-banner"><span id="control-alert-text"></span></div>
     <div class="override-banner" id="override-banner"><span id="override-text"></span><button class="cancel-btn" onclick="cancelOverride()">Cancel Override</button></div>
     <nav class="tab-bar">
         <div class="tab-bar-left">
@@ -1914,7 +1915,7 @@ async function update(){
     try{
         const r=await fetch('power_dashboard_data.json?t='+Date.now());
         if(!r.ok)throw 0; D=await r.json();
-        renderLive(D); renderSI(D); loadThresh(D);
+        renderLive(D); renderSI(D); loadThresh(D); renderConnAlert(D);
         document.getElementById('api-dot').className='status-dot';
         document.getElementById('api-text').textContent='Connected';
         document.getElementById('about-update').textContent=D.timestamp||'--';
@@ -2938,6 +2939,15 @@ function confirmOverride(){
         }).catch(e=>console.error('Override API error:',e))
 }
 function cancelOverride(){OV={active:false};saveOV();updateOVBanner();document.getElementById('cancel-ov-btn').style.display='none';fetch('/api/override/cancel',{method:'POST'}).then(r=>r.json()).then(d=>console.log('Override cancelled:',d)).catch(e=>console.error('Cancel API error:',e))}
+function renderConnAlert(d){
+    const bn=document.getElementById('control-alert-banner'); if(!bn)return;
+    const a=d&&d.connection&&d.connection.alert;
+    if(!a||!a.active){bn.classList.remove('active');return}
+    const when=(a.last_at||'').replace('T',' ').slice(0,16);
+    document.getElementById('control-alert-text').textContent='⚠️ '+(a.message||'Mode switch failed')+
+        (a.failures>1?' ('+a.failures+' failed attempts, last '+when+')':' ('+when+')');
+    bn.classList.add('active');
+}
 function updateOVBanner(){
     const bn=document.getElementById('override-banner');
     if(!OV.active){bn.classList.remove('active');return}

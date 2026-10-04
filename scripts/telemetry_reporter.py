@@ -355,9 +355,51 @@ def build_payload() -> Dict[str, Any]:
         'performance_7d': _build_performance_stats(days=7),
         'performance_30d': _build_performance_stats(days=30),
         'meta': _build_meta(install_uuid),
+        'local_control': _build_local_control(),
     }
 
     return payload
+
+
+def _build_local_control() -> Dict[str, Any]:
+    """v4.7: which gateway channels this install uses and how reliable each
+    one has been (reads, mode changes, confirmations, local/Modbus agreement,
+    cloud token reuse). Counts, rates and latencies only — no addresses or
+    error text."""
+    out: Dict[str, Any] = {'available': False}
+    try:
+        import channel_stats
+        import local_gateway as lg
+        gw = lg.LocalGateway()
+        if settings.raw('LOCAL_HOST', ''):
+            host_source = 'configured'
+        elif settings.raw('MODBUS_HOST', ''):
+            host_source = 'modbus_host'
+        elif lg.found_host():
+            host_source = 'discovered'
+        else:
+            host_source = None
+        data = channel_stats.load()
+        last = {ch: {'consecutive_failures': v.get('consecutive_failures', 0),
+                     'ok_at': v.get('ok_at'), 'fail_at': v.get('fail_at')}
+                for ch, v in (data.get('last') or {}).items()}
+        alert_active = (channel_stats._data_dir() / 'control_alert.json').exists()
+        out = {
+            'available': lg.LIB_AVAILABLE,
+            'enabled': gw.enabled,
+            'host_source': host_source,
+            'lib_version': lg.LIB_VERSION,
+            'modbus_enabled': str(settings.raw('MODBUS_ENABLED', 'false')).lower() in ('1', 'true', 'yes', 'on'),
+            'cloud_configured': bool(settings.raw('FRANKLIN_USERNAME', '') and settings.raw('FRANKLIN_GATEWAY_ID', '')),
+            'control_alert_active': alert_active,
+            'last': last,
+            'stats_1d': channel_stats.summary(1, data),
+            'stats_7d': channel_stats.summary(7, data),
+            'stats_30d': channel_stats.summary(30, data),
+        }
+    except Exception as e:
+        out['error'] = type(e).__name__
+    return out
 
 
 def _build_system_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
@@ -499,6 +541,7 @@ def _build_config_flags() -> Dict[str, Any]:
         from config import config
         flags['adaptive_engine'] = getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False)
         flags['modbus_enabled'] = getattr(config, 'MODBUS_ENABLED', False)
+        flags['local_enabled'] = getattr(config, 'LOCAL_ENABLED', False)
         flags['emergency_prep_mode'] = getattr(config, 'EMERGENCY_PREP_MODE', False)
         flags['forecast_solar_enabled'] = getattr(config, 'FORECAST_ENABLED', False)
         flags['multi_meter'] = getattr(config, 'MULTI_METER', False) or bool(settings.raw('METER2_ACCOUNT', ''))

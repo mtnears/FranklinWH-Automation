@@ -6,11 +6,11 @@ Unified data collection from Modbus TCP, Enphase local solar, and Franklin
 Cloud API. Designed to minimize cloud API usage by sourcing data locally
 wherever possible.
 
-Data Source Hierarchy:
-  SOC + Grid Power  → Modbus TCP (26ms) → Cloud API fallback
-  Solar Production  → Enphase local JSON (from collect_enphase.py) → PVOutput → Cloud API
-  Mode Switching    → Cloud API only (no local alternative)
-  Mode Detection    → Local state tracking → Cloud API verification
+Data Source Hierarchy (v4.7):
+  Readings          → Local connection → Modbus TCP → Cloud API
+  Solar Production  → Enphase local JSON (from collect_enphase.py) → aGate PV reading
+  Mode Switching    → Local connection → Cloud API (saved-token reuse)
+  Mode Confirmation → Modbus 15507 → local reading → Cloud API status
 
 Architecture:
   ModbusDataSource    - Fast local readings via SunSpec registers (SOC, grid)
@@ -32,6 +32,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 import json
+
+import channel_stats
 
 # Modbus imports (optional)
 try:
@@ -531,6 +533,7 @@ class ModbusDataSource(DataSource):
         try:
             if not await self._connect():
                 self.stats.record_failure()
+                channel_stats.record('modbus', 'read', False, None, 'could not connect')
                 return None
 
             # Read key SunSpec models
@@ -540,6 +543,7 @@ class ModbusDataSource(DataSource):
             if not model_713:
                 logger.warning("Failed to read Model 713 (DER Status)")
                 self.stats.record_failure()
+                channel_stats.record('modbus', 'read', False, None, 'model 713 read failed')
                 return None
 
             # SOC from Model 713 offset 2 (confirmed: value / 10)
@@ -635,6 +639,7 @@ class ModbusDataSource(DataSource):
             # Record success
             response_time = (time.time() - start_time) * 1000
             self.stats.record_success(response_time)
+            channel_stats.record('modbus', 'read', True, response_time)
 
             logger.debug(f"Modbus read: SOC={soc_percent:.1f}%, "
                         f"Grid={battery_data.grid_power_kw:.3f}kW, "
@@ -646,6 +651,7 @@ class ModbusDataSource(DataSource):
         except Exception as e:
             logger.error(f"Modbus read failed: {e}")
             self.stats.record_failure()
+            channel_stats.record('modbus', 'read', False, None, str(e))
             return None
 
     async def switch_mode(self, mode: str) -> bool:
@@ -776,6 +782,7 @@ class CloudDataSource(DataSource):
         self.name = "Cloud API"
         self.client = None
         self.token_fetcher = None
+        self.last_error = None
         self.enabled = bool(config.FRANKLIN_USERNAME and
                            config.FRANKLIN_PASSWORD and
                            config.FRANKLIN_GATEWAY_ID)
@@ -783,11 +790,9 @@ class CloudDataSource(DataSource):
     async def _get_client(self) -> Optional[Client]:
         try:
             if not self.client:
-                self.token_fetcher = TokenFetcher(
-                    config.FRANKLIN_USERNAME,
-                    config.FRANKLIN_PASSWORD
-                )
-                self.client = Client(self.token_fetcher, config.FRANKLIN_GATEWAY_ID)
+                from cloud_token import make_client
+                self.client = make_client()
+                self.token_fetcher = getattr(self.client, 'fetcher', None)
             return self.client
         except Exception as e:
             logger.error(f"Cloud API client creation failed: {e}")
@@ -866,6 +871,12 @@ class CloudDataSource(DataSource):
 
             response_time = (time.time() - start_time) * 1000
             self.stats.record_success(response_time)
+            channel_stats.record('cloud', 'read', True, response_time)
+            try:
+                from cloud_token import note_success
+                note_success(client)
+            except Exception:
+                pass
 
             logger.debug(f"Cloud API read: SOC={battery_data.soc_percent:.1f}%, "
                         f"Time={response_time:.0f}ms")
@@ -875,6 +886,7 @@ class CloudDataSource(DataSource):
         except Exception as e:
             logger.error(f"Cloud API read failed: {e}")
             self.stats.record_failure()
+            channel_stats.record('cloud', 'read', False, (time.time() - start_time) * 1000, str(e))
             # Reset client on failure to force re-auth
             self.client = None
             self.token_fetcher = None
@@ -896,9 +908,13 @@ class CloudDataSource(DataSource):
             _stromen_fix._stromen_patched = _stromen_orig
             Mode.payload = _stromen_fix
 
-            # Create fresh client for mode switching (ensures fresh auth)
-            fetcher = TokenFetcher(config.FRANKLIN_USERNAME, config.FRANKLIN_PASSWORD)
-            client = Client(fetcher, config.FRANKLIN_GATEWAY_ID)
+            # Client pre-seeded with the saved session token; it logs in
+            # again only if the server rejects the token.
+            from cloud_token import make_client, note_success
+            client = make_client()
+            if client is None:
+                self.last_error = 'cloud credentials not configured'
+                return False
 
             # Read current Storm Hedge state and per-mode reserves from the
             # cloud so the switch preserves the user's app settings.
@@ -930,11 +946,14 @@ class CloudDataSource(DataSource):
 
             mode_obj._stromen_preserve = current_stromen
             await client.set_mode(mode_obj)
+            note_success(client)
+            self.last_error = None
             logger.info(f'Mode switch successful: {mode} (reserve {soc}% from {soc_source}, '
                         f'stromEn preserved as {current_stromen})')
             return True
 
         except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
             logger.error(f'Mode switch error: {e}')
             return False
 
@@ -962,13 +981,153 @@ class CloudDataSource(DataSource):
 
 
 # =============================================================================
+# Local connection (v4.7) - primary channel for readings and mode changes
+# =============================================================================
+
+class LocalDataSource(DataSource):
+    """aGate local connection: live readings and operating-mode changes."""
+
+    def __init__(self):
+        super().__init__()
+        self.name = "Local"
+        self.gw = None
+        self.enabled = False
+        try:
+            import local_gateway
+            self.gw = local_gateway.LocalGateway()
+            self.enabled = self.gw.enabled
+            if not local_gateway.LIB_AVAILABLE:
+                logger.info("Local connection package not installed — local channel off")
+        except Exception as e:
+            logger.warning(f"Local connection unavailable: {e}")
+
+    async def read_flow(self) -> Optional[Dict[str, Any]]:
+        if not self.enabled:
+            return None
+        t0 = time.time()
+        try:
+            flow = await asyncio.to_thread(self.gw.read)
+            if flow.get('soc_pct') is None:
+                raise RuntimeError('reading had no SOC')
+            self.stats.record_success((time.time() - t0) * 1000)
+            return flow
+        except Exception as e:
+            self.stats.record_failure()
+            logger.warning(f"Local connection read failed: {e}")
+            return None
+
+    async def read_battery_data(self) -> Optional[BatteryData]:
+        flow = await self.read_flow()
+        return flow_to_battery_data(flow) if flow else None
+
+    async def switch_mode(self, mode: str) -> Dict[str, Any]:
+        if not self.enabled:
+            return {'ok': False, 'error': 'local connection not enabled'}
+        try:
+            return await asyncio.to_thread(self.gw.set_mode, mode)
+        except Exception as e:
+            return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+
+
+def flow_to_battery_data(flow: Dict[str, Any]) -> BatteryData:
+    """Local reading dict (local_gateway.read) -> BatteryData."""
+    def kw(k):
+        v = flow.get(k)
+        return (v / 1000.0) if v is not None else 0.0
+    bd = BatteryData(
+        soc_percent=float(flow['soc_pct']),
+        battery_power_kw=kw('battery_w'),
+        grid_power_kw=kw('grid_w'),
+        solar_power_kw=kw('solar_w'),
+        home_load_kw=kw('load_w'),
+        source="local",
+        timestamp=datetime.now(),
+    )
+    bd.run_status = flow.get('run_status')
+    bd.per_battery_soc = list(flow.get('per_battery_soc') or [])
+    bd.ambient_temp_c = flow.get('ambient_temp_c')
+    bd._ext_solar_kw = kw('solar_w')
+    bd._local_mode = flow.get('mode')
+    bd._local_flow = flow
+    return bd
+
+
+# Display labels used for mode_name when the reading carries no richer name
+_MODE_LABELS = {
+    'time_of_use': 'Time of Use',
+    'self_consumption': 'Self Consumption',
+    'emergency_backup': 'Emergency Backup',
+}
+
+CONTROL_ALERT_FILE = 'control_alert.json'
+
+
+def _control_alert_path() -> Path:
+    return Path(str(config.DATA_DIR)) / CONTROL_ALERT_FILE
+
+
+def write_control_alert(target: str, attempts: list, message: str):
+    try:
+        p = _control_alert_path()
+        prior = {}
+        if p.exists():
+            try:
+                prior = json.loads(p.read_text())
+            except Exception:
+                prior = {}
+        data = {
+            'active': True,
+            'first_at': prior.get('first_at') or datetime.now().isoformat(timespec='seconds'),
+            'last_at': datetime.now().isoformat(timespec='seconds'),
+            'failures': int(prior.get('failures', 0)) + 1,
+            'target': target,
+            'message': message,
+            'attempts': attempts[:8],
+        }
+        p.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        logger.debug(f"Could not write control alert: {e}")
+
+
+def clear_control_alert():
+    try:
+        p = _control_alert_path()
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+
+
+def read_control_alert() -> Optional[Dict[str, Any]]:
+    try:
+        p = _control_alert_path()
+        if p.exists():
+            return json.loads(p.read_text())
+    except Exception:
+        pass
+    return None
+
+
+# =============================================================================
 # Data Source Manager - orchestrates everything
 # =============================================================================
 
 class DataSourceManager:
-    """Manages all data sources with automatic fallback and enrichment."""
+    """Manages all data sources with automatic fallback and enrichment.
+
+    v4.7 channel order:
+      Readings      local connection -> Modbus -> cloud
+      Mode changes  local connection -> cloud (saved-token reuse)
+      Confirmation  Modbus 15507 when configured, else the local reading,
+                    else the cloud status
+    When both local and Modbus are available every reading is cross-checked
+    and the comparison recorded in channel_stats.
+    """
+
+    MODE_CONFIRM_TIMEOUT = 20.0
 
     def __init__(self):
+        self.local_source = LocalDataSource()
         self.modbus_source = ModbusDataSource()
         self.solar_source = SolarDataSource()
         self.cloud_source = CloudDataSource()
@@ -978,117 +1137,153 @@ class DataSourceManager:
         )
         self.mode_tracker = ModeStateTracker()
 
-        self.preferred_source = "modbus" if config.MODBUS_ENABLED else "cloud"
+        if self.local_source.enabled:
+            self.preferred_source = "local"
+        elif self.modbus_source.enabled:
+            self.preferred_source = "modbus"
+        else:
+            self.preferred_source = "cloud"
         self.last_data = None
         self.last_fallback = None
 
         # Connection counters for dashboard
         self.connection_stats = {
+            "local": self.local_source.stats,
             "modbus": self.modbus_source.stats,
             "cloud": self.cloud_source.stats,
             "solar": self.solar_source.stats,
         }
 
+    # ------------------------------------------------------------------ reads
     async def read_battery_data(self) -> Optional[BatteryData]:
         """
-        Read battery data with local-first strategy.
+        Read battery data, local channels first.
 
-        Priority:
-        1. Modbus for SOC + grid power (26ms)
-        2. Enphase JSON for solar production (file read, <1ms)
-        3. SOC trend for solar_to_battery estimate
-        4. Mode from local state tracker
-        5. Cloud API only as fallback if Modbus fails
+        1. Local connection (cross-checked against Modbus when configured)
+        2. Modbus TCP
+        3. Cloud API
+        Solar is enriched from the Enphase collector in every local path.
         """
         battery_data = None
 
-        # === Strategy 1: Modbus primary ===
-        if self.preferred_source == "modbus" and self.modbus_source.enabled:
+        # === Strategy 1: local connection ===
+        if self.local_source.enabled:
+            flow = await self.local_source.read_flow()
+            if flow:
+                battery_data = flow_to_battery_data(flow)
+                mb = None
+                if self.modbus_source.enabled:
+                    mb = await self.modbus_source.read_battery_data()
+                    if mb:
+                        self._merge_modbus(battery_data, mb)
+                        battery_data.source = "local+modbus"
+                self._enrich_local(battery_data, from_modbus=mb is not None)
+                self.last_data = battery_data
+                return battery_data
+            logger.warning("Local connection read failed — trying Modbus")
+
+        # === Strategy 2: Modbus ===
+        if self.modbus_source.enabled:
             battery_data = await self.modbus_source.read_battery_data()
-
             if battery_data:
-                # Enrich with solar data from Enphase collector
-                solar_kw = self.solar_source.read_solar_production()
-                if solar_kw is not None:
-                    battery_data.solar_power_kw = solar_kw
-                    battery_data.source = "modbus+enphase"
-                elif hasattr(battery_data, '_ext_solar_kw') and battery_data._ext_solar_kw > 0:
-                    battery_data.solar_power_kw = battery_data._ext_solar_kw
-                    battery_data.source = "modbus+ext"
-                else:
-                    logger.debug("No solar data available (may be nighttime)")
-
-                # Track SOC for trend analysis
-                self.soc_tracker.record(battery_data.soc_percent)
-
-                # Charging flow estimation: use battery_power from extension registers
-                # battery_power_kw > 0 means discharging, < 0 means charging
-                if battery_data.battery_power_kw < -0.05:
-                    # Battery is charging — figure out from where
-                    charge_rate = abs(battery_data.battery_power_kw)
-                    if battery_data.solar_power_kw > 0.1:
-                        battery_data.solar_to_battery_kw = min(charge_rate, battery_data.solar_power_kw)
-                        battery_data.grid_to_battery_kw = max(0, charge_rate - battery_data.solar_to_battery_kw)
-                    else:
-                        battery_data.grid_to_battery_kw = charge_rate
-                        battery_data.solar_to_battery_kw = 0.0
-                elif battery_data.battery_power_kw > 0.05:
-                    battery_data.solar_to_battery_kw = 0.0
-                    battery_data.grid_to_battery_kw = 0.0
-                else:
-                    # Near-zero battery power — fall back to SOC trend
-                    solar_to_bat = self.soc_tracker.estimate_solar_to_battery(
-                        battery_data.solar_power_kw,
-                        battery_data.grid_power_kw
-                    )
-                    battery_data.solar_to_battery_kw = solar_to_bat
-                    charging_rate = self.soc_tracker.get_charging_rate_kw()
-                    if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
-                        battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
-
-                # Mode: prefer extension register (direct hardware state) over tracker
-                # Register 15507 gives us the actual hardware mode — no cloud call needed.
-                # Cloud verification is only used as fallback when Modbus ext registers
-                # are unavailable, and always after mode switches (handled in switch_mode).
-                ext_mode = getattr(battery_data, '_ext_mode', None)
-                ext_mode_name = getattr(battery_data, '_ext_mode_name', None)
-                if ext_mode and ext_mode_name:
-                    # Modbus register 15507 is the authoritative hardware state.
-                    # This eliminates routine cloud API calls for mode verification,
-                    # reducing cloud usage from every-30-min to mode-switches-only (~2-4/day).
-                    battery_data.mode_name = ext_mode_name
-                    self.mode_tracker.record_verification(ext_mode, ext_mode_name)
-                else:
-                    # Extension registers unavailable — use local tracker and
-                    # fall back to cloud verification on the 15-min schedule
-                    battery_data.mode_name = self.mode_tracker.get_mode_name()
-                    if self.mode_tracker.needs_verification():
-                        await self._verify_mode_from_cloud(battery_data)
-
+                self._enrich_local(battery_data, from_modbus=True)
+                if self.local_source.enabled:
+                    self.last_fallback = datetime.now()
                 self.last_data = battery_data
                 return battery_data
 
-            # Modbus failed — fall back to cloud
             logger.warning("Modbus read failed, falling back to Cloud API")
 
-        # === Strategy 2: Cloud API (fallback or primary if no Modbus) ===
+        # === Strategy 3: Cloud API ===
         battery_data = await self.cloud_source.read_battery_data()
         if battery_data:
-            # Track SOC even from cloud reads
             self.soc_tracker.record(battery_data.soc_percent)
-
-            # Update mode tracker from cloud data
             if battery_data.mode_name and battery_data.mode_name != "Unknown":
                 mode = self._detect_mode_from_name(battery_data.mode_name)
                 self.mode_tracker.record_verification(mode, battery_data.mode_name)
-
             self.last_data = battery_data
             self.last_fallback = datetime.now()
             return battery_data
 
-        # Both sources failed
         logger.error("All data sources failed")
         return None
+
+    def _merge_modbus(self, bd: BatteryData, mb: BatteryData):
+        """Fill fields only Modbus has, and record the local/Modbus comparison."""
+        bd.grid_status = mb.grid_status
+        bd.grid_voltage_v = mb.grid_voltage_v
+        bd.grid_frequency_hz = mb.grid_frequency_hz
+        if mb.cabinet_temp_c is not None:
+            bd.cabinet_temp_c = mb.cabinet_temp_c
+        if bd.ambient_temp_c is None:
+            bd.ambient_temp_c = mb.ambient_temp_c
+        for attr in ('_ext_mode', '_ext_mode_name', '_ext_tou_dispatch',
+                     '_ext_tou_dispatch_text', '_ext_self_reserve', '_ext_tou_reserve'):
+            if hasattr(mb, attr):
+                setattr(bd, attr, getattr(mb, attr))
+        local_mode = getattr(bd, '_local_mode', None)
+        mb_mode = getattr(mb, '_ext_mode', None)
+        channel_stats.record_crosscheck(
+            bd.soc_percent, mb.soc_percent,
+            bd.grid_power_kw * 1000.0, mb.grid_power_kw * 1000.0,
+            local_mode, mb_mode)
+        if local_mode and mb_mode and local_mode != mb_mode:
+            logger.warning(f"Mode disagreement: local={local_mode} modbus={mb_mode}")
+
+    def _enrich_local(self, battery_data: BatteryData, from_modbus: bool):
+        """Solar enrichment, SOC trend, charge-source split, mode tracking."""
+        solar_kw = self.solar_source.read_solar_production()
+        if solar_kw is not None:
+            battery_data.solar_power_kw = solar_kw
+            if battery_data.source in ("modbus",):
+                battery_data.source = "modbus+enphase"
+            elif battery_data.source.startswith("local"):
+                battery_data.source += "+enphase"
+        elif getattr(battery_data, '_ext_solar_kw', 0) and battery_data._ext_solar_kw > 0:
+            battery_data.solar_power_kw = battery_data._ext_solar_kw
+            if battery_data.source == "modbus":
+                battery_data.source = "modbus+ext"
+        else:
+            logger.debug("No solar data available (may be nighttime)")
+
+        self.soc_tracker.record(battery_data.soc_percent)
+
+        # battery_power_kw > 0 means discharging, < 0 means charging
+        if battery_data.battery_power_kw < -0.05:
+            charge_rate = abs(battery_data.battery_power_kw)
+            if battery_data.solar_power_kw > 0.1:
+                battery_data.solar_to_battery_kw = min(charge_rate, battery_data.solar_power_kw)
+                battery_data.grid_to_battery_kw = max(0, charge_rate - battery_data.solar_to_battery_kw)
+            else:
+                battery_data.grid_to_battery_kw = charge_rate
+                battery_data.solar_to_battery_kw = 0.0
+        elif battery_data.battery_power_kw > 0.05:
+            battery_data.solar_to_battery_kw = 0.0
+            battery_data.grid_to_battery_kw = 0.0
+        else:
+            solar_to_bat = self.soc_tracker.estimate_solar_to_battery(
+                battery_data.solar_power_kw,
+                battery_data.grid_power_kw
+            )
+            battery_data.solar_to_battery_kw = solar_to_bat
+            charging_rate = self.soc_tracker.get_charging_rate_kw()
+            if charging_rate and charging_rate > 0 and battery_data.grid_power_kw > 0.1:
+                battery_data.grid_to_battery_kw = max(0, charging_rate - solar_to_bat)
+
+        # Mode: Modbus 15507 (with TOU dispatch detail) when present, else the
+        # local reading, else the tracker with periodic cloud verification.
+        ext_mode = getattr(battery_data, '_ext_mode', None)
+        ext_mode_name = getattr(battery_data, '_ext_mode_name', None)
+        local_mode = getattr(battery_data, '_local_mode', None)
+        if ext_mode and ext_mode_name:
+            battery_data.mode_name = ext_mode_name
+            self.mode_tracker.record_verification(ext_mode, ext_mode_name)
+        elif local_mode:
+            battery_data.mode_name = _MODE_LABELS.get(local_mode, local_mode)
+            self.mode_tracker.record_verification(local_mode, battery_data.mode_name)
+        else:
+            battery_data.mode_name = self.mode_tracker.get_mode_name()
+            # (cloud verification only when no local channel can see the mode)
 
     async def _verify_mode_from_cloud(self, battery_data: BatteryData):
         """Periodically verify mode and get per-battery SOC from cloud."""
@@ -1099,12 +1294,9 @@ class DataSourceManager:
                 mode = self._detect_mode_from_name(mode_name)
                 self.mode_tracker.record_verification(mode, mode_name)
                 battery_data.mode_name = mode_name
-
-                # Also grab per-battery SOC while we're here
                 per_bat_soc = verification.get("per_battery_soc", [])
                 if per_bat_soc:
                     battery_data.per_battery_soc = per_bat_soc
-
                 logger.info(f"Cloud verification: mode={mode_name}, "
                           f"per_bat_soc={per_bat_soc}")
         except Exception as e:
@@ -1121,70 +1313,161 @@ class DataSourceManager:
             return "self_consumption"
         if "tou" in name_lower or "time" in name_lower:
             return "time_of_use"
-        # Anything else (custom schedule names, etc.) is home mode
         return config.HOME_MODE
+
+    # ------------------------------------------------------------ switching
+    @staticmethod
+    def _canonical_target(mode: str) -> str:
+        if mode in ('emergency_backup', 'backup'):
+            return 'emergency_backup'
+        if mode in ('self_consumption', 'time_of_use'):
+            return mode
+        # v3.5 legacy "home" target
+        return 'self_consumption' if config.HOME_MODE == 'self_consumption' else 'time_of_use'
+
+    async def _observe_mode(self, prefer: str = 'modbus') -> tuple:
+        """Read the current hardware mode. Returns (mode|None, via)."""
+        if prefer == 'modbus' and self.modbus_source.enabled:
+            mb = await self.modbus_source.read_battery_data()
+            m = getattr(mb, '_ext_mode', None) if mb else None
+            if m:
+                return m, 'modbus'
+        if self.local_source.enabled:
+            flow = await self.local_source.read_flow()
+            if flow and flow.get('mode'):
+                return flow['mode'], 'local'
+        if prefer != 'modbus' and self.modbus_source.enabled:
+            mb = await self.modbus_source.read_battery_data()
+            m = getattr(mb, '_ext_mode', None) if mb else None
+            if m:
+                return m, 'modbus'
+        return None, None
+
+    async def _confirm(self, target: str, timeout: float) -> tuple:
+        """Poll the hardware mode until it matches target.
+
+        Returns (True|False|None, via, observed, ms). None means no local
+        channel could read the mode at all (caller may fall back to cloud).
+        """
+        t0 = time.time()
+        observed, via = None, None
+        delay = 2.0
+        while True:
+            observed, via = await self._observe_mode('modbus')
+            if observed == target:
+                ms = (time.time() - t0) * 1000
+                channel_stats.record(via, 'confirm', True, ms)
+                return True, via, observed, ms
+            if time.time() - t0 + delay > timeout:
+                break
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 5.0)
+        ms = (time.time() - t0) * 1000
+        if observed is None:
+            return None, None, None, ms
+        channel_stats.record(via, 'confirm', False, None, f'not confirmed: saw {observed}')
+        return False, via, observed, ms
 
     async def switch_mode(self, mode: str) -> bool:
         """
-        Switch mode via cloud API, verify against hardware, and record locally.
-        
-        Returns True only if the hardware confirms the mode change.
-        Retries up to 3 times with increasing delays if verification fails.
+        Switch operating mode and confirm it on the hardware.
+
+        Local connection first (twice), then the cloud API (three attempts).
+        Returns True only when the hardware confirms the requested mode. On
+        total failure an alert is written for the dashboard and the next
+        engine cycle tries again.
         """
-        MAX_RETRIES = 3
-        VERIFY_DELAYS = [5, 8, 12]  # seconds between switch and verification
+        target = self._canonical_target(mode)
+        t_start = time.time()
+        attempts = []
 
-        for attempt in range(MAX_RETRIES):
-            # Send the switch command
-            success = await self.cloud_source.switch_mode(mode)
-            if not success:
-                logger.warning(f"Mode switch API call failed (attempt {attempt + 1}/{MAX_RETRIES})")
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(2)
-                continue
+        # --- already there? (cheap, avoids a needless write) ---
+        current, via = await self._observe_mode('modbus')
+        if current == target:
+            logger.info(f"Mode already {target} (per {via}) — no switch needed")
+            self.mode_tracker.record_verification(target, _MODE_LABELS.get(target, target))
+            clear_control_alert()
+            return True
 
-            # Wait for hardware to apply the change
-            delay = VERIFY_DELAYS[attempt] if attempt < len(VERIFY_DELAYS) else 12
-            logger.info(f"Mode switch sent, verifying in {delay}s (attempt {attempt + 1})...")
-            await asyncio.sleep(delay)
-
-            # Verify against the actual hardware state via cloud API
-            verification = await self.cloud_source.verify_mode()
-            if verification:
-                hw_mode_name = verification.get("mode_name", "Unknown")
-                hw_mode = self._detect_mode_from_name(hw_mode_name)
-
-                # Check if hardware matches what we commanded
-                mode_matches = False
-                if mode in ['emergency_backup', 'backup']:
-                    mode_matches = (hw_mode == "emergency_backup")
-                elif mode == 'self_consumption':
-                    mode_matches = (hw_mode == "self_consumption")
-                elif mode == 'time_of_use':
-                    # TOU shows up as various names: "TOU-B", "TOU-Summer", etc.
-                    # _detect_mode_from_name maps these to config.HOME_MODE
-                    # With v4, HOME_MODE should be "time_of_use" or "tou"
-                    hw_name_lower = hw_mode_name.lower()
-                    mode_matches = ("tou" in hw_name_lower or "time" in hw_name_lower
-                                   or hw_mode not in ["emergency_backup", "self_consumption"])
-                else:
-                    # "home" mode — anything that's not emergency_backup
-                    mode_matches = (hw_mode != "emergency_backup")
-
-                if mode_matches:
-                    self.mode_tracker.record_verification(hw_mode, hw_mode_name)
-                    logger.info(f"Mode switch VERIFIED: {mode} -> {hw_mode_name}")
+        # --- 1. local connection ---
+        if self.local_source.enabled:
+            for i in range(2):
+                res = await self.local_source.switch_mode(target)
+                if not res.get('ok'):
+                    attempts.append({'channel': 'local', 'ok': False,
+                                     'error': (res.get('error') or '')[:160]})
+                    logger.warning(f"Local mode change to {target} failed "
+                                   f"(attempt {i + 1}/2): {res.get('error')}")
+                    await asyncio.sleep(3)
+                    continue
+                # Independent confirmation through Modbus 15507 when configured
+                ok, cvia, observed, cms = (True, 'local', target, res.get('confirm_ms'))
+                if self.modbus_source.enabled:
+                    mok, mvia, mobs, mms = await self._confirm(target, self.MODE_CONFIRM_TIMEOUT)
+                    if mok is False and mvia == 'modbus':
+                        ok, cvia, observed = False, 'modbus', mobs
+                        logger.warning(f"Local mode change acknowledged but Modbus shows {mobs}")
+                    elif mok:
+                        cvia, cms = mvia, (res.get('confirm_ms') or 0) + mms
+                if ok:
+                    attempts.append({'channel': 'local', 'ok': True})
+                    self.mode_tracker.record_verification(target, _MODE_LABELS.get(target, target))
+                    channel_stats.record_switch(target, 'local', True, attempts, cvia, cms,
+                                                (time.time() - t_start) * 1000)
+                    clear_control_alert()
+                    logger.info(f"Mode switch VERIFIED: {target} via local connection "
+                                f"(confirmed by {cvia}, {res.get('before')} -> {target})")
                     return True
-                else:
-                    logger.warning(f"Mode switch NOT confirmed (attempt {attempt + 1}): "
-                                 f"commanded={mode}, hardware={hw_mode_name} ({hw_mode})")
-            else:
-                logger.warning(f"Mode verification failed (attempt {attempt + 1}): "
-                             f"cloud API returned no data")
+                attempts.append({'channel': 'local', 'ok': False,
+                                 'error': f'not confirmed: {cvia} shows {observed}'})
 
-        # All retries exhausted — switch did not stick
-        logger.error(f"MODE SWITCH FAILED after {MAX_RETRIES} attempts: "
-                    f"commanded={mode}, hardware did not confirm")
+        # --- 2. cloud API ---
+        if self.cloud_source.enabled:
+            MAX_RETRIES = 3
+            VERIFY_DELAYS = [5, 8, 12]
+            for attempt in range(MAX_RETRIES):
+                t0 = time.time()
+                success = await self.cloud_source.switch_mode(target)
+                channel_stats.record('cloud', 'switch', success, (time.time() - t0) * 1000,
+                                     None if success else (self.cloud_source.last_error or 'switch failed'))
+                if not success:
+                    attempts.append({'channel': 'cloud', 'ok': False,
+                                     'error': (self.cloud_source.last_error or 'switch failed')[:160]})
+                    logger.warning(f"Cloud mode switch failed (attempt {attempt + 1}/{MAX_RETRIES})")
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(2)
+                    continue
+
+                delay = VERIFY_DELAYS[attempt] if attempt < len(VERIFY_DELAYS) else 12
+                logger.info(f"Cloud mode switch sent, verifying (attempt {attempt + 1})...")
+                ok, cvia, observed, cms = await self._confirm(target, delay + 10)
+                if ok is None:
+                    # No local channel can see the mode — ask the cloud.
+                    await asyncio.sleep(delay)
+                    verification = await self.cloud_source.verify_mode()
+                    hw_name = verification.get("mode_name", "Unknown") if verification else None
+                    observed = self._detect_mode_from_name(hw_name) if hw_name else None
+                    ok, cvia = (observed == target) if observed else False, 'cloud'
+                if ok:
+                    attempts.append({'channel': 'cloud', 'ok': True})
+                    self.mode_tracker.record_verification(target, _MODE_LABELS.get(target, target))
+                    channel_stats.record_switch(target, 'cloud', True, attempts, cvia, cms,
+                                                (time.time() - t_start) * 1000)
+                    clear_control_alert()
+                    logger.info(f"Mode switch VERIFIED: {target} via cloud (confirmed by {cvia})")
+                    return True
+                attempts.append({'channel': 'cloud', 'ok': False,
+                                 'error': f'not confirmed: {cvia} shows {observed}'})
+                logger.warning(f"Cloud mode switch NOT confirmed (attempt {attempt + 1}): "
+                               f"commanded={target}, hardware={observed}")
+
+        channel_stats.record_switch(target, 'none', False, attempts, None, None,
+                                    (time.time() - t_start) * 1000)
+        msg = (f"Could not switch the battery to {_MODE_LABELS.get(target, target)} — "
+               f"every connection failed. The engine will retry next cycle; "
+               f"you can change the mode in the Franklin app meanwhile.")
+        write_control_alert(target, attempts, msg)
+        logger.error(f"MODE SWITCH FAILED: commanded={target}; attempts={attempts}")
         return False
 
     def get_current_mode(self) -> str:
@@ -1210,6 +1493,7 @@ class DataSourceManager:
         }
 
         for name, source_stats in [
+            ("local", self.local_source.stats),
             ("modbus", self.modbus_source.stats),
             ("cloud", self.cloud_source.stats),
             ("solar", self.solar_source.stats),
@@ -1226,10 +1510,16 @@ class DataSourceManager:
             }
 
         # Set enabled flags accurately
+        status["sources"]["local"]["enabled"] = self.local_source.enabled
         status["sources"]["modbus"]["enabled"] = self.modbus_source.enabled
         status["sources"]["cloud"]["enabled"] = self.cloud_source.enabled
         status["sources"]["solar"]["enabled"] = self.solar_source.enabled
 
+        status["control_alert"] = read_control_alert()
+        try:
+            status["channels"] = channel_stats.channel_status()
+        except Exception:
+            pass
         return status
 
     def save_health_stats(self):

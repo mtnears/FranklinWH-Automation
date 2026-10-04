@@ -6,6 +6,7 @@
 
 # Core Franklin WH API
 franklinwh>=0.1.0
+franklinwh-direct-connect-api==0.3.0
 
 # Configuration management
 python-dotenv>=1.0.0

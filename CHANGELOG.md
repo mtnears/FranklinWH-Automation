@@ -4,6 +4,31 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-rc.1 — October 2026 (branch `v4.7-rc`)
+
+The engine no longer depends on the Franklin cloud to run your battery.
+
+### Local connection
+- **Readings and mode changes go straight to the aGate over your home network.** Every engine cycle reads the aGate directly and changes the operating mode directly, then checks that the change took. This keeps working when the Franklin cloud login is down, which it has been since October 3.
+- **With Modbus on, Modbus checks the local connection.** Every reading is compared with Modbus (battery %, grid power, mode), and every mode change is confirmed by the mode the aGate reports over Modbus. Modbus is also the first fallback for readings.
+- **Without Modbus, the local connection is enough.** Installs whose installer has not turned Modbus on get local readings and mode changes too. A new 5-minute collector writes the readings to the database when Modbus is off.
+- **The cloud is the last resort.** It is only used when the local connection fails. It now reuses the last good session token instead of logging in each time, so a broken login page does not stop it.
+- **Mode changes keep your reserves.** A local mode change selects the aGate's own Self-Consumption, Time of Use or Emergency Backup mode, each with the reserve you set in the Franklin app.
+- **If every connection fails, the dashboard shows a red banner**, the log records an error, and the next engine cycle tries again. The banner clears on the next successful change.
+
+### Configuration review
+- **Connection step:** a new "Local connection" switch (on by default) and an optional aGate IP. The IP falls back to the Modbus IP. **Test** checks the connection and lists the aGate's modes. With no IP set, it searches your network for the aGate.
+- The Franklin account email, password and gateway ID are only required when no local connection is set up.
+
+### Telemetry
+- New `local_control` section. It reports which connections are on and, for the last 1, 7 and 30 days: success rate and latency per connection for readings and mode changes, which connection carried each mode change, how long confirmation took, how often local and Modbus readings disagreed, and how often the saved cloud token was reused. It sends counts and timings only, never addresses or error text.
+
+### Upgrading
+- Rebuild the image (`docker compose build --no-cache`), then `down` and `up`. The new dependency installs during the build.
+- No configuration changes are needed. The local connection is on by default and uses your Modbus IP. To turn it off, set it off in the Connection step.
+
+---
+
 ## v4.7.0-beta.3 — October 2026 (branch `v4.7-config-review`)
 
 Fixes from the beta.2 live test pass.
