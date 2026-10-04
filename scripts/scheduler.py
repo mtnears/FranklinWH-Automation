@@ -1350,6 +1350,16 @@ class APIHandler(BaseHTTPRequestHandler):
         allowed = ('test', 'host', 'ip', 'array_id', 'station_id', 'system_ids', 'site_id',
                    'lat', 'lon', 'modbus')
         args = {k: str(v)[:200] for k, v in args.items() if k in allowed and v is not None}
+        # The LAN address this page was opened on (the NAS/host) is on the
+        # aGate's subnet in a typical home network: a discovery hint.
+        try:
+            lan = (self.headers.get('Host') or '').split(':')[0].strip()
+            if lan.count('.') == 3:
+                args['hint'] = lan
+                import local_gateway
+                local_gateway.save_lan_hint(lan)
+        except Exception:
+            pass
         try:
             r = subprocess.run([sys.executable, str(SCRIPT_DIR / 'review_tests.py'), json.dumps(args)],
                                capture_output=True, text=True, timeout=45, cwd=str(SCRIPT_DIR))

@@ -316,7 +316,8 @@ def t_local(a):
         or settings.raw('MODBUS_HOST', '') or lg.found_host()
     found_note = ''
     if not host:
-        for hint in lg.subnet_hints():
+        extra = [a.get('hint')] if a.get('hint') else None
+        for hint in lg.subnet_hints(extra):
             hosts = lg.discover(hint)
             if hosts:
                 host = hosts[0]

@@ -27,7 +27,7 @@ says so in the startup summary. env is also the rollback.
 API
 ---
     import settings
-    settings.raw('MODBUS_HOST', '192.168.5.149')   # drop-in for os.getenv
+    settings.raw('MODBUS_HOST', '')                # drop-in for os.getenv
     settings.get('modbus.host')                     # typed, by canonical key
     settings.is_set('RESERVE_SOC_HOME')             # explicit override present?
     settings.authority()                            # 'env' | 'store'

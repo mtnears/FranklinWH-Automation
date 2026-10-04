@@ -158,7 +158,7 @@ class Config:
 
     # ===== NEW: Modbus Integration =====
     MODBUS_ENABLED: bool = field(default_factory=lambda: get_bool('MODBUS_ENABLED', False))
-    MODBUS_HOST: str = field(default_factory=lambda: settings.raw('MODBUS_HOST', '192.168.5.149'))
+    MODBUS_HOST: str = field(default_factory=lambda: settings.raw('MODBUS_HOST', ''))
     MODBUS_PORT: int = field(default_factory=lambda: get_int('MODBUS_PORT', 502))
     MODBUS_TIMEOUT: float = field(default_factory=lambda: get_float('MODBUS_TIMEOUT', 5.0))
     MODBUS_RETRY_ATTEMPTS: int = field(default_factory=lambda: get_int('MODBUS_RETRY_ATTEMPTS', 3))

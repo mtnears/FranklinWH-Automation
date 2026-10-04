@@ -4,6 +4,16 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-rc.3 — October 2026 (branch `v4.7-rc`)
+
+Readiness fixes for other installs.
+
+- **Finding the aGate with no IP configured:** the search now also tries the LAN address the dashboard was opened on, the host's gateway (host networking) and common home subnets, after any device IPs already in the configuration. The Connection step's Test uses the page's address first.
+- **A search that finds nothing is not repeated for an hour.** The log says to enter the aGate IP in the configuration review instead of rescanning the network every 5 minutes.
+- **No site-specific aGate IP in code defaults:** `MODBUS_HOST` defaults to blank.
+
+---
+
 ## v4.7.0-rc.2 — October 2026 (branch `v4.7-rc`)
 
 Fixes from the rc.1 live test.

@@ -377,7 +377,7 @@ def main():
             host = config.MODBUS_HOST
             port = port or config.MODBUS_PORT
         else:
-            host = settings.raw('MODBUS_HOST', '192.168.5.149')
+            host = settings.raw('MODBUS_HOST', '')
             port = port or int(settings.raw('MODBUS_PORT', '502'))
 
     if DB_AVAILABLE:

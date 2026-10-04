@@ -325,42 +325,127 @@ class LocalGateway:
 _PRIVATE_IP = None
 
 
-def subnet_hints() -> List[str]:
-    """Private IPv4 addresses from the configuration (Modbus host, Envoy and
-    inverter IPs, ...) — the aGate is almost always on the same /24."""
+# Home-router defaults, tried last when nothing in the configuration points
+# at the home network (cloud-only installs with no device IPs set).
+COMMON_SUBNETS = ('192.168.1.1', '192.168.0.1', '10.0.0.1', '192.168.68.1',
+                  '192.168.86.1', '10.0.1.1', '192.168.50.1', '192.168.2.1')
+MAX_SUBNETS = 10
+NEGATIVE_CACHE_S = 3600
+
+
+def _lan_hint_path() -> Path:
+    return channel_stats._data_dir() / 'lan_hint.json'
+
+
+def save_lan_hint(ip: str):
+    """Remember the LAN address the dashboard was opened on (the NAS / host),
+    which is on the aGate's subnet in a typical home network."""
+    try:
+        import ipaddress
+        a = ipaddress.ip_address(ip)
+        if not a.is_private or a.is_loopback or str(a).startswith('172.'):
+            return
+        p = _lan_hint_path()
+        cur = None
+        try:
+            cur = json.loads(p.read_text()).get('ip')
+        except Exception:
+            pass
+        if cur != ip:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({'ip': ip, 'seen_at': datetime.now().isoformat(timespec='seconds')}))
+    except Exception:
+        pass
+
+
+def _default_gateway() -> Optional[str]:
+    try:
+        from franklinwh_local.discover import default_gateway
+        gw = default_gateway()
+        # Under Docker's bridge network this is the bridge (172.16/12), not the LAN.
+        if gw and not gw.startswith('172.'):
+            return gw
+    except Exception:
+        pass
+    return None
+
+
+def subnet_hints(extra: Optional[List[str]] = None, include_common: bool = True) -> List[str]:
+    """Addresses whose /24 the aGate is likely on, best first:
+    explicit hints, private IPs in the configuration (Modbus host, Envoy and
+    inverter IPs, ...), the LAN address the dashboard was opened on, the
+    container's default gateway (host networking), then common home subnets."""
     import os
     import re
     global _PRIVATE_IP
     if _PRIVATE_IP is None:
         _PRIVATE_IP = re.compile(
             r'\b(10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b')
-    seen, out = set(), []
+    cands = list(extra or [])
     for k, v in sorted(os.environ.items()):
         if not isinstance(v, str) or k.startswith(('HOSTNAME', 'DOCKER')):
             continue
-        for ip in _PRIVATE_IP.findall(v):
-            net = '.'.join(ip.split('.')[:3])
-            if net not in seen:
-                seen.add(net)
-                out.append(ip)
-    return out
+        cands += _PRIVATE_IP.findall(v)
+    for key in ('modbus.host', 'local.host'):
+        try:
+            v = settings.get(key)
+            if v:
+                cands.append(str(v))
+        except Exception:
+            pass
+    try:
+        cands.append(json.loads(_lan_hint_path().read_text()).get('ip') or '')
+    except Exception:
+        pass
+    cands.append(_default_gateway() or '')
+    if include_common:
+        cands += list(COMMON_SUBNETS)
+    seen, out = set(), []
+    for ip in cands:
+        parts = (ip or '').split('.')
+        if len(parts) != 4 or (ip.startswith('172.') and ip not in (extra or [])):
+            continue
+        net = '.'.join(parts[:3])
+        if net not in seen:
+            seen.add(net)
+            out.append(ip)
+    return out[:MAX_SUBNETS]
 
 
 def ensure_host() -> Optional[str]:
     """When the local connection is on but no address is known, look for the
-    aGate on the configured subnets and remember what was found."""
+    aGate on the likely subnets and remember what was found. A search that
+    finds nothing is not repeated for an hour."""
     gw = LocalGateway()
     if gw.host or not LIB_AVAILABLE:
         return gw.host
     want = _bool(_setting('local.enabled', 'LOCAL_ENABLED', True))
     if not want:
         return None
-    for hint in subnet_hints():
+    try:
+        last = json.loads(_found_host_path().read_text())
+        if not last.get('host') and last.get('searched_at'):
+            age = (datetime.now() - datetime.fromisoformat(last['searched_at'])).total_seconds()
+            if age < NEGATIVE_CACHE_S:
+                return None
+    except Exception:
+        pass
+    hints = subnet_hints()
+    for hint in hints:
         hosts = discover(hint)
         if hosts:
             save_found_host(hosts[0])
             logger.info(f'Local connection: found aGate at {hosts[0]}')
             return hosts[0]
+    try:
+        p = _found_host_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({'host': None, 'searched_at': datetime.now().isoformat(timespec='seconds'),
+                                 'subnets': ['.'.join(h.split('.')[:3]) + '.0/24' for h in hints]}))
+    except Exception:
+        pass
+    logger.warning('Local connection: no aGate found on %d subnet(s); enter the aGate IP '
+                   'on the Connection step of the configuration review', len(hints))
     return None
 
 
