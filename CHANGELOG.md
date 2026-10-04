@@ -4,6 +4,12 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-rc.4 — October 2026 (branch `v4.7-rc`)
+
+- **Grid charging (Emergency Backup) now runs to its target.** The engine marks "stay in Emergency Backup" as a `hold`, because the aGate is already in that mode. The decision bridge only treated `switch_to_backup` as charging, so a hold such as "EB committed: SOC 65% < ceiling 75%" fell through to TOU. Every grid charge was therefore cut short after its first 30-minute cycle; this has been happening since v4.6.2. The bridge now charges whenever the engine's target mode is Emergency Backup.
+
+---
+
 ## v4.7.0-rc.3 — October 2026 (branch `v4.7-rc`)
 
 Readiness fixes for other installs.

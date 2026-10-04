@@ -1,4 +1,4 @@
-# v4.7.0-rc.3 (pre-release)
+# v4.7.0-rc.4 (pre-release)
 
 **For testers.** Franklin's cloud login has been failing since October 3. Installs that switch modes through the cloud can't change the battery mode while it's down. This version runs readings and mode changes over a **local connection** to the aGate on your home network, so it keeps working without the cloud.
 
@@ -8,13 +8,14 @@
 - **No Modbus? That's fine.** The local connection doesn't need your installer to turn anything on.
 - **Your reserves are kept.** Mode changes select the aGate's own Self-Consumption / Time of Use / Emergency Backup modes, each with the reserve you set in the Franklin app.
 - **If a mode change fails on every connection, the dashboard shows a red banner** and the engine retries on its next cycle.
+- **Grid charging runs to its target.** Fixes a v4.6.2+ bug that stopped Emergency Backup grid charging after one 30-minute cycle.
 - **New in v4.7: guided configuration review.** Your settings move from `.env` into the app's configuration store once you review and commit them. Until you do, everything keeps running on `.env` as before.
 
 ## Upgrade
 ```
 cd <your FranklinWH-Automation folder>
 git fetch
-git checkout v4.7.0-rc.3
+git checkout v4.7.0-rc.4
 docker compose build --no-cache
 docker compose down
 docker compose up -d

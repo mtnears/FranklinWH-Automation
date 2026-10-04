@@ -523,7 +523,13 @@ def adaptive_engine_decision(battery_data, current_mode: str, in_peak: bool, hou
     # Translate to v3.5 format: (should_charge, reason)
     # v4.0.3+: engine can also request switch_to_tou (park battery)
     # or switch_to_self_consumption (drain battery / power from battery)
-    should_charge = (decision.action == "switch_to_backup")
+    # Charge whenever the engine's target mode is Emergency Backup. Checking
+    # only action == "switch_to_backup" missed "hold" (already in EB and the
+    # engine wants to stay, e.g. "EB committed"): _decide() labels a decision
+    # whose mode equals the current mode as "hold", so every multi-cycle grid
+    # charge was dropped to TOU after its first 30-min cycle (v4.6.2-v4.7rc3).
+    should_charge = (decision.action == "switch_to_backup"
+                     or decision.mode == "emergency_backup")
     reason = f"[v4 P{decision.priority_level}] {decision.reason}"
     
     # Stash the full decision for mode routing in the caller
