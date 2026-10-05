@@ -4,6 +4,17 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-rc.5 — October 2026 (branch `v4.7-rc`)
+
+Early warning in case Franklin changes or closes the local connection.
+
+- **aGate firmware is recorded.** The local connection notes the firmware and protocol versions the aGate reports, logs any change, and includes them in telemetry. A failure that starts right after a firmware update then shows up as such.
+- **Local connection failures are classified** by the stage they happen in: refused, unreachable or timed out while connecting; login rejected or timed out during the handshake; timeout or protocol error on a request. Each class is counted separately in connection stats and telemetry.
+- **The dashboard shows an amber notice when the local connection is degraded.** That means four or more consecutive failures and no success for 30 minutes. The notice says whether readings are continuing over Modbus and that mode changes now depend on the Franklin cloud. The collector logs it too.
+- **Local and Modbus grid readings are compared with a proportional tolerance:** the larger of 400 W or 10%. Fast swings, such as the AC cycling or a 15 kW grid charge, no longer count as disagreements.
+
+---
+
 ## v4.7.0-rc.4 — October 2026 (branch `v4.7-rc`)
 
 - **Grid charging (Emergency Backup) now runs to its target.** The engine marks "stay in Emergency Backup" as a `hold`, because the aGate is already in that mode. The decision bridge only treated `switch_to_backup` as charging, so a hold such as "EB committed: SOC 65% < ceiling 75%" fell through to TOU. Every grid charge was therefore cut short after its first 30-minute cycle; this has been happening since v4.6.2. The bridge now charges whenever the engine's target mode is Emergency Backup.

@@ -81,6 +81,61 @@ def _modes_cache_path() -> Path:
     return channel_stats._data_dir() / 'local_modes.json'
 
 
+def _classify(stage: str, e: Exception) -> str:
+    msg = f'{type(e).__name__} {e}'.lower()
+    timed_out = 'timed out' in msg or 'timeout' in msg
+    if stage == 'connect':
+        if 'refused' in msg:
+            return 'refused'
+        if 'unreachable' in msg or 'no route' in msg:
+            return 'unreachable'
+        return 'connect_timeout' if timed_out else 'connect_error'
+    if stage == 'login':
+        return 'login_timeout' if timed_out else 'login_rejected'
+    if timed_out:
+        return 'timeout'
+    return 'protocol'
+
+
+FIRMWARE_FIELDS = ('APP_VER', 'protocolVer', 'IBG_VER', 'SL_VER', 'AWS_VER', 'BMS_VER', 'INV_VER')
+
+
+def _firmware_path() -> Path:
+    return channel_stats._data_dir() / 'local_firmware.json'
+
+
+def firmware_info() -> Dict[str, Any]:
+    try:
+        return json.loads(_firmware_path().read_text())
+    except Exception:
+        return {}
+
+
+def _note_firmware(manifest: Optional[dict]):
+    """Remember the aGate firmware the local connection reports at login and
+    log every change (a firmware update is the likeliest cause if the local
+    connection later stops working)."""
+    try:
+        if not isinstance(manifest, dict):
+            return
+        fw = {k: manifest.get(k) for k in FIRMWARE_FIELDS if manifest.get(k) is not None}
+        if not fw:
+            return
+        cur = firmware_info()
+        if cur.get('firmware') == fw:
+            return
+        now = datetime.now().isoformat(timespec='seconds')
+        changes = cur.get('changes', [])
+        if cur.get('firmware'):
+            changes.append({'at': now, 'from': cur['firmware'], 'to': fw})
+            logger.warning(f"aGate firmware changed: {cur['firmware'].get('APP_VER')} -> {fw.get('APP_VER')}")
+        p = _firmware_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({'firmware': fw, 'since': now, 'changes': changes[-10:]}, indent=1))
+    except Exception:
+        pass
+
+
 def _found_host_path() -> Path:
     return channel_stats._data_dir() / 'local_host.json'
 
@@ -122,14 +177,27 @@ class LocalGateway:
         return LocalClient(self.host, self.port, timeout=self.timeout, retries=retries)
 
     def _run(self, op: str, fn, record: bool = True):
-        """Open a session, log in, run fn(client), close. Records stats."""
+        """Open a session, log in, run fn(client), close. Records stats.
+
+        Failures are classified by the stage they happened in, so a firmware
+        change that closes the port, rejects the handshake or stops answering
+        requests shows up distinctly in channel stats and telemetry:
+          refused / unreachable / connect_timeout  - TCP connect stage
+          login_rejected / login_timeout            - handshake stage
+          timeout / protocol                        - request stage
+        """
         if not self.enabled:
             raise RuntimeError('local connection not enabled')
         t0 = time.time()
+        stage = 'connect'
+        c = self._client()
         try:
-            with self._client() as c:
-                c.login()
-                out = fn(c)
+            c.transport.connect()
+            stage = 'login'
+            manifest = c.login()
+            _note_firmware(manifest)
+            stage = 'request'
+            out = fn(c)
             ms = (time.time() - t0) * 1000
             if record:
                 channel_stats.record('local', op, True, ms)
@@ -137,10 +205,16 @@ class LocalGateway:
             return out, ms
         except Exception as e:
             ms = (time.time() - t0) * 1000
-            self.last_error = f'{type(e).__name__}: {e}'
+            cls = _classify(stage, e)
+            self.last_error = f'[{cls}] {type(e).__name__}: {e}'
             if record:
                 channel_stats.record('local', op, False, ms, self.last_error)
             raise
+        finally:
+            try:
+                c.transport.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------ programmes
     def _save_modes(self, modes: List[dict]):

@@ -32,8 +32,16 @@ MAX_LAT_SAMPLES = 400      # per channel/op/day, for percentiles
 MAX_EVENTS = 60            # recent switch events kept verbatim
 
 # Cross-check tolerances: a reading pair outside these counts as a disagreement.
+# Grid power swings fast and the two reads are a few hundred ms apart, so the
+# grid tolerance scales with the reading: the larger of 400 W or 10%.
 SOC_TOL_PCT = 3.0
 GRID_TOL_W = 400.0
+GRID_TOL_FRAC = 0.10
+
+# Local connection counted as degraded after this long without a success
+# while it keeps failing (the 5-minute collector gives ~6 attempts per 30 min).
+DEGRADED_AFTER_S = 30 * 60
+DEGRADED_MIN_FAILS = 4
 
 
 def _data_dir() -> Path:
@@ -125,6 +133,10 @@ def record(channel: str, op: str, ok: bool, ms: Optional[float] = None,
 
 
 def _err_class(error: str) -> str:
+    import re as _re
+    m = _re.match(r'^\[([a-z_]+)\]', str(error))
+    if m:
+        return m.group(1)
     e = str(error).lower()
     for needle, cls in (('timed out', 'timeout'), ('timeout', 'timeout'),
                         ('refused', 'refused'), ('unreachable', 'unreachable'),
@@ -196,7 +208,8 @@ def record_crosscheck(soc_local: Optional[float], soc_modbus: Optional[float],
             if grid_local_w is not None and grid_modbus_w is not None:
                 dev = abs(grid_local_w - grid_modbus_w)
                 cc['grid_dev'] = (cc['grid_dev'] + [round(dev)])[-MAX_LAT_SAMPLES:]
-                if dev > GRID_TOL_W:
+                tol = max(GRID_TOL_W, GRID_TOL_FRAC * max(abs(grid_local_w), abs(grid_modbus_w)))
+                if dev > tol:
                     cc['grid_bad'] += 1
             if mode_local and mode_modbus and mode_local != mode_modbus:
                 cc['mode_bad'] += 1
@@ -302,6 +315,28 @@ def summary(days: int = 7, data: Optional[dict] = None) -> Dict[str, Any]:
     }
 
 
+def degraded(data: Optional[dict] = None) -> Optional[Dict[str, Any]]:
+    """Local connection state for the dashboard notice: None when healthy,
+    else {'since', 'failures', 'last_error', 'error_class', 'modbus_ok'}."""
+    data = data if data is not None else load()
+    last = (data.get('last') or {})
+    loc = last.get('local') or {}
+    fails = int(loc.get('consecutive_failures') or 0)
+    if fails < DEGRADED_MIN_FAILS:
+        return None
+    try:
+        ok_at = datetime.fromisoformat(loc['ok_at']) if loc.get('ok_at') else None
+    except Exception:
+        ok_at = None
+    if ok_at and (datetime.now() - ok_at).total_seconds() < DEGRADED_AFTER_S:
+        return None
+    mb = last.get('modbus') or {}
+    modbus_ok = bool(mb.get('ok_at')) and int(mb.get('consecutive_failures') or 0) == 0
+    err = loc.get('last_error') or ''
+    return {'since': loc.get('ok_at'), 'failures': fails, 'last_error': err[:160],
+            'error_class': _err_class(err) if err else None, 'modbus_ok': modbus_ok}
+
+
 def channel_status() -> Dict[str, Any]:
     """Last-success / failure state per channel for the dashboard."""
     data = load()
@@ -309,6 +344,7 @@ def channel_status() -> Dict[str, Any]:
         'last': data.get('last', {}),
         'recent_switches': (data.get('events') or [])[-5:],
         'today': summary(1, data),
+        'degraded': degraded(data),
     }
 
 

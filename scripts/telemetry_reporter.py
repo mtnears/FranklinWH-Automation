@@ -392,6 +392,12 @@ def _build_local_control() -> Dict[str, Any]:
             'modbus_enabled': str(settings.raw('MODBUS_ENABLED', 'false')).lower() in ('1', 'true', 'yes', 'on'),
             'cloud_configured': bool(settings.raw('FRANKLIN_USERNAME', '') and settings.raw('FRANKLIN_GATEWAY_ID', '')),
             'control_alert_active': alert_active,
+            'agate_firmware': (lg.firmware_info() or {}).get('firmware'),
+            'firmware_changes': [{'at': c.get('at'), 'from': (c.get('from') or {}).get('APP_VER'),
+                                  'to': (c.get('to') or {}).get('APP_VER')}
+                                 for c in (lg.firmware_info() or {}).get('changes', [])][-5:],
+            'degraded': (lambda g: {k: g.get(k) for k in ('since', 'failures', 'error_class', 'modbus_ok')}
+                         if g else None)(channel_stats.degraded(data)),
             'last': last,
             'stats_1d': channel_stats.summary(1, data),
             'stats_7d': channel_stats.summary(7, data),

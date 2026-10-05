@@ -72,6 +72,10 @@ def main():
         flow = gw.read()
     except Exception as e:
         log.warning(f'Local reading failed: {gw.last_error or e}')
+        g = channel_stats.degraded()
+        if g:
+            log.warning(f"Local connection degraded: {g['failures']} consecutive failures since "
+                        f"{g['since'] or 'start'} ({g['error_class']}); mode changes fall back to the cloud")
         return 1
 
     modbus_on = _bool(settings.raw('MODBUS_ENABLED', 'false'))

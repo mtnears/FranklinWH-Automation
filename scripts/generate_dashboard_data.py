@@ -672,6 +672,7 @@ def generate_dashboard_data():
             'recent_switches': st.get('recent_switches', []),
             'ops': today.get('ops', {}),
             'crosscheck': today.get('crosscheck', {}),
+            'degraded': st.get('degraded'),
         }
     except Exception as e:
         dashboard_data['connection'] = {'error': str(e)[:200]}
