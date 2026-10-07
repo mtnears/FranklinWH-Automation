@@ -71,13 +71,13 @@ REGISTERS = [
     ("m713", 0, "der_rated_power_hi",   "Rated power high word",        "raw"),
     ("m713", 1, "der_rated_power_lo",   "Rated power low word",         "raw"),
     ("m713", 2, "soc_raw",             "SOC x10 (raw)",                 "raw"),
-    ("m713", 3, "batt_dc_voltage_raw", "Battery DC voltage x10 (raw)",  "raw"),
+    ("m713", 3, "soh_raw",             "SoH x10 (raw)",                 "raw"),
     ("m713", 4, "der_off4",            "DER offset 4",                  "raw"),
     ("m713", 5, "der_off5",            "DER offset 5",                  "raw"),
     ("m713", 6, "der_off6",            "DER offset 6",                  "raw"),
     # Derived (same source registers, human-friendly)
     ("m713", 2, "soc_pct",             "SOC percent",                   "div10"),
-    ("m713", 3, "batt_dc_voltage",     "Battery DC voltage V",          "div10"),
+    ("m713", 3, "soh_pct",             "SoH percent",                   "div10"),
 
     # ══════════════════════════════════════════════════════════════════════════
     # Model 701: DER AC Measurement — THE MAIN MODEL
@@ -459,7 +459,7 @@ def print_status(values, read_ms, read_ok, poll_num):
     inv_st = values.get("inverter_state", "?")
     conn_st = values.get("conn_state", "?")
     der_mode = values.get("der_mode", "?")
-    batt_v = values.get("batt_dc_voltage", "?")
+    soh = values.get("soh_pct", "?")
     react_var = values.get("reactive_power_var", "?")
     apparent = values.get("apparent_power_va", "?")
     alarm = values.get("alarm_bitfield", "?")
@@ -476,7 +476,7 @@ def print_status(values, read_ms, read_ok, poll_num):
     print(f"[{ts}] #{poll_num:>5} {status} | "
           f"SOC:{soc_s:>6} Grid:{grid_s:>8} Freq:{freq_s:>9} V:{volt_s:>6} | "
           f"Op:{op_st} Inv:{inv_st} Conn:{conn_st} Mode:{der_mode} Alrm:{alarm} | "
-          f"BattV:{batt_v} VA:{apparent} VAr:{react_var} | "
+          f"SoH:{soh} VA:{apparent} VAr:{react_var} | "
           f"Temp:{temp_a}/{temp_c}C | {read_ms:.0f}ms")
 
 

@@ -524,6 +524,21 @@ def init_db():
                     logger.info(f"Mode normalization migration: {n} rows updated")
         except Exception as e:
             logger.warning(f"Mode normalization migration failed: {e}")
+        # One-time move of SoH values out of batt_dc_voltage_v. Stamped in
+        # app_state so the scan runs once, like the mode backfill above.
+        try:
+            done = conn.execute("SELECT value FROM app_state WHERE key = ?",
+                                (SOH_BACKFILL_KEY,)).fetchone()
+            if not done:
+                with _safe_write() as wconn:
+                    n = _backfill_soh(wconn)
+                    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    wconn.execute("INSERT OR REPLACE INTO app_state (key, value, updated_at) "
+                                  "VALUES (?, ?, ?)", (SOH_BACKFILL_KEY, f'{now} ({n} rows)', now))
+                if n:
+                    logger.info(f"SoH column migration: {n} rows moved from batt_dc_voltage_v")
+        except Exception as e:
+            logger.warning(f"SoH column migration failed: {e}")
     except Exception as e:
         logger.warning(f"Database init failed: {e}")
 
@@ -561,6 +576,9 @@ def _ensure_v46_columns(conn) -> list:
     active_reserve_pct — the reserve that applies to the CURRENT mode,
                          replacing the self_reserve_pct/tou_reserve_pct pair.
                          Old columns retained until the post-soak cleanup.
+    soh_pct            — battery state of health (Modbus 713 offset 3). Added
+                         Oct 2026; earlier rows held it in batt_dc_voltage_v
+                         and are moved over once by _backfill_soh().
     """
     cols = [r[1] for r in conn.execute("PRAGMA table_info(system_readings)").fetchall()]
     added = []
@@ -570,6 +588,9 @@ def _ensure_v46_columns(conn) -> list:
     if 'active_reserve_pct' not in cols:
         conn.execute("ALTER TABLE system_readings ADD COLUMN active_reserve_pct INTEGER")
         added.append('active_reserve_pct')
+    if 'soh_pct' not in cols:
+        conn.execute("ALTER TABLE system_readings ADD COLUMN soh_pct REAL")
+        added.append('soh_pct')
     if added:
         conn.commit()
     return added
@@ -678,6 +699,24 @@ def _backfill_normalize_modes(conn) -> int:
     return total
 
 
+SOH_BACKFILL_KEY = 'migration.soh_from_batt_v_at'
+
+
+def _backfill_soh(conn) -> int:
+    """Move SoH out of batt_dc_voltage_v on Modbus rows. Idempotent.
+
+    collect_modbus.py stored Modbus 713 offset 3 (SoH x10) as
+    batt_dc_voltage_v, so every Modbus row holds ~98-99 there. Only Modbus
+    rows are touched; no other source has ever written that column.
+    """
+    cur = conn.execute(
+        "UPDATE system_readings SET soh_pct = batt_dc_voltage_v, "
+        "batt_dc_voltage_v = NULL "
+        "WHERE source = 'modbus' AND batt_dc_voltage_v IS NOT NULL "
+        "AND soh_pct IS NULL")
+    return cur.rowcount or 0
+
+
 # =============================================================================
 # Store Functions
 # =============================================================================
@@ -707,6 +746,7 @@ class _Store:
                        ambient_temp_c: float = None,
                        cabinet_temp_c: float = None,
                        batt_dc_voltage_v: float = None,
+                       soh_pct: float = None,
                        cell_signal: int = None,
                        wifi_signal: int = None,
                        self_reserve_pct: int = None,
@@ -740,21 +780,23 @@ class _Store:
                  per_battery_soc_json, per_battery_power_json,
                  mode, mode_detail, run_status,
                  grid_voltage_v, grid_frequency_hz, grid_status, grid_connected, conn_state,
-                 ambient_temp_c, cabinet_temp_c, batt_dc_voltage_v, cell_signal, wifi_signal,
+                 ambient_temp_c, cabinet_temp_c, batt_dc_voltage_v, soh_pct,
+                 cell_signal, wifi_signal,
                  self_reserve_pct, tou_reserve_pct, active_reserve_pct,
                  kwh_solar, kwh_grid_import, kwh_grid_export, kwh_load,
                  kwh_battery_charge, kwh_battery_discharge, kwh_generator,
                  hours_to_peak, engine_priority, curtailed_kwh, grid_price_cents,
                  source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (ts, device_id, soc_pct, grid_kw, solar_kw, battery_kw,
                   battery_kw_direct,
                   home_load_kw, solar_to_battery_kw, grid_to_battery_kw,
                   per_battery_soc_json, per_battery_power_json,
                   mode, mode_detail, run_status,
                   grid_voltage_v, grid_frequency_hz, grid_status, grid_connected, conn_state,
-                  ambient_temp_c, cabinet_temp_c, batt_dc_voltage_v, cell_signal, wifi_signal,
+                  ambient_temp_c, cabinet_temp_c, batt_dc_voltage_v, soh_pct,
+                  cell_signal, wifi_signal,
                   self_reserve_pct, tou_reserve_pct, active_reserve_pct,
                   kwh_solar, kwh_grid_import, kwh_grid_export, kwh_load,
                   kwh_battery_charge, kwh_battery_discharge, kwh_generator,

@@ -69,7 +69,7 @@ REGISTER_BLOCKS = {
     'model_701b': {'addr': 152,   'count': 73,  'desc': 'AC Measurement (pt2: per-phase, accumulators)'},
     'model_702': {'addr': 227,   'count': 50,  'desc': 'DC Measurement / Nameplate'},
     'model_703': {'addr': 279,   'count': 50,  'desc': 'Lifetime Watt-Hour Accumulators'},
-    'model_713': {'addr': 1035,  'count': 7,   'desc': 'DER Status (SOC, battery V)'},
+    'model_713': {'addr': 1035,  'count': 7,   'desc': 'DER Status (SOC, SoH)'},
     'batt_w_1048': {'addr': 1048, 'count': 1,  'desc': 'Battery power direct (PR #25 parallel logging)'},
     'ext_15500': {'addr': 15500, 'count': 17,  'desc': 'Franklin Extension (solar, load, mode, dispatch)'},
     'conn_state': {'addr': 75,   'count': 1,   'desc': 'Grid connection state'},
@@ -205,7 +205,7 @@ class ModbusCollector:
                 grid_frequency_hz=parsed.get('grid_frequency_hz'),
                 ambient_temp_c=parsed.get('ambient_temp_c'),
                 cabinet_temp_c=parsed.get('cabinet_temp_c'),
-                batt_dc_voltage_v=parsed.get('batt_dc_voltage_v'),
+                soh_pct=parsed.get('soh_pct'),
                 grid_status=parsed.get('grid_status'),
                 grid_connected=1 if parsed.get('grid_status') == 'Connected' else
                                0 if parsed.get('grid_status') == 'Disconnected' else None,
@@ -240,8 +240,12 @@ class ModbusCollector:
         m713 = blocks.get('model_713')
         if m713 and len(m713) > 2:
             d['soc_pct'] = m713[2] / 10.0
-        if m713 and len(m713) > 3:
-            d['batt_dc_voltage_v'] = m713[3] / 10.0
+        # 713 offset 3 is SoH (%, x10), not battery DC voltage. It was stored as
+        # batt_dc_voltage_v until Oct 2026 (values 98-99 "V"). The aGate has no
+        # Modbus register for battery DC voltage (714 per-port DCV reads 0), so
+        # batt_dc_voltage_v is no longer written from Modbus.
+        if m713 and len(m713) > 3 and m713[3] not in (0xFFFF, 0x8000):
+            d['soh_pct'] = m713[3] / 10.0
 
         # PR #25: battery power read directly from register 1048, parallel-logged
         # alongside the derived battery_kw (load - solar - grid). Signed int16,
