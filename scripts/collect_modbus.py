@@ -73,6 +73,13 @@ REGISTER_BLOCKS = {
     'batt_w_1048': {'addr': 1048, 'count': 1,  'desc': 'Battery power direct (PR #25 parallel logging)'},
     'ext_15500': {'addr': 15500, 'count': 17,  'desc': 'Franklin Extension (solar, load, mode, dispatch)'},
     'conn_state': {'addr': 75,   'count': 1,   'desc': 'Grid connection state'},
+    # Undocumented Franklin extension blocks, logged raw only (nothing is parsed
+    # from them yet). They are being mapped against SunSpec and the local
+    # connection; see the Oct 2026 validation on a US split-phase aGate:
+    # 15022 tracks grid W at 1 W resolution, 15013 tracks battery W.
+    # A failed read is skipped like any other block.
+    'ext_15000': {'addr': 15000, 'count': 44,  'desc': 'Franklin extension 15000-15043 (raw, mapping in progress)'},
+    'ext_16000': {'addr': 16000, 'count': 3,   'desc': 'Franklin extension 16000-16002 (raw, mapping in progress)'},
 }
 
 EXT_MODE_MAP = {
