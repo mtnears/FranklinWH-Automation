@@ -30,6 +30,61 @@ except Exception as e:
     DB_AVAILABLE = False
 
 
+def counter_day_kwh(rows, next_rows, col: str) -> float:
+    """One day's energy from a gateway counter that resets daily.
+
+    The counters (kwh_solar, kwh_grid_import, ...) count up from a reset a
+    minute or so after midnight. Until Oct 2026 the rollup took max - min over
+    the date's rows, so a 00:00 row still holding the previous day's total
+    became this day's value too (Oct 5 and Oct 6 both showed 17.18 kWh solar).
+
+    - Uses one source only (the one with the most values), since Modbus/local
+      and cloud rows carry slightly different counter values.
+    - Drops the rows before the early-morning reset; they belong to yesterday.
+    - Counts from zero when the day's data starts right after the reset, and
+      from the first value when it starts later (unknown energy before a gap).
+    - Adds the next day's pre-reset rows, which close out this day.
+    - A drop later in the day counts as another reset.
+    """
+    from collections import Counter
+
+    def series(rs):
+        return [(str(r.get('timestamp', '')), r.get('source') or '', float(r[col]))
+                for r in rs if r.get(col) is not None]
+
+    today = series(rows)
+    if not today:
+        return 0.0
+    src = Counter(v[1] for v in today).most_common(1)[0][0]
+    vals = [(t, v) for t, s_, v in today if s_ == src]
+    vals.sort()
+
+    # Drop the previous day's carry-over before the early-morning reset
+    for i in range(1, len(vals)):
+        if vals[i][0][11:16] >= '00:30':
+            break
+        if vals[i][1] < vals[i - 1][1]:
+            vals = vals[i:]
+            break
+
+    after_reset = vals[0][0][11:16] < '00:30'
+    first = vals[0][1]
+    span = max(v for _, v in vals) - first
+    # A lifetime-style counter (huge first value, small growth) never resets
+    total = first if (after_reset and not first > 5 * max(span, 0.001)) else 0.0
+
+    tail = sorted((t, v) for t, s_, v in series(next_rows) if s_ == src)
+    for t, v in tail:
+        if v >= vals[-1][1]:
+            vals.append((t, v))
+        else:
+            break
+
+    for (_, a), (_, b) in zip(vals, vals[1:]):
+        total += (b - a) if b >= a else b
+    return total
+
+
 def rollup_date(date_str: str, device_id: str = 'agate_main') -> bool:
     """Aggregate system_readings for a single date into daily_energy_summary."""
     rows = db.get_readings_for_date(date_str, device_id)
@@ -43,18 +98,19 @@ def rollup_date(date_str: str, device_id: str = 'agate_main') -> bool:
     grids = [r['grid_kw'] for r in rows if r.get('grid_kw') is not None]
     batteries = [r['battery_kw'] for r in rows if r.get('battery_kw') is not None]
 
-    kwh_solar_vals = [r['kwh_solar'] for r in rows if r.get('kwh_solar') is not None]
-    kwh_grid_imp_vals = [r['kwh_grid_import'] for r in rows if r.get('kwh_grid_import') is not None]
-    kwh_grid_exp_vals = [r['kwh_grid_export'] for r in rows if r.get('kwh_grid_export') is not None]
-    kwh_bat_chg_vals = [r['kwh_battery_charge'] for r in rows if r.get('kwh_battery_charge') is not None]
-    kwh_bat_dis_vals = [r['kwh_battery_discharge'] for r in rows if r.get('kwh_battery_discharge') is not None]
-    kwh_load_vals = [r['kwh_load'] for r in rows if r.get('kwh_load') is not None]
-    kwh_gen_vals = [r['kwh_generator'] for r in rows if r.get('kwh_generator') is not None]
+    # Next day's first rows: the gateway's daily counters reset a minute or so
+    # after midnight, so the rows just after midnight still carry the end of
+    # this day's totals.
+    from datetime import datetime as _dt, timedelta as _td
+    next_date = (_dt.strptime(date_str, '%Y-%m-%d') + _td(days=1)).strftime('%Y-%m-%d')
+    try:
+        next_rows = [r for r in db.get_readings_for_date(next_date, device_id)
+                     if str(r.get('timestamp', ''))[11:16] < '00:30']
+    except Exception:
+        next_rows = []
 
-    def daily_kwh(vals):
-        if not vals:
-            return 0.0
-        return max(vals) - min(vals)
+    def daily_kwh(col):
+        return counter_day_kwh(rows, next_rows, col)
 
     def daily_kwh_from_instantaneous(kw_vals, row_list):
         """Estimate daily kWh by integrating instantaneous kW readings over time intervals.
@@ -85,18 +141,18 @@ def rollup_date(date_str: str, device_id: str = 'agate_main') -> bool:
     # cloud API enrichment rows. Modbus-only rows leave it NULL, so daily_kwh()
     # returns 0.0 on days with mostly Modbus data. Fall back to integrating
     # the instantaneous home_load_kw readings when the counter is too sparse.
-    home_load_from_counter = daily_kwh(kwh_load_vals)
+    home_load_from_counter = daily_kwh('kwh_load')
     if home_load_from_counter < 0.1 and loads:
         home_load_from_counter = daily_kwh_from_instantaneous(loads, rows)
 
     summary = {
-        'solar_kwh': round(daily_kwh(kwh_solar_vals), 3),
-        'grid_import_kwh': round(daily_kwh(kwh_grid_imp_vals), 3),
-        'grid_export_kwh': round(daily_kwh(kwh_grid_exp_vals), 3),
-        'battery_charge_kwh': round(daily_kwh(kwh_bat_chg_vals), 3),
-        'battery_discharge_kwh': round(daily_kwh(kwh_bat_dis_vals), 3),
+        'solar_kwh': round(daily_kwh('kwh_solar'), 3),
+        'grid_import_kwh': round(daily_kwh('kwh_grid_import'), 3),
+        'grid_export_kwh': round(daily_kwh('kwh_grid_export'), 3),
+        'battery_charge_kwh': round(daily_kwh('kwh_battery_charge'), 3),
+        'battery_discharge_kwh': round(daily_kwh('kwh_battery_discharge'), 3),
         'home_load_kwh': round(home_load_from_counter, 3),
-        'generator_kwh': round(daily_kwh(kwh_gen_vals), 3),
+        'generator_kwh': round(daily_kwh('kwh_generator'), 3),
         'peak_solar_kw': round(max(solars), 3) if solars else 0,
         'peak_load_kw': round(max(loads), 3) if loads else 0,
         'peak_grid_kw': round(max(grids), 3) if grids else 0,
