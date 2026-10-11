@@ -59,6 +59,8 @@ except ImportError:
     DB_AVAILABLE = False
     log.warning("db.py not available — SQLite storage disabled")
 
+from power_unwrap import unwrap_w, previous_modbus_kw
+
 
 # =============================================================================
 # Register Map
@@ -263,14 +265,21 @@ class ModbusCollector:
         if b1048:
             raw = b1048[0]
             if raw not in (0xFFFF, 0x8000):
-                d['battery_kw_direct'] = self._int16(raw) / 1000.0
+                # int16 W: unwrap past +/-32.767 kW using the previous sample
+                prev = previous_modbus_kw('battery_kw_direct', device_id=self.device_id)
+                d['battery_kw_direct'] = unwrap_w(
+                    raw, prev_w=prev * 1000.0 if prev is not None else None) / 1000.0
 
         m701a = blocks.get('model_701a')
         m701b = blocks.get('model_701b')
         m701 = (m701a + m701b) if m701a and m701b else m701a
         if m701:
             if len(m701) > 8:
-                d['grid_kw'] = self._int16(m701[8]) / 1000.0
+                # int16 W: unwrap past +/-32.767 kW using the previous sample.
+                # The derived battery_kw below uses this, so it is fixed too.
+                prev = previous_modbus_kw('grid_kw', device_id=self.device_id)
+                d['grid_kw'] = unwrap_w(
+                    m701[8], prev_w=prev * 1000.0 if prev is not None else None) / 1000.0
             if len(m701) > 16:
                 freq = m701[16]
                 if freq > 0:

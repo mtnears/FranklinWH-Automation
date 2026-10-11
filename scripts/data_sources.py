@@ -34,6 +34,7 @@ from pathlib import Path
 import json
 
 import channel_stats
+from power_unwrap import unwrap_w, previous_modbus_kw
 
 # Modbus imports (optional)
 try:
@@ -563,8 +564,13 @@ class ModbusDataSource(DataSource):
 
             # Grid power from Model 701 offset 8 (signed watts, confirmed r=0.998)
             if model_701 and len(model_701) > 8:
-                grid_power_raw = self._uint16_to_int16(model_701[8])
-                battery_data.grid_power_kw = grid_power_raw / 1000.0
+                # int16 W: keep the raw register so a caller with a reference
+                # (the local reading) can unwrap it; otherwise unwrap against
+                # the previous Modbus sample when that was near the limit.
+                battery_data._mb_grid_raw = model_701[8]
+                prev = previous_modbus_kw('grid_kw')
+                battery_data.grid_power_kw = unwrap_w(
+                    model_701[8], prev_w=prev * 1000.0 if prev is not None else None) / 1000.0
 
             # Frequency from offset 16
             if model_701 and len(model_701) > 16:
@@ -1223,6 +1229,11 @@ class DataSourceManager:
                 setattr(bd, attr, getattr(mb, attr))
         local_mode = getattr(bd, '_local_mode', None)
         mb_mode = getattr(mb, '_ext_mode', None)
+        # The local reading has no 16-bit limit: unwrap Modbus grid against it
+        # so a large import or export doesn't show up as a disagreement.
+        raw = getattr(mb, '_mb_grid_raw', None)
+        if raw is not None and bd.grid_power_kw is not None:
+            mb.grid_power_kw = unwrap_w(raw, ref_w=bd.grid_power_kw * 1000.0) / 1000.0
         channel_stats.record_crosscheck(
             bd.soc_percent, mb.soc_percent,
             bd.grid_power_kw * 1000.0, mb.grid_power_kw * 1000.0,
