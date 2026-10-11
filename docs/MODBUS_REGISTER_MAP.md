@@ -17,7 +17,7 @@ These mappings are based on independent testing against a retail 2023+ aGate uni
 
 ### How to Enable
 
-Modbus TCP can be enabled in the FranklinWH mobile app via the SPAN panel toggle. No SPAN hardware is required — the toggle simply enables the Modbus TCP listener on port 502. Once enabled, any Modbus TCP client on the local network can connect.
+Modbus TCP is enabled on the aGate by your installer or FranklinWH support (it is tied to the SPAN panel integration setting; no SPAN hardware is required). Some write-ups mention a SPAN toggle in the FranklinWH app, but most owners don't have one. Once enabled, the Modbus TCP listener is on port 502 and any Modbus TCP client on the local network can connect. Modbus is optional for this automation: the local connection reads the aGate and switches modes without it.
 
 ---
 

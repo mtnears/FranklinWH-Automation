@@ -50,7 +50,7 @@ SECTIONS = [
     'items': [
       dict(id='host', label='Machine that will run the automation', tag='R', kind='text',
            what='Runs the container 24/7. It needs Docker with Compose, and it must be on the '
-                'same local network as the aGate if you use the local Modbus connection.',
+                'same local network as the aGate.',
            where='Any always-on computer you control. Note its name or IP so you can open the '
                  'dashboard at http://&lt;that address&gt;:8100 afterwards.'),
       dict(id='tz', label='Time zone', tag='R', kind='text', keys=['TZ'],
@@ -65,9 +65,13 @@ SECTIONS = [
     'items': [
       dict(id='fwh_user', label='FranklinWH account email', tag='R', kind='text',
            keys=['FRANKLIN_USERNAME'],
-           what='The automation signs in to the FranklinWH cloud to switch operating modes '
-                '(TOU, self-consumption, emergency backup).',
-           where='The email you use to log in to the FranklinWH app.'),
+           what='The automation signs in to the FranklinWH cloud as a backup when the local '
+                'connection is unavailable. A new sign-in ends the previous one on the same '
+                'account, so if you also run Home Assistant\'s FranklinWH integration, give '
+                'this tool its own FranklinWH account (or app user) or the two keep signing '
+                'each other out.',
+           where='The email you use to log in to the FranklinWH app, or the separate user you '
+                 'added for the automation.'),
       dict(id='fwh_pass', label='FranklinWH account password', tag='R', kind='secret',
            keys=['FRANKLIN_PASSWORD'],
            what='Used with the email above. It stays in the .env file on your machine; the '
@@ -79,20 +83,28 @@ SECTIONS = [
                 'code such as 10060005A02X24470437.',
            where='FranklinWH app: Settings, then System Info, then Gateway ID (menu names can '
                  'vary by app version). It is also the aGate serial on the unit label.'),
-      dict(id='modbus_on', label='Local Modbus connection turned on?', tag='RC', kind='yesno',
-           keys=['modbus.enabled'],
-           what='Lets the automation read the aGate directly over your network: about 100 times '
-                'faster than the cloud, and it keeps working when the cloud is down. Mode '
-                'switching still uses the cloud. Strongly recommended.',
-           where='Modbus is turned on through the SPAN panel integration setting for the aGate '
-                 '(no SPAN hardware needed). If you cannot find it in the app, ask your installer '
-                 'or FranklinWH support to enable Modbus for SPAN integration.'),
-      dict(id='agate_ip', label='aGate IP address', tag='C', kind='text', keys=['modbus.host'],
-           cond='Required if Modbus is on.',
-           what='Where to reach the aGate on your network (port 502).',
+      dict(id='agate_ip', label='aGate IP address', tag='RC', kind='text', keys=['modbus.host'],
+           what='Where to reach the aGate on your home network. Used by the local connection '
+                'and by Modbus.',
            where="Your router's list of connected devices / DHCP clients; look for the FranklinWH "
                  'or aGate entry. Give it a DHCP reservation in the router so the address never '
-                 'changes.'),
+                 'changes. A wired (Ethernet) aGate is more reliable than Wi-Fi. If you leave it '
+                 'blank, the review\'s Test button searches your network for the aGate.'),
+      dict(id='local_on', label='Local connection turned on?', tag='RC', kind='yesno',
+           keys=['local.enabled'],
+           what='The automation reads the aGate and changes modes directly over your home '
+                'network. It keeps working when the FranklinWH cloud is down; the cloud is only '
+                'a backup. On by default. Strongly recommended.',
+           where='Nothing to set up in the FranklinWH app. In the review, press Test on the '
+                 'Connection step to check it reaches your aGate.'),
+      dict(id='modbus_on', label='Modbus turned on?', tag='O', kind='yesno',
+           keys=['modbus.enabled'],
+           what='A second local channel (port 502). It double-checks every reading and mode '
+                'change from the local connection and fills in grid voltage, frequency and '
+                'temperatures. Optional: the local connection works without it.',
+           where='Modbus is not a setting most owners can reach in the FranklinWH app. If you '
+                 'want it, ask your installer or FranklinWH support whether Modbus TCP can be '
+                 'enabled on your aGate. Leave it off otherwise.'),
     ]
   },
   {

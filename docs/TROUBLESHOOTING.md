@@ -110,6 +110,12 @@ grep "FRANKLIN_USERNAME\|FRANKLIN_PASSWORD" .env
 
 Verify you can log into the Franklin WH mobile app with the same credentials. Check for special characters in the password that may need escaping.
 
+### Signed out repeatedly (401) when Home Assistant also uses the account
+
+A new FranklinWH sign-in ends the previous session on the same account. If Home Assistant's FranklinWH integration (or another tool) signs in with the same account as this automation, each one keeps signing the other out, and both see intermittent 401 errors.
+
+**Fix:** give the automation its own FranklinWH account, or add a separate user in the FranklinWH app for it, and put that user in `FRANKLIN_USERNAME` / `FRANKLIN_PASSWORD`. With the local connection on, the cloud is only a backup, so this mostly matters when the local connection is unavailable.
+
 ### Gateway not found
 
 ```bash
