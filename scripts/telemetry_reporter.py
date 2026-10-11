@@ -626,7 +626,72 @@ def _build_config_flags() -> Dict[str, Any]:
     except Exception:
         pass
 
+    # rc.6: did the tester change anything in the guided review, or click
+    # through? Counts only, by category; no values leave the install.
+    flags['review_edits'] = None
+    if flags.get('review_completed'):
+        try:
+            flags['review_edits'] = _review_edit_counts()
+        except Exception as e:
+            logger.debug(f"Review edit counts error: {e}")
+
     return flags
+
+
+def _review_edit_counts() -> Dict[str, Any]:
+    """Count review-committed settings that differ from what .env (or the
+    default, when .env is blank) would have given.
+
+    The commit writes every reviewed value with source 'user', so the source
+    alone can't tell an edit from a confirmation. This compares each one with
+    its .env/default baseline, the same comparison the commit plan uses.
+    Retroactive: .env is kept after the commit, so a site that committed on
+    rc.5 reports its edits on its first rc.6 day. A hand edit to .env after
+    the commit reads as a review edit.
+    """
+    import sqlite3
+    import config_review
+    conn = sqlite3.connect(f'file:{settings.db_path()}?mode=ro', uri=True, timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT key, value, value_type, source FROM app_config "
+            "WHERE scope = 'global' AND source = 'user'").fetchall()]
+        try:
+            rates_edited = conn.execute(
+                "SELECT COUNT(*) FROM rate_plans WHERE active = 1 AND source = 'review'"
+            ).fetchone()[0] > 0
+        except Exception:
+            rates_edited = None
+    finally:
+        conn.close()
+
+    def same(typ, a, b):
+        if a is None or b is None:
+            return a is None and b is None
+        if typ == 'list':
+            return settings.coerce(a, 'list', []) == settings.coerce(b, 'list', [])
+        return settings._norm(a) == settings._norm(b)
+
+    by_cat: Dict[str, int] = {}
+    reviewed = 0
+    for r in rows:
+        ent = settings.BY_KEY.get(r['key'])
+        if ent is None:
+            continue
+        reviewed += 1
+        base = config_review._env_text(ent)
+        if base is None:
+            base = config_review._default_text(ent)
+        if not same(ent.type, settings._row_text(r), base):
+            cat = ent.category or 'other'
+            by_cat[cat] = by_cat.get(cat, 0) + 1
+    return {
+        'reviewed': reviewed,
+        'changed': sum(by_cat.values()),
+        'by_category': dict(sorted(by_cat.items())),
+        'rates_edited': rates_edited,
+    }
 
 
 def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
@@ -751,6 +816,69 @@ def _build_utility_info(modbus_data: Optional[Dict] = None) -> Dict[str, Any]:
     return info
 
 
+def _peak_window_stats(conn, cutoff_date: str) -> Dict[str, Any]:
+    """Per peak day: grid import (kWh) and load (kWh) inside the peak window.
+
+    Integrates positive grid_kw and home_load_kw between PEAK_START_HOUR and
+    PEAK_END_HOUR, using the source with the most rows that day. A day counts
+    as protected when grid import stayed at or below 10% of the window's load
+    (0.5 kWh when load is unknown): the battery carried the peak.
+    """
+    try:
+        from config import config as _cfg
+        start = int(getattr(_cfg, 'PEAK_START_HOUR', 17))
+        end = int(getattr(_cfg, 'PEAK_END_HOUR', 20))
+        peak_days = str(getattr(_cfg, 'PEAK_DAYS', 'weekdays') or 'weekdays').lower()
+    except Exception:
+        start, end, peak_days = 17, 20, 'weekdays'
+    if end <= start:
+        return {'days': 0, 'protected': 0, 'import_kwh': 0.0}
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    rows = conn.execute(
+        "SELECT timestamp, source, grid_kw, home_load_kw FROM system_readings "
+        "WHERE date(timestamp) >= ? AND date(timestamp) < ? "
+        "AND CAST(strftime('%H', timestamp) AS INT) >= ? "
+        "AND CAST(strftime('%H', timestamp) AS INT) < ? "
+        "AND grid_kw IS NOT NULL ORDER BY timestamp",
+        (cutoff_date, today, start, end)).fetchall()
+
+    by_day: Dict[str, Dict[str, list]] = {}
+    for r in rows:
+        by_day.setdefault(r['timestamp'][:10], {}).setdefault(r['source'] or '', []).append(r)
+
+    days = protected = 0
+    import_total = 0.0
+    for day, sources in by_day.items():
+        wd = datetime.strptime(day, '%Y-%m-%d').weekday()
+        if peak_days == 'weekdays' and wd >= 5:
+            continue
+        if peak_days == 'weekends' and wd < 5:
+            continue
+        pts = max(sources.values(), key=len)
+        if len(pts) < 3:
+            continue
+        imp = load = 0.0
+        load_seen = False
+        prev = None
+        for r in pts:
+            t = datetime.strptime(r['timestamp'][:19], '%Y-%m-%d %H:%M:%S')
+            if prev is not None:
+                dt = (t - prev[0]).total_seconds() / 3600.0
+                if 0 < dt <= 0.5:
+                    imp += max(prev[1]['grid_kw'] or 0.0, 0.0) * dt
+                    if prev[1]['home_load_kw'] is not None:
+                        load += prev[1]['home_load_kw'] * dt
+                        load_seen = True
+            prev = (t, r)
+        days += 1
+        import_total += imp
+        limit = 0.10 * load if load_seen and load > 0 else 0.5
+        if imp <= max(limit, 0.5):
+            protected += 1
+    return {'days': days, 'protected': protected, 'import_kwh': import_total}
+
+
 def _build_performance_stats(days: int) -> Dict[str, Any]:
     """Compute aggregate performance from intelligence log and DB.
 
@@ -867,28 +995,24 @@ def _build_performance_stats(days: int) -> Dict[str, Any]:
             (cutoff_date, days)
         ).fetchall()]
 
-        peak_protected = 0
-        total_peak_days = 0
         solar_ratios = []
-
         for row in savings_rows:
-            grid_charged = float(row.get('grid_charged_kwh') or 0)
-            total_peak_days += 1
-            if grid_charged <= 0.5:
-                peak_protected += 1
-
-            if stats['grid_import_peak_kwh_avg'] is None:
-                stats['grid_import_peak_kwh_avg'] = 0
-            stats['grid_import_peak_kwh_avg'] += grid_charged
-
             solar_ratio = row.get('solar_ratio')
             if solar_ratio is not None and str(solar_ratio) not in ('', 'None'):
                 solar_ratios.append(float(solar_ratio))
 
-        if total_peak_days > 0:
-            stats['peak_protection_pct'] = round((peak_protected / total_peak_days) * 100, 1)
-            if stats['grid_import_peak_kwh_avg'] is not None:
-                stats['grid_import_peak_kwh_avg'] = round(stats['grid_import_peak_kwh_avg'] / total_peak_days, 2)
+        # Peak protection: grid energy drawn during the peak window, from
+        # system_readings. Before rc.6 these two used daily_savings
+        # grid_charged_kwh (grid CHARGING), so a site that grid-charges by
+        # design showed 0% protection. peak_metric_version marks the change.
+        try:
+            pk = _peak_window_stats(conn, cutoff_date)
+            if pk['days']:
+                stats['peak_protection_pct'] = round(pk['protected'] / pk['days'] * 100, 1)
+                stats['grid_import_peak_kwh_avg'] = round(pk['import_kwh'] / pk['days'], 2)
+            stats['peak_metric_version'] = 2
+        except Exception as e:
+            logger.debug(f"Peak window stats error: {e}")
 
         if solar_ratios:
             stats['solar_self_consumption_pct'] = round(sum(solar_ratios) / len(solar_ratios) * 100, 1)
