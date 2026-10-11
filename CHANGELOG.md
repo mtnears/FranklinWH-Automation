@@ -4,6 +4,21 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0-rc.6 — October 2026 (branch `v4.7-rc`)
+
+Fixes collected during the rc.5 tester phase. No change to how the engine decides.
+
+- **Grid and battery power above 32.7 kW read correctly.** Modbus reports them as signed 16-bit watts, so a larger value wrapped around (heavy import showed as export). The collector and the Modbus fallback now unwrap the value against the previous sample, and the local/Modbus cross-check unwraps against the local reading, which has no 16-bit limit. Idea from don4of4's Home Assistant fork.
+- **Daily energy totals no longer repeat the previous day.** The gateway's daily counters reset a minute or so after midnight, so the 00:00 reading still held yesterday's totals and the rollup counted them again (Oct 5 and Oct 6 both showed 17.18 kWh of solar). The rollup now drops that carry-over, uses one data source per counter, and closes each day with the next day's pre-reset readings.
+- **Battery state of health is stored as SoH.** Modbus model 713 offset 3 is SoH (%, ×10); it had been stored as battery DC voltage. Existing rows are moved once on startup.
+- **Franklin extension registers 15000–15043 and 16000–16002 are logged raw** in `modbus_raw_readings`, for register research. Nothing reads them yet.
+- **PVOutput catches up missed days by itself** (up to 30 days back, 50 per request) and treats "no data" replies as empty days. `--from/--to` backfills a range.
+- **Telemetry: peak protection now measures grid use during the peak window.** It used to count days with grid *charging*, so installs that grid-charge by design showed 0%. Reports carry `peak_metric_version: 2`.
+- **Telemetry: guided-review edits are counted.** For installs that committed the review, the report says how many settings differ from what `.env` or the defaults would give, by category, and whether rates were edited. Counts only, no values.
+- **Setup checklist and docs:** the local connection is on the checklist (aGate IP, wired preferred, Test). Modbus is now marked optional and the checklist no longer says it can be turned on in the FranklinWH app. Troubleshooting covers sharing one FranklinWH account with Home Assistant (each sign-in ends the other's session).
+
+---
+
 ## v4.7.0-rc.5 — October 2026 (branch `v4.7-rc`)
 
 Early warning in case Franklin changes or closes the local connection.
