@@ -42,3 +42,15 @@ docker compose up -d
 git checkout -- requirements.txt
 rm requirements.txt.bak
 ```
+
+## If you're on v4.6.3 and rebuild with `--no-cache`
+The newest pymodbus (3.16.0) won't import on our image without pyserial, and that stops the engine and the Modbus collectors. Your running container is fine; this only bites on a fresh build. If you need to rebuild v4.6.3, pin pymodbus first, then put the file back:
+```
+sed -i.bak 's/^pymodbus>=3.5.0/pymodbus==3.15.0/' requirements.txt
+docker compose build --no-cache
+docker compose down
+docker compose up -d
+git checkout -- requirements.txt
+rm requirements.txt.bak
+```
+If the engine has already gone down after a rebuild, the same steps fix it. v4.7.0-rc.6 has the pin built in.
