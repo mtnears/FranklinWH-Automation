@@ -16,6 +16,7 @@ Fixes collected during the rc.5 tester phase. No change to how the engine decide
 - **Telemetry: peak protection now measures grid use during the peak window.** It used to count days with grid *charging*, so installs that grid-charge by design showed 0%. Reports carry `peak_metric_version: 2`.
 - **Telemetry: guided-review edits are counted.** For installs that committed the review, the report says how many settings differ from what `.env` or the defaults would give, by category, and whether rates were edited. Counts only, no values.
 - **Setup checklist and docs:** the local connection is on the checklist (aGate IP, wired preferred, Test). Modbus is now marked optional and the checklist no longer says it can be turned on in the FranklinWH app. Troubleshooting covers sharing one FranklinWH account with Home Assistant (each sign-in ends the other's session).
+- **pymodbus pinned to 3.15.0.** pymodbus 3.16.0 fails to import without `pyserial`, so a `--no-cache` build that picked it up stopped the engine and collectors. `requirements.txt` now pins `pymodbus==3.15.0`. Fresh builds of v4.6.3 and rc.5 pull 3.16.0 and break the same way.
 
 ---
 

@@ -8,6 +8,7 @@
 - **Battery health (SoH) shows as SoH** instead of being stored as battery voltage.
 - **PVOutput fills in missed days by itself** if uploads stopped for a while.
 - **Setup checklist updated** for the local connection. Modbus is optional; you don't need your installer to turn anything on.
+- **Fresh builds work again.** pymodbus 3.16.0 came out and fails to import on our image (it needs `pyserial`), so a `--no-cache` build took the engine down. rc.6 pins pymodbus to 3.15.0.
 - **Using Home Assistant's FranklinWH integration with the same Franklin account?** The two sign each other out. See Troubleshooting: give the automation its own Franklin account or app user.
 
 ## Upgrade
@@ -31,4 +32,13 @@ If you've opted in, two things change in the daily report:
 - **Guided review edits:** how many settings you changed in the review compared with your `.env` or the defaults, by category, and whether you edited rates. Counts only, no values.
 
 ## Going back
-`git checkout v4.7.0-rc.5`, then build and restart as above.
+rc.5 doesn't pin pymodbus, so a fresh build of it pulls 3.16.0 and won't start. Pin it while you build, then put the file back:
+```
+git checkout v4.7.0-rc.5
+sed -i.bak 's/^pymodbus>=3.5.0/pymodbus==3.15.0/' requirements.txt
+docker compose build --no-cache
+docker compose down
+docker compose up -d
+git checkout -- requirements.txt
+rm requirements.txt.bak
+```
