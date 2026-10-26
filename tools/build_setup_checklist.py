@@ -560,6 +560,14 @@ def intro_page():
         '<b>Passwords and keys.</b> Items marked with an "I have this" box are credentials. They '
         'stay in the .env file on your machine and the review never displays them. It is safer to '
         'tick the box than to write the value here. If you do write them, keep this file private.',
+        '<b>Have this ready before you commit.</b> The setup refuses to save until every '
+        'required item is entered, because the engine cannot run safely on a guess: your '
+        'FranklinWH login and gateway ID; the site latitude and longitude; the number of '
+        'batteries and their total capacity (detected when the aGate is reachable); how your '
+        'exports are credited; for each solar array its name, type, AC size and connection '
+        'details; and your rate plan with every month of the year in a season, each season\'s '
+        'prices, and the time windows when each price applies. A feature you turn on (weather, '
+        'PVOutput, SolarEdge portal, solar forecasting) needs its own key or details too.',
         '<b>Checking against the review.</b> After you gather the information, open the dashboard, '
         'go to Settings and choose <i>Configuration review</i>. Step through the screens and tick '
         '<i>Matches review</i> for each item that shows what you expected. Nothing is saved until '

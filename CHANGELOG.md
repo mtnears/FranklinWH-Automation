@@ -4,6 +4,19 @@ All notable changes to FranklinWH Battery Automation.
 
 ---
 
+## v4.7.0 — October 2026
+
+New installs are configured in the dashboard (guided setup); v4.7 leaves beta and merges to `main`. No change to how the engine decides.
+
+- **Rate plan editor in the review.** Seasons, tiers and time windows can be added and removed; templates for flat, two-tier and three-tier summer/winter plans. `config_commit.validate_rate_plan` enforces: every month in exactly one season, off-peak and every used tier priced in each season (0–1000 ¢), windows HH:MM, non-empty, non-overlapping per day. A plan from the editor is written without base-tier rows, so season prices are never inherited. Imported plans show `inherited` on prices copied from the base rows, with a warning.
+- **Engine rate source is the config store** (`rate_schedule.load_rate_schedule` builds today's schedule from `rate_plans/rate_seasons/rate_tiers/rate_windows/rate_holidays`; JSON only for un-migrated installs). Review edits now reach the engine. `schedule_available()` replaces the json-exists gates in the scheduler and the dashboard data job.
+- **Required settings enforced at commit** (`settings.Entry.required_if` / new `confirm`): FranklinWH login and gateway ID; site latitude/longitude; battery count and capacity when not detected over Modbus; export compensation; per-array name, type, AC size and the connection field for its type; the key for each feature switched on (weather, PVOutput, SolarEdge portal). The review marks them and the Summary lists what is missing.
+- **Fresh install:** `.env.minimal.example` (secrets and deployment only); array cards derived from `SOLAR_ARRAY_<ID>_*` secrets; forecast geometry gets its own card until an array is classified; config tables created at first start; the engine observes only (no mode writes) until a rate plan exists, with a non-dismissable setup banner on the dashboard.
+- **Dependencies pinned** to the rc.6 image's resolved versions; base image `python:3.11.17-slim`.
+- Install docs and Setup Checklist updated for new installs. Store snapshot lists battery-charging arrays first.
+
+---
+
 ## v4.7.0-rc.6 — October 2026 (branch `v4.7-rc`)
 
 Fixes collected during the rc.5 tester phase. No change to how the engine decides.

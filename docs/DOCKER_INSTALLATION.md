@@ -37,8 +37,10 @@ cd FranklinWH-Automation
 
 ### 2. Create Configuration File
 
+New installs (v4.7.0 and later) put only secrets in `.env`; everything else is entered once in the guided setup in the dashboard.
+
 ```bash
-cp .env.example .env
+cp .env.minimal.example .env
 nano .env   # or use: vi .env
 ```
 
@@ -47,21 +49,16 @@ nano .env   # or use: vi .env
 FRANKLIN_USERNAME=your_email@example.com
 FRANKLIN_PASSWORD=your_password
 FRANKLIN_GATEWAY_ID=your_gateway_id
-BATTERY_CAPACITY_KWH=13.6
-ADAPTIVE_ENGINE_ENABLED=true
+TZ=America/Los_Angeles
 ```
 
-**Set your TOU schedule:**
-```bash
-PEAK_START_HOUR=17
-PEAK_END_HOUR=20
-PEAK_DAYS=weekdays
-HOME_MODE=tou
-```
+If you have solar, add the array's login or API key under its own ID (`SOLAR_ARRAY_HOUSE_EMAIL` / `_PASSWORD` for Enphase, `SOLAR_ARRAY_<ID>_API_KEY` for SolarEdge); the setup shows a card for each ID. Keys for optional features (Weather Underground, PVOutput, SolarEdge portal) go in the same file; the template lists them.
 
-If you run Self Consumption as your normal mode instead of TOU, set `HOME_MODE=self_consumption`.
+**Have ready for the guided setup** (it will not save until these are entered): your site's latitude and longitude, the number of batteries and their total capacity (detected automatically when the aGate is reachable), how your exports are credited, each solar array's type, size and connection details, and your rate plan: the seasons, each season's prices, and the time windows when each price applies. Everything is on your electricity bill and your utility's published rate schedule; the Setup Checklist (`docs/SETUP_CHECKLIST.pdf`, also linked from the dashboard) lists each item and where to find it.
 
-> **For three-tier rate plans (peak / partial-peak / off-peak) or plans with seasonal rate switching**, configure `data/rate_schedule.json` instead of (or in addition to) the `.env` PEAK_* vars. The shipped `rate_schedule.json` is pre-configured for PG&E EV2-A; copy from `data/rate_schedule.example.json` for other plans (E-TOU-D, SMUD, SCE, Pepco, ComEd). See [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md#rate-schedule-rate_schedulejson) for full details.
+Until the setup is committed the engine observes only and changes no battery modes.
+
+> **Upgrading from v4.6 or earlier?** Keep your existing `.env` (the full template is still `.env.example`) and `data/rate_schedule.json`; the configuration review imports them. See [CONFIGURATION_REFERENCE.md](CONFIGURATION_REFERENCE.md) for the legacy variables.
 
 ### 3. Create Data Directories
 
@@ -91,6 +88,8 @@ You should see:
 ### 6. Access Dashboard
 
 Open in browser: `http://YOUR-SERVER-IP:8100`
+
+On a new install the dashboard opens with a **Setup is not complete** banner. Press *Start the guided setup*, work through the steps (Connection, Battery, Solar arrays, Rates, Billing, Engine, Forecast, Integrations, Telemetry) and press *Commit and restart* on the Summary step. The Test buttons check each connection live before you commit.
 
 To use a different port, set `DASHBOARD_PORT` in your `.env` file.
 

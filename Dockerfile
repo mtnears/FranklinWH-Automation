@@ -9,7 +9,8 @@
 #
 # ==============================================================================
 
-FROM python:3.11-slim as builder
+# Base image pinned (T051): the v4.7.0-rc.6 production image is Python 3.11.17.
+FROM python:3.11.17-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,13 +24,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir schedule
+    pip install --no-cache-dir -r requirements.txt
 
 # ==============================================================================
 # Final stage - minimal runtime image
 # ==============================================================================
-FROM python:3.11-slim
+FROM python:3.11.17-slim
 
 # Install runtime dependencies (for matplotlib)
 RUN apt-get update && apt-get install -y --no-install-recommends \
