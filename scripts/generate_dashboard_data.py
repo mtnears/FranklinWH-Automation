@@ -76,7 +76,7 @@ except ImportError:
 
 # Import rate schedule for peak window awareness
 try:
-    from rate_schedule import load_rate_schedule
+    from rate_schedule import load_rate_schedule, schedule_available
     RATE_SCHEDULE_AVAILABLE = True
 except ImportError:
     RATE_SCHEDULE_AVAILABLE = False
@@ -96,7 +96,7 @@ def _get_rate_schedule():
         return None
     try:
         json_path = config.DATA_DIR / 'rate_schedule.json'
-        if json_path.exists():
+        if schedule_available(str(json_path)):   # store plan or JSON (T044)
             _cached_schedule = load_rate_schedule(str(json_path))
             _schedule_loaded_at = now
             return _cached_schedule

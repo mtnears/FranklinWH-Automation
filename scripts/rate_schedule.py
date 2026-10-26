@@ -504,83 +504,231 @@ def _load_rates_from_db(db_path: str, today: str) -> Optional[dict]:
         return None
 
 
-def load_rate_schedule(json_path: str) -> RateSchedule:
-    """Load rate schedule from JSON config, applying seasonal and DB overrides.
+class RateScheduleUnavailable(FileNotFoundError):
+    """No rate plan in the config store and no rate_schedule.json.
 
-    Precedence (later wins on conflict):
-      1. JSON base tier_rates and windows
-      2. Seasonal overrides from seasons[].tier_rates and seasons[].windows
-         (matched by current month against seasons[].months)
-      3. DB rate_history override for peak/off_peak (most recent row with
-         effective_date <= today)
+    A fresh install is in this state until the guided review commits a plan.
+    Callers that can run without rates (observe-only) should catch this.
+    """
 
-    The DB override only covers peak/off_peak because rate_history has no
-    partial_peak column. For 3-tier rate plans the seasons block handles
-    partial_peak switching across summer/winter; DB rate_history continues
-    to handle peak/off_peak for backward compat and mid-season rate changes.
 
-    A config without a 'seasons' block behaves exactly as before — fully
-    backward compatible with any existing user JSON.
+def _db_path_for(json_path: str) -> str:
+    return os.path.join(os.path.dirname(json_path), 'franklin.db')
+
+
+def store_has_plan(db_path: str) -> bool:
+    """True when the v4.6 rate tables hold an active plan with at least one price."""
+    try:
+        import sqlite3
+        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        try:
+            row = conn.execute(
+                "SELECT p.id FROM rate_plans p WHERE p.active = 1 "
+                "AND EXISTS (SELECT 1 FROM rate_tiers t WHERE t.plan_id = p.id) "
+                "ORDER BY p.id LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        return row is not None
+    except Exception:
+        return False
+
+
+def schedule_available(json_path: str) -> bool:
+    """True when load_rate_schedule(json_path) can return a schedule."""
+    return store_has_plan(_db_path_for(json_path)) or os.path.exists(json_path)
+
+
+def _load_from_store(db_path: str, today: str):
+    """Build today's rate plan from the config store (v4.7, T044).
+
+    Returns (rs, season_name) where rs has the same shape as the JSON
+    rate_schedule block, already resolved for today's season:
+    tiers, windows, default_tier, holiday_tier, holidays, export.
+    Returns None when the store has no active plan.
+
+    Season prices are the union of the plan's base rows (season_id NULL)
+    and the season's own rows, the season winning. A review-built plan has
+    no base rows, so nothing is inherited between seasons.
     """
     try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        msg = (f"rate schedule {json_path} is not valid JSON "
-               f"(line {e.lineno}, column {e.colno}: {e.msg})")
-        logger.error(msg)
-        raise ValueError(msg) from e
+        import sqlite3
+        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        conn.row_factory = sqlite3.Row
+    except Exception as e:
+        logger.debug("store rate plan: cannot open %s (%s)", db_path, e)
+        return None
+    try:
+        plan = conn.execute(
+            "SELECT * FROM rate_plans WHERE active = 1 ORDER BY id LIMIT 1").fetchone()
+        if plan is None:
+            return None
+        pid = plan['id']
+        month = int(today[5:7])
 
-    rs = data.get('rate_schedule', data)  # Allow nested or flat
-
-    # --- Step 1: Parse JSON base tiers (fallback baseline) ---
-    tiers = rs.get('tiers', {})
-    tier_rates = {}
-    for tier_name, tier_info in tiers.items():
-        if isinstance(tier_info, dict):
-            tier_rates[tier_name] = tier_info.get('rate_cents', 0)
-        else:
-            tier_rates[tier_name] = float(tier_info)
-
-    # --- Step 2: Apply seasonal overrides (tier_rates and/or windows) ---
-    raw_windows = rs.get('windows', [])
-    active_season_name = None
-    seasons = rs.get('seasons')
-    if seasons:
-        _validate_seasons(seasons, tier_rates)
-        current_month = datetime.now().month
-        for season in seasons:
-            if current_month in season.get('months', []):
-                active_season_name = season.get('name', 'unnamed')
-                season_tier_rates = season.get('tier_rates') or {}
-                applied = []
-                for tier_name, rate in season_tier_rates.items():
-                    if tier_name in tier_rates:
-                        tier_rates[tier_name] = float(rate)
-                        applied.append(f"{tier_name}={float(rate):.3f}¢")
-                if season.get('windows'):
-                    raw_windows = season['windows']
-                logger.info(
-                    "Active season: %s (month %d) — tier overrides: [%s]%s",
-                    active_season_name, current_month,
-                    ', '.join(applied) if applied else 'none',
-                    ', windows: yes' if season.get('windows') else ''
-                )
+        season_id, season_name = None, None
+        for s in conn.execute("SELECT * FROM rate_seasons WHERE plan_id = ? ORDER BY id", (pid,)):
+            try:
+                months = json.loads(s['months_json'] or '[]')
+            except (json.JSONDecodeError, TypeError):
+                months = []
+            if month in months:
+                season_id, season_name = s['id'], s['name']
                 break
-        if not active_season_name:
-            logger.warning(
-                "Seasons configured but no season matched month %d — falling back to JSON base config",
-                datetime.now().month
-            )
+
+        tier_rates = {}
+        for r in conn.execute(
+                "SELECT tier, rate_cents FROM rate_tiers WHERE plan_id = ? AND season_id IS NULL", (pid,)):
+            tier_rates[r['tier']] = float(r['rate_cents'])
+        if season_id is not None:
+            for r in conn.execute(
+                    "SELECT tier, rate_cents FROM rate_tiers WHERE plan_id = ? AND season_id = ?",
+                    (pid, season_id)):
+                tier_rates[r['tier']] = float(r['rate_cents'])
+        if not tier_rates:
+            return None
+
+        win_rows = []
+        if season_id is not None:
+            win_rows = conn.execute(
+                "SELECT * FROM rate_windows WHERE plan_id = ? AND season_id = ? ORDER BY start_time",
+                (pid, season_id)).fetchall()
+        if not win_rows:
+            win_rows = conn.execute(
+                "SELECT * FROM rate_windows WHERE plan_id = ? AND season_id IS NULL ORDER BY start_time",
+                (pid,)).fetchall()
+        windows = []
+        for w in win_rows:
+            try:
+                days = json.loads(w['days_json'] or '[]') or \
+                    ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+            except (json.JSONDecodeError, TypeError):
+                days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']
+            windows.append({'tier': w['tier'], 'days': days,
+                            'start': w['start_time'], 'end': w['end_time']})
+
+        holidays = [h['holiday_date'] for h in conn.execute(
+            "SELECT holiday_date FROM rate_holidays WHERE plan_id = ? ORDER BY holiday_date", (pid,))]
+
+        export_rates = None
+        if plan['export_rates_json']:
+            try:
+                export_rates = json.loads(plan['export_rates_json'])
+            except (json.JSONDecodeError, TypeError):
+                export_rates = None
+
+        rs = {
+            'name': plan['name'],
+            'tiers': tier_rates,
+            'windows': windows,
+            'default_tier': plan['default_tier'] or 'off_peak',
+            'holiday_tier': plan['holiday_tier'] or 'off_peak',
+            'holidays': holidays,
+            'export': {'capable': bool(plan['export_capable']),
+                       'net_metering': plan['net_metering'] or '',
+                       'export_rates': export_rates},
+            '_source': plan['source'] or 'store',
+        }
+        return rs, season_name
+    except Exception as e:
+        logger.warning("store rate plan lookup failed (%s) — trying rate_schedule.json", e)
+        return None
+    finally:
+        conn.close()
+
+
+def load_rate_schedule(json_path: str) -> RateSchedule:
+    """Load today's rate schedule, applying seasonal and DB overrides.
+
+    Sources, first available wins (v4.7 / T044):
+      A. The config store's active rate plan (rate_plans/rate_seasons/
+         rate_tiers/rate_windows/rate_holidays), resolved for today's
+         season. This is what the guided review edits, so review edits
+         reach the engine.
+      B. rate_schedule.json next to franklin.db, with its seasons block
+         (pre-v4.6 installs that never ran the migration).
+
+    Then, for both:
+      3. DB rate_history override for peak/off_peak (most recent row with
+         effective_date <= today). rate_history has no partial_peak column,
+         so the plan keeps partial_peak; a fresh install has no rows.
+
+    Raises RateScheduleUnavailable (a FileNotFoundError) when neither source
+    exists: a fresh install before the review has committed a plan.
+    """
+    db_path = _db_path_for(json_path)
+    today = datetime.now().strftime('%Y-%m-%d')
+    current_month = datetime.now().month
+
+    from_store = _load_from_store(db_path, today)
+    if from_store:
+        rs, active_season_name = from_store
+        tier_rates = dict(rs['tiers'])
+        raw_windows = rs['windows']
+        logger.info("Rate plan from store: %s (source %s)%s — tiers [%s]",
+                    rs['name'], rs.get('_source'),
+                    f", season {active_season_name}" if active_season_name else '',
+                    ', '.join(f"{t}={c:.3f}¢" for t, c in sorted(tier_rates.items())))
+    else:
+        if not os.path.exists(json_path):
+            raise RateScheduleUnavailable(
+                f"no rate plan in the config store and no {json_path}; "
+                "complete the guided review to enter your rate plan")
+        try:
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            msg = (f"rate schedule {json_path} is not valid JSON "
+                   f"(line {e.lineno}, column {e.colno}: {e.msg})")
+            logger.error(msg)
+            raise ValueError(msg) from e
+
+        rs = data.get('rate_schedule', data)  # Allow nested or flat
+
+        # --- Step 1: Parse JSON base tiers (fallback baseline) ---
+        tiers = rs.get('tiers', {})
+        tier_rates = {}
+        for tier_name, tier_info in tiers.items():
+            if isinstance(tier_info, dict):
+                tier_rates[tier_name] = tier_info.get('rate_cents', 0)
+            else:
+                tier_rates[tier_name] = float(tier_info)
+
+        # --- Step 2: Apply seasonal overrides (tier_rates and/or windows) ---
+        raw_windows = rs.get('windows', [])
+        active_season_name = None
+        seasons = rs.get('seasons')
+        if seasons:
+            _validate_seasons(seasons, tier_rates)
+            for season in seasons:
+                if current_month in season.get('months', []):
+                    active_season_name = season.get('name', 'unnamed')
+                    season_tier_rates = season.get('tier_rates') or {}
+                    applied = []
+                    for tier_name, rate in season_tier_rates.items():
+                        if tier_name in tier_rates:
+                            tier_rates[tier_name] = float(rate)
+                            applied.append(f"{tier_name}={float(rate):.3f}¢")
+                    if season.get('windows'):
+                        raw_windows = season['windows']
+                    logger.info(
+                        "Active season: %s (month %d) — tier overrides: [%s]%s",
+                        active_season_name, current_month,
+                        ', '.join(applied) if applied else 'none',
+                        ', windows: yes' if season.get('windows') else ''
+                    )
+                    break
+            if not active_season_name:
+                logger.warning(
+                    "Seasons configured but no season matched month %d — falling back to JSON base config",
+                    current_month
+                )
 
     # --- Step 3: DB override for peak/off_peak (preserves existing behaviour) ---
-    db_path = os.path.join(os.path.dirname(json_path), 'franklin.db')
-    today = datetime.now().strftime('%Y-%m-%d')
     db_rates = _load_rates_from_db(db_path, today)
     if db_rates:
         tier_rates['peak'] = db_rates['peak']
         tier_rates['off_peak'] = db_rates['off_peak']
-    elif not active_season_name:
+    elif not active_season_name and not from_store:
         # Only log JSON-rates banner when neither seasons nor DB applied
         logger.info(
             "Using JSON base rates: peak=%.3f¢  off_peak=%.3f¢  partial_peak=%.3f¢",
