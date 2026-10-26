@@ -118,6 +118,24 @@ input.bad{border-color:var(--accent-red)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .counts{font-size:13px;color:var(--text-muted)}
 .err{padding:30px;text-align:center;color:var(--accent-red)}
+/* rate plan editor (T033) */
+.pe{margin-top:10px;border:1px solid var(--border-active);border-radius:10px;padding:10px 12px}
+.pe h4{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pe input[type=text].pname{max-width:260px}
+.pe .mini{border-radius:8px;padding:4px 10px;border:1px solid var(--border-active);background:var(--bg-card);color:var(--text-primary);cursor:pointer;font-size:12px}
+.pe .mini.del{color:var(--accent-red)}
+.pe .mini.add{color:var(--accent-blue)}
+.mchips,.dchips{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0}
+.mchips button,.dchips button{border:1px solid var(--border-active);background:transparent;color:var(--text-secondary);border-radius:6px;padding:2px 7px;font-size:12px;cursor:pointer}
+.mchips button.on,.dchips button.on{background:var(--accent-blue);color:#fff;border-color:var(--accent-blue)}
+.mchips button.taken{opacity:.35;text-decoration:line-through}
+.pe .tier input[type=number],.pe .win input[type=time]{max-width:110px}
+.pe .tier input[type=text]{max-width:120px}
+.pe .win{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.pe .win select{max-width:150px}
+.pe .hint.bad{margin-top:4px}
+.tpl{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.inh{font-size:11px;color:var(--accent-orange,#f0a050);margin-left:4px}
 @media (max-width:720px){
   .row{grid-template-columns:1fr;gap:6px}
   .lbl{padding-top:0}
@@ -216,7 +234,8 @@ function control(r){
     }).join('');
     if (r.optional) o = '<option value=""' + (v == null || v === '' ? ' selected' : '') + '>' +
       esc((r.choice_labels || {})[''] || 'Not set') + '</option>' + o;
-    return '<select data-key="' + k + '">' + o + '</select>';
+    else if (v == null || v === '') o = '<option value="" selected disabled>Choose…</option>' + o;
+    return '<select data-key="' + k + '"' + (invalidReason(r) ? ' class="bad"' : '') + '>' + o + '</select>';
   }
   var num = isNum(r);
   if (num && !(r.key in edits)) v = numText(v);
@@ -231,6 +250,11 @@ function control(r){
 // Same rules the server applies at commit (type, range, choices, required).
 // The server stays authoritative; this only flags problems as you type.
 function requiredNow(r){
+  if (r.confirm && r.detected == null) return true;   // fresh install: the default is a guess
+  // Array connection fields depend on the type picked on the same card
+  var am = /^array\.([^.]+)\.(ip|serial|site_id)$/.exec(r.key || '');
+  if (am) { var ty = rowIndex['array.' + am[1] + '.array_type']; var tv = ty ? String(currentValue(ty) || '') : '';
+    return (tv === 'enphase' && am[2] !== 'site_id') || (tv === 'solaredge' && am[2] === 'site_id'); }
   if (!r.required_if) return false;
   if (r.required_if === 'always') return true;
   var ctl = rowIndex[r.required_if];
@@ -240,7 +264,9 @@ function invalidReason(r){
   if (r.kind !== 'setting' || r.readonly) return null;
   if (r.show_if && String(currentValue(rowIndex[r.show_if])) !== 'true') return null;
   var v = currentValue(r), sv = v == null ? '' : String(v).trim();
-  if (sv === '') return requiredNow(r) ? 'Required: there is no built-in default for this, it is specific to your site.' : null;
+  if (sv === '') return requiredNow(r) ? (r.confirm && !r.required_if
+      ? 'Required: choose a value. The built-in default (' + r.default + ') is only a guess.'
+      : 'Required: there is no built-in default for this, it is specific to your site.') : null;
   if (['int','float','float?'].indexOf(r.type) >= 0) {
     var f = Number(sv);
     if (!isFinite(f)) return 'Must be a number.';
@@ -257,10 +283,18 @@ function rateInvalid(k){
   if (/^win\./.test(k)) return /^([01]\d|2[0-3]):[0-5]\d$/.test(v) ? null : 'Time must be HH:MM.';
   return null;
 }
+// A secret the review cannot set, but a feature that is on needs it (edit .env)
+function secretMissing(r){
+  if (r.kind !== 'secret' || r.set || !r.required_if) return null;
+  if (r.required_if !== 'always') { var ctl = rowIndex[r.required_if]; if (!ctl || String(currentValue(ctl)) !== 'true') return null; }
+  return 'Required' + (r.required_if === 'always' ? '' : ' while ' + (rowIndex[r.required_if] || {}).label + ' is on') +
+    ': add ' + r.env_name + '=… to .env on the host, run docker compose up -d, then reload this page.';
+}
 function allInvalid(){
   var out = [];
-  Object.keys(rowIndex).forEach(function(k){ var r = rowIndex[k], why = invalidReason(r); if (why) out.push({label: r.label, why: why}); });
+  Object.keys(rowIndex).forEach(function(k){ var r = rowIndex[k], why = invalidReason(r) || secretMissing(r); if (why) out.push({label: r.label, why: why}); });
   Object.keys(edits).forEach(function(k){ var why = rateInvalid(k); if (why) out.push({label: rateLabel(k), why: why}); });
+  planInvalid().forEach(function(why){ out.push({label: 'Rate plan', why: why}); });
   return out;
 }
 // Strategy = Export but no battery-charging array exports: the Franklin would curtail that solar.
@@ -353,7 +387,7 @@ function rowHtml(r){
     if (r.effective != null && String(r.effective) !== String(currentValue(r)) && !isEdited(r))
       h += '<div class="muted">In effect now: ' + esc(r.effective) + '</div>';
   }
-  var bad = invalidReason(r);
+  var bad = invalidReason(r) || secretMissing(r);
   if (bad) h += '<div class="hint bad">' + esc(bad) + '</div>';
   var sw = strategyWarning(r);
   if (sw) h += '<div class="hint warn">' + esc(sw) + '</div>';
@@ -364,8 +398,147 @@ function rowHtml(r){
   return h;
 }
 
+// ---- Rate plan editor (T033) -------------------------------------------------
+// planEdit is the whole plan being built or restructured; while it is set the
+// server gets edits.rate_plan (one JSON document) and ignores rate./win. edits.
+var planEdit = null;
+var MN = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var ALLD = ['mon','tue','wed','thu','fri','sat','sun'];
+var TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+function planTemplates(){
+  var all = [1,2,3,4,5,6,7,8,9,10,11,12], ev = ALLD.slice();
+  return [
+    {id: 'flat', label: 'Flat rate (one price all day)', plan: {name: '', default_tier: 'off_peak', holiday_tier: 'off_peak', seasons: [
+      {name: 'all year', months: all, tiers: {off_peak: ''}, windows: []}]}},
+    {id: 'tou2', label: 'Time-of-use, 2 tiers, one season', plan: {name: '', default_tier: 'off_peak', holiday_tier: 'off_peak', seasons: [
+      {name: 'all year', months: all, tiers: {off_peak: '', peak: ''}, windows: [{tier: 'peak', days: ev, start: '16:00', end: '21:00'}]}]}},
+    {id: 'tou3', label: 'Time-of-use, 3 tiers, summer and winter (California style)', plan: {name: '', default_tier: 'off_peak', holiday_tier: 'off_peak', seasons: [
+      {name: 'summer', months: [6,7,8,9], tiers: {off_peak: '', partial_peak: '', peak: ''}, windows: [
+        {tier: 'partial_peak', days: ev, start: '15:00', end: '16:00'}, {tier: 'peak', days: ev, start: '16:00', end: '21:00'}, {tier: 'partial_peak', days: ev, start: '21:00', end: '00:00'}]},
+      {name: 'winter', months: [10,11,12,1,2,3,4,5], tiers: {off_peak: '', partial_peak: '', peak: ''}, windows: [
+        {tier: 'partial_peak', days: ev, start: '15:00', end: '16:00'}, {tier: 'peak', days: ev, start: '16:00', end: '21:00'}, {tier: 'partial_peak', days: ev, start: '21:00', end: '00:00'}]}]}}
+  ];
+}
+function planFromCard(p){   // the existing plan as the editor's structure; inherited prices become explicit
+  return {id: p.id, name: p.name, default_tier: p.default_tier || 'off_peak', holiday_tier: p.holiday_tier || p.default_tier || 'off_peak',
+    export_capable: !!p.export_capable, net_metering: p.net_metering || '',
+    seasons: p.seasons.map(function(s){ var t = {}; Object.keys(s.tiers).forEach(function(k){ t[k] = String(s.tiers[k]); });
+      return {name: s.name, months: s.months.slice(), tiers: t,
+        windows: s.windows.map(function(w){ return {tier: w.tier, days: (w.days && w.days.length ? w.days : ALLD).slice(), start: w.start_time, end: w.end_time}; })}; })};
+}
+function startPlanEdit(p){ planEdit = p; syncPlanEdit(); }
+function cancelPlanEdit(){ planEdit = null; delete edits.rate_plan; render(); }
+function syncPlanEdit(){ edits.rate_plan = JSON.stringify(planEdit); render(); }
+function peGet(path){ return path.split('.').reduce(function(o, k){ return o == null ? o : o[k]; }, planEdit); }
+function peSet(path, v){ var ks = path.split('.'), o = planEdit; for (var i = 0; i < ks.length - 1; i++) o = o[ks[i]]; o[ks[ks.length - 1]] = v; syncPlanEdit(); }
+function planTiers(s){ return Object.keys(s.tiers); }
+function spans(st, en){ var m = function(t){ var a = t.split(':'); return +a[0] * 60 + +a[1]; }, s = m(st), e = m(en); if (e === 0) e = 1440; return s < e ? [[s, e]] : [[s, 1440], [0, e]]; }
+// Mirrors config_commit.validate_rate_plan; the server stays authoritative.
+function planInvalid(){
+  var out = [];
+  var hasPlanCard = false, newCard = false;
+  data.screens.forEach(function(sc){ sc.cards.forEach(function(c){ if (c.kind === 'rate_plan') hasPlanCard = true; if (c.kind === 'rate_plan_new') newCard = true; }); });
+  if (!planEdit) { if (newCard && !hasPlanCard) out.push('No rate plan yet: build it on the Rates step (start from a template).'); return out; }
+  var p = planEdit;
+  if (!String(p.name || '').trim()) out.push('The plan needs a name (the rate schedule on your bill).');
+  if (!p.seasons || !p.seasons.length) out.push('The plan needs at least one season.');
+  var owner = {}, names = {};
+  (p.seasons || []).forEach(function(s, i){
+    var L = (s.name || '').trim() || ('season ' + (i + 1));
+    if (!(s.name || '').trim()) out.push('Season ' + (i + 1) + ' needs a name.');
+    else if (names[s.name.toLowerCase()]) out.push('Two seasons are named "' + s.name + '".');
+    names[(s.name || '').toLowerCase()] = 1;
+    if (!s.months.length) out.push(L + ' has no months.');
+    s.months.forEach(function(m){ if (owner[m]) out.push(MN[m] + ' is in both ' + owner[m] + ' and ' + L + '.'); else owner[m] = L; });
+    var priced = {};
+    planTiers(s).forEach(function(t){
+      var v = String(s.tiers[t] == null ? '' : s.tiers[t]).trim(), f = Number(v);
+      if (!/^[a-z][a-z0-9_]{0,30}$/.test(t)) out.push(L + ': tier name "' + t + '" must be lowercase letters, digits and _.');
+      if (v === '') out.push(L + ': ' + t.replace('_', ' ') + ' has no price.');
+      else if (!isFinite(f) || f <= 0 || f >= 1000) out.push(L + ': ' + t.replace('_', ' ') + ' price must be between 0 and 1000 ¢/kWh.');
+      else priced[t] = 1;
+    });
+    if (!('off_peak' in s.tiers)) out.push(L + ' has no off-peak price.');
+    if (p.default_tier && !(p.default_tier in s.tiers)) out.push(L + ' has no price for the default tier "' + p.default_tier + '".');
+    var ws = [];
+    (s.windows || []).forEach(function(w, j){
+      var wl = L + ': ' + (w.tier || 'window').replace('_', ' ') + ' ' + (w.start || '?') + '–' + (w.end || '?');
+      if (!(w.tier in s.tiers)) out.push(wl + ' uses a tier with no price in ' + L + '.');
+      if (!TIME_RE.test(w.start || '') || !TIME_RE.test(w.end || '')) { out.push(wl + ': times must be HH:MM.'); return; }
+      if (w.start === w.end) { out.push(wl + ' is empty (start equals end).'); return; }
+      if (!w.days || !w.days.length) { out.push(wl + ': pick at least one day.'); return; }
+      ws.push(w);
+    });
+    for (var a = 0; a < ws.length; a++) for (var b = a + 1; b < ws.length; b++) {
+      var wa = ws[a], wb = ws[b];
+      if (!wa.days.some(function(d){ return wb.days.indexOf(d) >= 0; })) continue;
+      var hit = spans(wa.start, wa.end).some(function(x){ return spans(wb.start, wb.end).some(function(y){ return x[0] < y[1] && y[0] < x[1]; }); });
+      if (hit) out.push(L + ': ' + wa.tier.replace('_', ' ') + ' ' + wa.start + '–' + wa.end + ' overlaps ' + wb.tier.replace('_', ' ') + ' ' + wb.start + '–' + wb.end + '.');
+    }
+  });
+  if ((p.seasons || []).length) { var miss = []; for (var m = 1; m <= 12; m++) if (!owner[m]) miss.push(MN[m]); if (miss.length) out.push('No season covers ' + miss.join(', ') + '.'); }
+  return out;
+}
+function planEditorHtml(){
+  var p = planEdit, h = '<div class="pe">';
+  h += '<h4>Plan <input type="text" class="pname" data-pe="name" value="' + esc(p.name) + '" placeholder="rate schedule name, e.g. PG&amp;E EV2-A">' +
+    '<span class="muted">default tier</span><select data-pe="default_tier">' + uniqTiers(p).map(function(t){ return '<option value="' + esc(t) + '"' + (t === p.default_tier ? ' selected' : '') + '>' + esc(t.replace('_', ' ')) + '</option>'; }).join('') + '</select>' +
+    '<button class="mini" data-pe-act="cancel">Cancel editing</button></h4>';
+  h += '<div class="muted" style="margin:4px 0 8px">Every month must belong to one season. Each season lists its own prices (¢/kWh) and the time windows when each tier applies; hours outside every window are the default tier. Prices come from the rate schedule on your bill.</div>';
+  var taken = {}; p.seasons.forEach(function(s, i){ s.months.forEach(function(m){ taken[m] = i; }); });
+  p.seasons.forEach(function(s, i){
+    var base = 'seasons.' + i;
+    h += '<div class="season"><h4><input type="text" data-pe="' + base + '.name" value="' + esc(s.name) + '" placeholder="season name" style="max-width:160px">' +
+      '<button class="mini del" data-pe-act="rm-season" data-i="' + i + '">remove season</button></h4>';
+    h += '<div class="mchips">' + MN.slice(1).map(function(n, mi){ var m = mi + 1, on = s.months.indexOf(m) >= 0, other = taken[m] != null && taken[m] !== i;
+      return '<button data-pe-act="month" data-i="' + i + '" data-m="' + m + '" class="' + (on ? 'on' : other ? 'taken' : '') + '" title="' + (other ? 'in ' + esc(p.seasons[taken[m]].name) : '') + '">' + n + '</button>'; }).join('') + '</div>';
+    h += '<div class="grid2">' + planTiers(s).map(function(t){ var v = s.tiers[t], bad = v === '' || v == null || !isFinite(Number(v)) || Number(v) <= 0 || Number(v) >= 1000;
+      return '<div class="tier"><span class="tierchip t-' + esc(t) + '">' + esc(t.replace('_', ' ')) + '</span><span><input type="number" step="0.001" min="0.001" max="999.999" data-pe="' + base + '.tiers.' + esc(t) + '"' +
+        (bad ? ' class="bad"' : '') + ' value="' + esc(v == null ? '' : v) + '" placeholder="¢/kWh"> ¢</span>' +
+        (t !== 'off_peak' ? '<button class="mini del" data-pe-act="rm-tier" data-i="' + i + '" data-t="' + esc(t) + '" title="remove this tier">×</button>' : '') + '</div>'; }).join('') + '</div>';
+    h += '<div style="margin-top:6px"><button class="mini add" data-pe-act="add-tier" data-i="' + i + '">+ tier</button> <span class="muted">(peak, partial_peak, super_off_peak …)</span></div>';
+    h += '<div class="wins">' + (s.windows || []).map(function(w, j){ var wb = base + '.windows.' + j;
+      return '<div class="win"><select data-pe="' + wb + '.tier">' + planTiers(s).map(function(t){ return '<option value="' + esc(t) + '"' + (t === w.tier ? ' selected' : '') + '>' + esc(t.replace('_', ' ')) + '</option>'; }).join('') + '</select>' +
+        '<input type="time" data-pe="' + wb + '.start" value="' + esc(w.start) + '"><span class="muted">to</span><input type="time" data-pe="' + wb + '.end" value="' + esc(w.end) + '">' +
+        (w.end === '00:00' ? '<span class="muted">(midnight)</span>' : '') +
+        '<span class="dchips">' + ALLD.map(function(d){ return '<button data-pe-act="day" data-i="' + i + '" data-j="' + j + '" data-d="' + d + '" class="' + (w.days.indexOf(d) >= 0 ? 'on' : '') + '">' + d + '</button>'; }).join('') + '</span>' +
+        '<button class="mini del" data-pe-act="rm-win" data-i="' + i + '" data-j="' + j + '" title="remove this window">×</button></div>'; }).join('') + '</div>';
+    h += '<div style="margin-top:6px"><button class="mini add" data-pe-act="add-win" data-i="' + i + '">+ time window</button></div></div>';
+  });
+  h += '<div style="margin-top:10px"><button class="mini add" data-pe-act="add-season">+ season</button></div>';
+  var bad = planInvalid();
+  if (bad.length) h += '<div class="hint bad">' + bad.map(esc).join('<br>') + '</div>';
+  else h += '<div class="hint ok">Plan is complete. It is saved when you commit on the Summary step.</div>';
+  return h + '</div>';
+}
+function uniqTiers(p){ var u = {}; p.seasons.forEach(function(s){ planTiers(s).forEach(function(t){ u[t] = 1; }); }); if (!u.off_peak) u.off_peak = 1; return Object.keys(u); }
+function newPlanHtml(){
+  if (planEdit && planEdit.id == null) return planEditorHtml();
+  return '<div class="tpl">' + planTemplates().map(function(t){ return '<button class="btn" data-pe-act="tpl" data-tpl="' + t.id + '">' + esc(t.label) + '</button>'; }).join('') + '</div>';
+}
+function planAct(t){
+  var act = t.dataset.peAct, i = +t.dataset.i, j = +t.dataset.j;
+  if (act === 'tpl') { var tp = planTemplates().filter(function(x){ return x.id === t.dataset.tpl; })[0]; startPlanEdit(JSON.parse(JSON.stringify(tp.plan))); return; }
+  if (act === 'edit') { var card = null; data.screens.forEach(function(sc){ sc.cards.forEach(function(c){ if (c.kind === 'rate_plan' && c.plan.id === +t.dataset.pid) card = c; }); });
+    if (card) { Object.keys(edits).forEach(function(k){ if (/^(rate|win)\./.test(k)) delete edits[k]; }); startPlanEdit(planFromCard(card.plan)); } return; }
+  if (act === 'cancel') { cancelPlanEdit(); return; }
+  var s = planEdit.seasons[i];
+  if (act === 'month') { var m = +t.dataset.m, k = s.months.indexOf(m); if (k >= 0) s.months.splice(k, 1); else { planEdit.seasons.forEach(function(o){ var q = o.months.indexOf(m); if (q >= 0) o.months.splice(q, 1); }); s.months.push(m); s.months.sort(function(a, b){ return a - b; }); } }
+  else if (act === 'day') { var d = t.dataset.d, w = s.windows[j], q = w.days.indexOf(d); if (q >= 0) w.days.splice(q, 1); else w.days = ALLD.filter(function(x){ return x === d || w.days.indexOf(x) >= 0; }); }
+  else if (act === 'add-tier') { var name = prompt('Tier name (lowercase letters, digits, _ ):', 'peak'); if (!name) return; name = name.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_'); if (!(name in s.tiers)) s.tiers[name] = ''; }
+  else if (act === 'rm-tier') { delete s.tiers[t.dataset.t]; s.windows = s.windows.filter(function(w){ return w.tier !== t.dataset.t; }); }
+  else if (act === 'add-win') { var tiers = planTiers(s).filter(function(x){ return x !== 'off_peak'; }); s.windows.push({tier: tiers[0] || 'off_peak', days: ALLD.slice(), start: '16:00', end: '21:00'}); }
+  else if (act === 'rm-win') s.windows.splice(j, 1);
+  else if (act === 'add-season') { var ref = planEdit.seasons[0], tiers2 = {}; if (ref) planTiers(ref).forEach(function(x){ tiers2[x] = ''; }); else tiers2.off_peak = '';
+    planEdit.seasons.push({name: '', months: [], tiers: tiers2, windows: ref ? JSON.parse(JSON.stringify(ref.windows)) : []}); }
+  else if (act === 'rm-season') planEdit.seasons.splice(i, 1);
+  syncPlanEdit();
+}
+
 function ratePlanHtml(card){
-  var p = card.plan, h = '<div class="muted">Default tier: ' + esc(p.default_tier || '—') +
+  var p = card.plan;
+  if (planEdit && planEdit.id === p.id) return planEditorHtml();
+  var h = '<div class="muted">Default tier: ' + esc(p.default_tier || '—') +
     ' · ' + (p.export_capable ? 'export-capable' : 'non-export') +
     (p.net_metering ? ' · ' + esc(p.net_metering) : '') + ' · imported ' + esc(p.imported_at || '—') + '</div>';
   var mn = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -380,7 +553,8 @@ function ratePlanHtml(card){
       var v = key in edits ? edits[key] : s.tiers[t];
       h += '<div class="tier"><span class="tierchip t-' + esc(t) + '">' + esc(t.replace('_',' ')) + '</span>' +
         '<span><input type="number" step="0.001" data-rate="' + esc(key) + '" data-orig="' + esc(s.tiers[t]) +
-        '" value="' + esc(v) + '"' + (key in edits ? (rateInvalid(key) ? ' class="bad"' : ' class="edited"') : '') + '> ¢</span></div>';
+        '" value="' + esc(v) + '"' + (key in edits ? (rateInvalid(key) ? ' class="bad"' : ' class="edited"') : '') + '> ¢' +
+        ((s.inherited || []).indexOf(t) >= 0 && !(key in edits) ? '<span class="inh" title="Not set for this season when the plan was imported; copied from the plan\'s base prices. Check it against your tariff.">inherited</span>' : '') + '</span></div>';
     });
     h += '</div><div class="wins">';
     s.windows.forEach(function(w){
@@ -395,8 +569,10 @@ function ratePlanHtml(card){
     h += '</div></div>';
   });
   var shared = p.seasons.some(function(s){ return s.windows.some(function(w){ return w.shared; }); });
-  h += '<div class="muted" style="margin-top:10px">Prices and times can be changed; adding or removing tiers, windows or seasons waits for the setup wizard.' +
-    (shared && p.seasons.length > 1 ? ' The time windows are the same in every season, so changing a time changes it for all seasons.' : '') + '</div>';
+  h += '<div class="muted" style="margin-top:10px">Prices and times can be changed in place.' +
+    (shared && p.seasons.length > 1 ? ' The time windows are the same in every season, so changing a time changes it for all seasons.' : '') +
+    ' To add or remove seasons, tiers or time windows, <button class="mini add" data-pe-act="edit" data-pid="' + p.id + '">edit the plan structure</button>' +
+    ' (every season\'s prices are then written explicitly, nothing inherited).</div>';
   (card.hints || []).forEach(function(x){ h += '<div class="hint ' + esc(x.level) + '" style="margin-top:8px">' + esc(x.text) + '</div>'; });
   return h;
 }
@@ -414,6 +590,7 @@ function badScreens(){
       c.rows.forEach(function(r){ if (invalidReason(r)) bad[i] = true; });
       if (c.kind === 'rate_plan') c.plan.seasons.forEach(function(s){
         seasonKeys(c.plan, s).forEach(function(k){ if (k in edits && rateInvalid(k)) bad[i] = true; }); });
+      if (c.kind === 'rate_plan' || c.kind === 'rate_plan_new') { if (planInvalid().length) bad[i] = true; }
     });
   });
   return Object.keys(bad).map(Number).sort(function(a, b){ return a - b; });
@@ -451,9 +628,12 @@ function summaryHtml(){
     : '<div class="muted">None. The store matches .env for every setting.</div>';
   h += '</div>';
   h += '<div class="card"><div class="card-h"><span class="card-t">Your edits</span></div>';
-  h += (edited.length || rateEdits.length) ? '<ul class="sumlist">' + edited.map(function(r){
+  var planLine = planEdit ? '<li><b>Rate plan</b>' + (planEdit.id == null ? 'new plan ' : 'structure rebuilt: ') + '<code>' + esc(planEdit.name || '(unnamed)') + '</code>, ' +
+      planEdit.seasons.length + ' season' + (planEdit.seasons.length === 1 ? '' : 's') + ', ' +
+      planEdit.seasons.reduce(function(n, s){ return n + s.windows.length; }, 0) + ' time windows</li>' : '';
+  h += (edited.length || rateEdits.length || planLine) ? '<ul class="sumlist">' + edited.map(function(r){
       return '<li><b>' + esc(r.label) + '</b><code>' + esc(baseValue(r) ?? '—') + '</code> → <code>' + esc(edits[r.key] || '(blank)') + '</code></li>'; }).join('') +
-      rateEdits.map(function(k){ return '<li><b>' + esc(rateLabel(k)) + '</b> → <code>' + esc(edits[k]) + '</code></li>'; }).join('') + '</ul>'
+      rateEdits.map(function(k){ return '<li><b>' + esc(rateLabel(k)) + '</b> → <code>' + esc(edits[k]) + '</code></li>'; }).join('') + planLine + '</ul>'
     : '<div class="muted">No edits.</div>';
   h += '</div>';
   var hints = [];
@@ -587,6 +767,7 @@ function doCommit(){
     var s = j.summary;
     setCommit('commit', 'run', 'Saved: ' + s.settings_written + ' settings, ' + s.settings_at_default + ' left at their defaults, ' +
       s.arrays.length + ' array' + (s.arrays.length === 1 ? '' : 's') + (s.rate_edits ? ', ' + s.rate_edits + ' rate edit' + (s.rate_edits === 1 ? '' : 's') : '') +
+      (s.rate_plan_replaced ? ', rate plan ' + esc(s.rate_plan_replaced) + ' written' : '') +
       (s.differ_from_env.length ? '; ' + s.differ_from_env.length + ' now differ from .env (the store wins)' : '') +
       '. Backup: <code>' + esc(s.snapshot) + '</code>. Restarting…');
     waitForRestart('commit', before, 'store');
@@ -627,6 +808,7 @@ function render(){
     if (!coll) {
       if (c.kind === 'rate_plan') h += ratePlanHtml(c);
       h += c.rows.map(rowHtml).join('');
+      if (c.kind === 'rate_plan_new') h += newPlanHtml();
       h += secretFoot(c);
     }
     h += '</div>';
@@ -637,7 +819,7 @@ function render(){
   nx.style.visibility = cur === data.screens.length - 1 ? 'hidden' : 'visible';
   nx.textContent = cur === data.screens.length - 2 ? 'Review summary' : 'Next';
   var nEdits = Object.keys(rowIndex).filter(function(k){ return isEdited(rowIndex[k]); }).length +
-    Object.keys(edits).filter(function(k){ return /^(rate|win)\./.test(k); }).length;
+    Object.keys(edits).filter(function(k){ return /^(rate|win)\./.test(k); }).length + (planEdit ? 1 : 0);
   var nBad = allInvalid().length;
   var other = bads.filter(function(i){ return i !== cur; });
   document.getElementById('counts').innerHTML = esc('Step ' + (cur + 1) + ' of ' + data.screens.length +
@@ -678,6 +860,7 @@ document.addEventListener('click', function(e){
   var fl = t.closest('.seg[data-flag]');
   if (fl && t.tagName === 'BUTTON') { var r = rowIndex[fl.dataset.flag]; r.value = t.textContent === 'Yes' ? 1 : 0;
     edits[fl.dataset.flag] = String(r.value); render(); return; }
+  var pa = t.closest('[data-pe-act]'); if (pa) { planAct(pa); return; }
   if (t.dataset.revert) { delete edits[t.dataset.revert]; render(); return; }
   if (t.dataset.revertSeason) { t.dataset.revertSeason.split(' ').forEach(function(k){ delete edits[k]; }); render(); return; }
   if (t.dataset.goto != null) { go(+t.dataset.goto); return; }
@@ -689,6 +872,7 @@ document.addEventListener('click', function(e){
 document.addEventListener('change', function(e){
   var t = e.target;
   if (t.dataset.choice) { choice[t.dataset.choice] = t.value; delete edits[t.dataset.choice]; render(); return; }
+  if (t.dataset.pe) { peSet(t.dataset.pe, t.value); return; }
   if (t.dataset.key) { edits[t.dataset.key] = t.value; render(); return; }
   if (t.dataset.rate) { if (String(t.value) === String(t.dataset.orig)) delete edits[t.dataset.rate]; else edits[t.dataset.rate] = t.value; render(); }
 });
@@ -697,7 +881,7 @@ document.getElementById('next').onclick = function(){ go(cur + 1); };
 window.addEventListener('scroll', hidePop, {passive: true});
 
 function reloadData(){
-  edits = {}; choice = {}; rowIndex = {}; tests = {}; armed = null;
+  edits = {}; choice = {}; rowIndex = {}; tests = {}; armed = null; planEdit = null;
   load();
 }
 

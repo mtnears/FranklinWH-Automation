@@ -71,7 +71,7 @@ except ImportError:
     VERSION = '0.0.0'
 
 try:
-    from rate_schedule import load_rate_schedule
+    from rate_schedule import load_rate_schedule, schedule_available
     RATE_SCHEDULE_AVAILABLE = True
 except ImportError:
     RATE_SCHEDULE_AVAILABLE = False
@@ -1895,7 +1895,7 @@ class APIHandler(BaseHTTPRequestHandler):
             if RATE_SCHEDULE_AVAILABLE:
                 try:
                     json_path = DATA_DIR / 'rate_schedule.json'
-                    if json_path.exists():
+                    if schedule_available(str(json_path)):   # store plan or JSON (T044)
                         schedule = load_rate_schedule(str(json_path))
                         result['rate_schedule_name'] = schedule.name
                         peak_windows = [w for w in schedule.windows if w.tier == 'peak']
@@ -2333,6 +2333,14 @@ def main():
     try:
         import db as db_mod
         db_mod.init_db()
+    except Exception:
+        pass
+    try:
+        # v4.6 config tables (app_config, solar_arrays, rate_*, app_state) exist
+        # from the first start, so a fresh install's review and derived settings
+        # read empty tables rather than missing ones (T037). Idempotent.
+        import config_store
+        config_store.init_config_schema()
     except Exception:
         pass
     start_api_server()

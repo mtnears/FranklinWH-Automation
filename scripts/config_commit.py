@@ -131,8 +131,20 @@ def _state_set(conn: sqlite3.Connection, key: str, value: str):
                  (key, value, _now()))
 
 
+def setup_complete() -> bool:
+    """False on a fresh install: no rate plan in the store and no
+    rate_schedule.json, so the engine has nothing to run on and observes
+    only until the review commits (T037)."""
+    try:
+        import rate_schedule
+        return rate_schedule.schedule_available(str(settings.db_path().parent / 'rate_schedule.json'))
+    except Exception:
+        return True
+
+
 def status() -> Dict[str, Any]:
     return {
+        'setup_complete': setup_complete(),            # False: fresh install, engine observes only
         'authority': settings.authority(),              # what this process runs on
         'authority_flag': settings.read_authority_flag(),  # what the next start uses
         'review_completed_at': _state_get(REVIEW_COMPLETED_AT),
@@ -268,6 +280,199 @@ def _final(row: dict, edits: dict, choices: dict):
 
 
 # =============================================================================
+# Rate plan editor (T033)
+# =============================================================================
+
+_DAYS = ('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')
+_TIER_RE = re.compile(r'^[a-z][a-z0-9_]{0,30}$')
+_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def _mins(hhmm: str) -> int:
+    h, m = hhmm.split(':')
+    return int(h) * 60 + int(m)
+
+
+def _spans(start: str, end: str):
+    """Minute ranges covered by a window; a midnight-crossing window is two."""
+    s, e = _mins(start), _mins(end)
+    if e == 0:
+        e = 1440
+    if s < e:
+        return [(s, e)]
+    return [(s, 1440), (0, e)]
+
+
+def validate_rate_plan(raw, active_ids: set) -> Tuple[Optional[dict], List[str]]:
+    """Check a plan from the review's editor against the rules a plan must meet
+    for the engine to run on it (SPEC_2026-10-18_v470_required_settings.md):
+
+      - every month of the year in exactly one season
+      - every season prices off_peak, the default tier, the holiday tier and
+        every tier one of its windows uses; prices 0 < ¢ < 1000
+      - windows are HH:MM, not empty, days a subset of mon..sun, and no two
+        windows in a season overlap on the same day
+      - no base-tier inheritance: a season's prices are its own
+
+    Returns (normalized plan, errors). The plan is written only if errors is empty.
+    """
+    errors: List[str] = []
+    E = errors.append
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return None, [f'Rates: plan is not valid JSON ({e.msg})']
+    if not isinstance(raw, dict):
+        return None, ['Rates: plan must be an object']
+
+    pid = raw.get('id')
+    if pid not in (None, ''):
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            return None, ['Rates: plan id must be a number']
+        if pid not in active_ids:
+            return None, [f'Rates: plan {pid} is not an active plan']
+    else:
+        pid = None
+
+    name = str(raw.get('name') or '').strip()
+    if not name:
+        E('Rates: the plan needs a name (the rate schedule on your bill, e.g. "PG&E EV2-A")')
+    default_tier = str(raw.get('default_tier') or 'off_peak').strip()
+    holiday_tier = str(raw.get('holiday_tier') or default_tier).strip()
+    for t, what in ((default_tier, 'default tier'), (holiday_tier, 'holiday tier')):
+        if not _TIER_RE.match(t):
+            E(f'Rates: {what} {t!r} is not a valid tier name (lowercase letters, digits, _)')
+
+    seasons_in = raw.get('seasons')
+    if not isinstance(seasons_in, list) or not seasons_in:
+        E('Rates: the plan needs at least one season (a single season covering all 12 months is fine)')
+        seasons_in = []
+
+    month_owner: Dict[int, str] = {}
+    names_seen = set()
+    seasons: List[dict] = []
+    for i, s in enumerate(seasons_in, 1):
+        if not isinstance(s, dict):
+            E(f'Rates: season {i} is malformed')
+            continue
+        sname = str(s.get('name') or '').strip()
+        label = sname or f'season {i}'
+        if not sname:
+            E(f'Rates: season {i} needs a name')
+        elif sname.lower() in names_seen:
+            E(f'Rates: two seasons are named {sname!r}')
+        names_seen.add(sname.lower())
+
+        months = []
+        for m in (s.get('months') or []):
+            try:
+                mi = int(m)
+            except (TypeError, ValueError):
+                E(f'Rates: {label}: month {m!r} is not a number')
+                continue
+            if not 1 <= mi <= 12:
+                E(f'Rates: {label}: month {mi} is outside 1–12')
+            elif mi in month_owner:
+                E(f'Rates: month {mi} is in both {month_owner[mi]!r} and {label!r}')
+            else:
+                month_owner[mi] = label
+                months.append(mi)
+        if not months:
+            E(f'Rates: {label} has no months')
+
+        tiers: Dict[str, float] = {}
+        for t, c in (s.get('tiers') or {}).items():
+            t = str(t).strip()
+            if not _TIER_RE.match(t):
+                E(f'Rates: {label}: tier name {t!r} is not valid (lowercase letters, digits, _)')
+                continue
+            if c in (None, ''):
+                E(f'Rates: {label}: {t.replace("_", " ")} has no price')
+                continue
+            try:
+                cents = float(c)
+            except (TypeError, ValueError):
+                E(f'Rates: {label}: {t.replace("_", " ")} price {c!r} is not a number')
+                continue
+            if not 0 < cents < 1000:
+                E(f'Rates: {label}: {t.replace("_", " ")} price {cents:g}¢ is outside 0–1000¢/kWh')
+                continue
+            tiers[t] = round(cents, 4)
+        if 'off_peak' not in tiers:
+            E(f'Rates: {label} has no off-peak price')
+        if default_tier not in tiers and _TIER_RE.match(default_tier):
+            E(f'Rates: {label} has no price for the default tier {default_tier!r}')
+        if holiday_tier not in tiers and _TIER_RE.match(holiday_tier) and holiday_tier != default_tier:
+            E(f'Rates: {label} has no price for the holiday tier {holiday_tier!r}')
+
+        windows: List[dict] = []
+        for j, w in enumerate(s.get('windows') or [], 1):
+            if not isinstance(w, dict):
+                E(f'Rates: {label}: window {j} is malformed')
+                continue
+            wt = str(w.get('tier') or '').strip()
+            start, end = str(w.get('start') or '').strip(), str(w.get('end') or '').strip()
+            days = [str(d).strip().lower() for d in (w.get('days') or [])]
+            wl = f"{label}: {wt.replace('_', ' ') or 'window'} {start or '?'}–{end or '?'}"
+            if wt not in tiers:
+                E(f'Rates: {wl} uses tier {wt!r}, which has no price in {label}')
+            if not _TIME_RE.match(start) or not _TIME_RE.match(end):
+                E(f'Rates: {wl}: times must be HH:MM')
+                continue
+            if start == end:
+                E(f'Rates: {wl} is empty (start equals end)')
+                continue
+            if not days or any(d not in _DAYS for d in days):
+                E(f'Rates: {wl}: days must be some of mon, tue, wed, thu, fri, sat, sun')
+                continue
+            days = [d for d in _DAYS if d in days]
+            windows.append({'tier': wt, 'start': start, 'end': end, 'days': days})
+        # Overlap: two windows active at the same minute on the same day
+        for a in range(len(windows)):
+            for b in range(a + 1, len(windows)):
+                wa, wb = windows[a], windows[b]
+                if not set(wa['days']) & set(wb['days']):
+                    continue
+                for s1, e1 in _spans(wa['start'], wa['end']):
+                    for s2, e2 in _spans(wb['start'], wb['end']):
+                        if s1 < e2 and s2 < e1:
+                            E(f"Rates: {label}: {wa['tier'].replace('_', ' ')} {wa['start']}–{wa['end']} "
+                              f"overlaps {wb['tier'].replace('_', ' ')} {wb['start']}–{wb['end']}")
+                            break
+                    else:
+                        continue
+                    break
+        seasons.append({'name': sname, 'months': sorted(months), 'tiers': tiers, 'windows': windows})
+
+    if seasons_in:
+        missing = sorted(set(range(1, 13)) - set(month_owner))
+        if missing:
+            mn = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            E('Rates: no season covers ' + ', '.join(mn[m] for m in missing))
+
+    holidays = None
+    if raw.get('holidays') is not None:
+        holidays = []
+        for h in raw.get('holidays') or []:
+            hd = str(h).strip()
+            if not _DATE_RE.match(hd):
+                E(f'Rates: holiday {h!r} must be YYYY-MM-DD')
+            else:
+                holidays.append(hd)
+
+    net_metering = str(raw.get('net_metering') or '').strip()
+    export_capable = str(raw.get('export_capable', False)).strip().lower() in ('1', 'true', 'yes', 'on')
+    has_peak_window = any(w['tier'] == 'peak' for s in seasons for w in s['windows'])
+    return ({'id': pid, 'name': name, 'default_tier': default_tier, 'holiday_tier': holiday_tier,
+             'export_capable': 1 if export_capable else 0, 'net_metering': net_metering,
+             'seasons': seasons, 'holidays': holidays, 'has_peak_window': has_peak_window},
+            errors)
+
+
+# =============================================================================
 # Plan
 # =============================================================================
 
@@ -333,6 +538,40 @@ def build_plan(edits: Dict[str, Any], choices: Dict[str, str]) -> Dict[str, Any]
         errors.append(f'{label} — required{cond}; it is specific to your site and has no '
                       f'built-in default')
 
+    # Fresh install: values whose code default is a guess must be chosen (T037).
+    # The review proposes nothing for them until the first commit; a detected
+    # battery value counts as chosen.
+    for ent in settings.REGISTRY:
+        if not ent.confirm or not ent.key or ent.key not in final_text:
+            continue
+        row = rows.get(ent.key) or {}
+        if not row.get('confirm') or row.get('detected') not in (None, ''):
+            continue
+        if _final(row, edits, choices) is not None:
+            continue   # chosen (even if it equals the default and so stores no row)
+        default = config_review._default_text(ent)
+        errors.append(f"{row.get('label', ent.key)} — choose a value; the built-in default "
+                      f"({default}) is a guess that is wrong for many sites")
+
+    # Secrets live in .env, but a feature that needs one cannot be committed
+    # without it (T037).
+    def _feature_on(key: str) -> bool:
+        if key == 'always':
+            return True
+        t = final_text.get(key)
+        if t is None:
+            ctl = settings.BY_KEY.get(key)
+            t = config_review._default_text(ctl) if ctl else 'false'
+        return settings._bool_text(t or 'false') == 'true'
+    for ent in settings.REGISTRY:
+        if ent.cls != settings.SECRET or not ent.required_if or not ent.env:
+            continue
+        if _feature_on(ent.required_if) and not os.environ.get(ent.env[0]):
+            cond = '' if ent.required_if == 'always' else \
+                f" while {config_review.LABELS.get(ent.required_if, ent.required_if)} is on"
+            errors.append(f"{config_review.SECRET_LABELS.get(ent.env[0], ent.env[0])} — required{cond}: "
+                          f"add {ent.env[0]}=... to .env, run docker compose up -d, then commit")
+
     # ---- arrays ---------------------------------------------------------------
     arrays_plan = []
     for card in array_cards:
@@ -366,6 +605,17 @@ def build_plan(edits: Dict[str, Any], choices: Dict[str, str]) -> Dict[str, Any]
                 continue
             where = next(w for _, (_, w, n) in settings.ARRAY_FIELDS.items() if n == name)
             (cols if where == 'col' else cfg)[name] = v
+        # An array the engine can use has a name, a type, an AC size and the
+        # connection field its type needs (T037)
+        atype = str(cols.get('array_type') or '').lower()
+        if not atype or not cols.get('name') or cols.get('capacity_kw') is None:
+            errors.append(f"{card['title']} — needs a name, a type and an AC capacity (kW)")
+        elif atype not in ('enphase', 'solaredge'):
+            errors.append(f"{card['title']} — type must be enphase or solaredge")
+        elif atype == 'enphase' and (not cfg.get('ip') or not cfg.get('serial')):
+            errors.append(f"{card['title']} — an Enphase array needs the Envoy IP and serial")
+        elif atype == 'solaredge' and not cfg.get('site_id'):
+            errors.append(f"{card['title']} — a SolarEdge array needs the monitoring site ID")
         arrays_plan.append({'array_id': aid, 'cols': cols, 'cfg': cfg, 'flags': flags,
                             'title': card['title']})
         known.update(r.get('key') for r in card['rows'] if r.get('key'))
@@ -384,7 +634,28 @@ def build_plan(edits: Dict[str, Any], choices: Dict[str, str]) -> Dict[str, Any]
         charging[0]['gateway_id'] = 'agate_main'
 
     # ---- rates ----------------------------------------------------------------
-    rates_plan = {'tiers': [], 'windows': [], 'plans': set()}
+    rates_plan = {'tiers': [], 'windows': [], 'plans': set(), 'replace': None}
+    if 'rate_plan' in edits:
+        # Full plan from the review's plan editor (T033): seasons, tiers and
+        # windows are replaced wholesale; in-place rate./win. edits are ignored.
+        known.add('rate_plan')
+        rp, rp_errors = validate_rate_plan(edits.get('rate_plan'),
+                                           {c['plan']['id'] for c in rate_cards})
+        errors.extend(rp_errors)
+        if not rp_errors:
+            rates_plan['replace'] = rp
+        edits = {k: v for k, v in edits.items() if not k.startswith(('rate.', 'win.'))}
+    if not rate_cards and not rates_plan['replace']:
+        # No plan in the store: an un-migrated install still has rate_schedule.json
+        # (imported at commit); a fresh install must build the plan on the Rates step
+        try:
+            import migrate_v46
+            has_json = bool(migrate_v46.load_rate_schedule()[0])
+        except Exception:
+            has_json = False
+        if not has_json:
+            errors.append('Rates — no rate plan yet. Build it on the Rates step from the rate '
+                          'schedule on your bill (seasons, prices, time windows).')
     plan_ids = {c['plan']['id'] for c in rate_cards}
     season_ids = {s['id']: c['plan']['id'] for c in rate_cards for s in c['plan']['seasons']}
     window_ids = {w['id']: (c['plan']['id'], w) for c in rate_cards
@@ -517,6 +788,47 @@ def _apply(conn: sqlite3.Connection, plan: Dict[str, Any]) -> Dict[str, int]:
                           merged['capacity_kw'], merged['capacity_kwp'],
                           json.dumps(cfg) if cfg else None, now))
         n['arrays_written'] += 1
+    rp = plan['rates'].get('replace')
+    if rp:
+        # Plan editor: replace the plan's structure. No base-tier rows are
+        # written, so every season's prices are its own (T033).
+        if rp['id'] is None:
+            conn.execute("UPDATE rate_plans SET active = 0 WHERE active = 1")
+            cur = conn.execute("""INSERT INTO rate_plans (name, export_capable, net_metering,
+                                  export_rates_json, default_tier, holiday_tier, active, source,
+                                  imported_at) VALUES (?, ?, ?, NULL, ?, ?, 1, 'review', ?)""",
+                               (rp['name'], rp['export_capable'], rp['net_metering'],
+                                rp['default_tier'], rp['holiday_tier'], now))
+            pid = cur.lastrowid
+        else:
+            pid = rp['id']
+            conn.execute("""UPDATE rate_plans SET name = ?, export_capable = ?, net_metering = ?,
+                            default_tier = ?, holiday_tier = ?, source = 'review', imported_at = ?
+                            WHERE id = ?""",
+                         (rp['name'], rp['export_capable'], rp['net_metering'], rp['default_tier'],
+                          rp['holiday_tier'], now, pid))
+            for t in ('rate_tiers', 'rate_windows', 'rate_seasons'):
+                conn.execute(f'DELETE FROM {t} WHERE plan_id = ?', (pid,))
+        for s in rp['seasons']:
+            cur = conn.execute('INSERT INTO rate_seasons (plan_id, name, months_json, comment) '
+                               'VALUES (?, ?, ?, ?)',
+                               (pid, s['name'], json.dumps(s['months']), 'review'))
+            sid = cur.lastrowid
+            for tier, cents in s['tiers'].items():
+                conn.execute('INSERT INTO rate_tiers (plan_id, season_id, tier, rate_cents) '
+                             'VALUES (?, ?, ?, ?)', (pid, sid, tier, cents))
+                n['rate_rows_written'] += 1
+            for w in s['windows']:
+                conn.execute('INSERT INTO rate_windows (plan_id, season_id, tier, days_json, '
+                             'start_time, end_time) VALUES (?, ?, ?, ?, ?, ?)',
+                             (pid, sid, w['tier'], json.dumps(w['days']), w['start'], w['end']))
+                n['rate_rows_written'] += 1
+        if rp['holidays'] is not None:
+            conn.execute('DELETE FROM rate_holidays WHERE plan_id = ?', (pid,))
+            for hd in rp['holidays']:
+                conn.execute('INSERT OR IGNORE INTO rate_holidays (plan_id, holiday_date, name) '
+                             'VALUES (?, ?, ?)', (pid, hd, 'review'))
+        rp['_written_id'] = pid
     for pid, sid, tier, cents in plan['rates']['tiers']:
         cur = conn.execute('UPDATE rate_tiers SET rate_cents = ? WHERE plan_id = ? AND season_id = ? '
                            'AND tier = ?', (cents, pid, sid, tier))
@@ -577,6 +889,21 @@ def verify(plan: Dict[str, Any]) -> List[str]:
             if r is None or abs(r[0] - cents) > 1e-9:
                 problems.append(f'rate {tier} (season {sid}): expected {cents}, store has '
                                 f'{r[0] if r else None}')
+        rp = plan['rates'].get('replace')
+        if rp:
+            pid = rp.get('_written_id')
+            want = (len(rp['seasons']), sum(len(s['tiers']) for s in rp['seasons']),
+                    sum(len(s['windows']) for s in rp['seasons']), 0)
+            got = tuple(conn.execute(f'SELECT COUNT(*) FROM {t} WHERE plan_id = ?'
+                                     + (' AND season_id IS NULL' if t == 'rate_tiers' and i == 3 else ''),
+                                     (pid,)).fetchone()[0]
+                        for i, t in enumerate(('rate_seasons', 'rate_tiers', 'rate_windows', 'rate_tiers')))
+            if want != got:
+                problems.append(f'rate plan: expected {want[0]} seasons, {want[1]} prices, {want[2]} '
+                                f'windows, 0 base prices; store has {got}')
+            active = [r[0] for r in conn.execute('SELECT id FROM rate_plans WHERE active = 1 ORDER BY id')]
+            if pid not in active:
+                problems.append(f'rate plan: {pid} is not active after the write (active: {active})')
     finally:
         conn.close()
     try:
@@ -585,7 +912,10 @@ def verify(plan: Dict[str, Any]) -> List[str]:
         rate_config.clear_cache()
         if rate_config.resolve_rates(today, use_cache=False) is None:
             problems.append('rate plan: no prices resolve for today')
-        if rate_config.peak_window_for_date(today, use_cache=False) is None:
+        rp = plan['rates'].get('replace')
+        expect_peak = rp['has_peak_window'] if rp else True
+        if expect_peak and rate_config.peak_window_for_date(today, use_cache=False) is None:
+            # A flat-rate plan (no peak window anywhere) is allowed: TOU derives off
             problems.append('rate plan: no peak window resolves for today')
         rate_config.clear_cache()
     except Exception as e:
@@ -625,8 +955,9 @@ def _ensure_rate_plan() -> Optional[str]:
     import migrate_v46
     rs, path = migrate_v46.load_rate_schedule()
     if not rs:
-        raise CommitRefused(400, 'No rate plan in the store and no rate_schedule.json to import '
-                                 f'({path}). Add data/rate_schedule.json and reload the review.')
+        raise CommitRefused(400, 'No rate plan yet. Build your rate plan on the Rates step '
+                                 '(seasons, prices and time windows from the rate schedule on your '
+                                 f'bill), or add data/rate_schedule.json ({path}) and reload.')
     errs, _ = migrate_v46.validate_rate_schedule(rs, False)
     if errs:
         raise CommitRefused(400, f'rate_schedule.json ({path}) failed validation; nothing was saved.',
@@ -661,9 +992,11 @@ def commit(edits: Dict[str, Any], choices: Dict[str, str], dry_run: bool = False
                                    'windows': plan['rates']['windows']}}}
 
     snap = take_snapshot('pre-review')
-    imported = _ensure_rate_plan()
+    imported = None if plan['rates'].get('replace') else _ensure_rate_plan()
     if imported:
         summary['rate_plan_imported'] = imported
+    if plan['rates'].get('replace'):
+        summary['rate_plan_replaced'] = plan['rates']['replace']['name']
     conn = _rw_connect()
     try:
         conn.execute('BEGIN IMMEDIATE')

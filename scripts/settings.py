@@ -98,6 +98,11 @@ class Entry:
     # must be true for the value to be needed. The review requires them and
     # always stores them, so no install silently runs on another's values.
     required_if: str = ''
+    # A fresh install (no review committed yet) must choose this value: the
+    # code default is a guess that is wrong for many sites (e.g. net metering
+    # for a NEM3 user, 30 kWh for aPower 2). Existing installs keep the
+    # default; after the first commit the stored or default value stands.
+    confirm: bool = False
 
     @property
     def store_type(self) -> str:
@@ -117,11 +122,12 @@ def _e(*a, **k) -> Entry:
 
 REGISTRY: List[Entry] = [
     # ---- A. Gateway card ----------------------------------------------------
-    _e(None, ('FRANKLIN_USERNAME',), SECRET, section='A',
+    _e(None, ('FRANKLIN_USERNAME',), SECRET, section='A', required_if='always',
        help='FranklinWH account email. Stays in .env; tested on the post-restart check page.'),
-    _e(None, ('FRANKLIN_PASSWORD',), SECRET, section='A',
+    _e(None, ('FRANKLIN_PASSWORD',), SECRET, section='A', required_if='always',
        help='FranklinWH account password. Stays in .env.'),
     _e(None, ('FRANKLIN_GATEWAY_ID',), SECRET, section='A', dev_aliases=('GATEWAY_ID',),
+       required_if='always',
        help='aGate serial. Stays in .env; shown masked except the last 4 characters.'),
     _e('modbus.enabled', ('MODBUS_ENABLED',), SETTING, 'bool', False, 'A', category='modbus',
        help='Read the aGate directly over the local network (Modbus TCP) instead of '
@@ -162,11 +168,11 @@ REGISTRY: List[Entry] = [
 
     # ---- B. Battery & reserve -----------------------------------------------
     _e('battery.count', ('BATTERY_COUNT',), DETECTED, 'int', 2, 'B', category='battery',
-       vmin=1, vmax=15,
+       vmin=1, vmax=15, confirm=True,
        help='Number of aPower units. Detected from Modbus and the cloud serials; set an '
             'override only if detection is wrong.'),
     _e('battery.capacity_kwh', ('BATTERY_CAPACITY_KWH',), DETECTED, 'float', 30.0, 'B',
-       category='battery', vmin=5, vmax=200,
+       category='battery', vmin=5, vmax=200, confirm=True,
        help='Total usable capacity of all aPower units combined. Detected; aPower 2 is '
             '13.6 kWh each.',
        recommend='Should be close to battery count x 13.6 kWh for aPower 2.',
@@ -252,7 +258,7 @@ REGISTRY: List[Entry] = [
        recommend='Should agree with the latest rate history row.',
        note='Imported from CARE_RATE'),
     _e('billing.export_compensation', (), SETTING, 'enum', 'net_metering', 'E',
-       category='billing', choices=('net_metering', 'net_billing', 'no_export'),
+       category='billing', choices=('net_metering', 'net_billing', 'no_export'), confirm=True,
        help='How exported energy is credited: net metering (1:1 retail), net billing '
             '(NEM3-style avoided-cost credits), or no export.',
        note='Imported from NEM_VERSION'),
@@ -300,11 +306,11 @@ REGISTRY: List[Entry] = [
             'temperature) to calibrate itself to your site. Needs a weather.com PWS API key, which '
             'Weather Underground issues to people who upload data from their own station.'),
     _e('weather.station_id', ('WEATHER_STATION_ID',), SETTING, 'str', '', 'G',
-       category='weather',
+       category='weather', required_if='features.weather',
        help='Weather Underground PWS ID, for example KCAGEORG2. It can be your own station or any '
             'nearby public station (your key works for any station ID). Test checks the ID and '
             'reports how far the station is from your site.'),
-    _e(None, ('WEATHER_API_KEY',), SECRET, section='G',
+    _e(None, ('WEATHER_API_KEY',), SECRET, section='G', required_if='features.weather',
        help='weather.com API key for Weather Underground PWS data. Issued to station owners in '
             'their Weather Underground account (Member settings, API Keys). Stays in .env.'),
 
@@ -312,8 +318,10 @@ REGISTRY: List[Entry] = [
     _e('features.pvoutput', ('PVOUTPUT_ENABLED',), SETTING, 'bool', False, 'H',
        category='features', help='Upload daily production to PVOutput.org.'),
     _e('pvoutput.system_ids', ('PVOUTPUT_SYSTEM_IDS',), SETTING, 'list', '', 'H',
-       category='pvoutput', help='PVOutput system IDs, one per array.'),
-    _e(None, ('PVOUTPUT_API_KEY',), SECRET, section='H', help='PVOutput API key.'),
+       category='pvoutput', required_if='features.pvoutput',
+       help='PVOutput system IDs, one per array.'),
+    _e(None, ('PVOUTPUT_API_KEY',), SECRET, section='H', required_if='features.pvoutput',
+       help='PVOutput API key.'),
     _e('features.solaredge_panel_monitoring', ('SOLAREDGE_PANEL_MONITORING',), SETTING, 'bool',
        False, 'H', category='features',
        help='Per-optimizer health from the SolarEdge portal.'),
@@ -324,8 +332,10 @@ REGISTRY: List[Entry] = [
        category='solaredge', optional=True, advanced=True,
        help='Inverter list override: name:ip[:port[:unit[:model]]], comma-separated. '
             'Blank uses the built-in list.'),
-    _e(None, ('SOLAREDGE_USERNAME',), SECRET, section='H', help='SolarEdge portal login.'),
-    _e(None, ('SOLAREDGE_PASSWORD',), SECRET, section='H', help='SolarEdge portal password.'),
+    _e(None, ('SOLAREDGE_USERNAME',), SECRET, section='H',
+       required_if='features.solaredge_panel_monitoring', help='SolarEdge portal login.'),
+    _e(None, ('SOLAREDGE_PASSWORD',), SECRET, section='H',
+       required_if='features.solaredge_panel_monitoring', help='SolarEdge portal password.'),
     _e('features.dynamic_pricing', ('DYNAMIC_PRICING_ENABLED',), SETTING, 'bool', False, 'H',
        category='features', help='Real-time hourly pricing (e.g. ComEd).'),
     _e('pricing.provider', ('PRICING_PROVIDER',), SETTING, 'str', 'comed', 'H',
@@ -518,7 +528,10 @@ def _load_snapshot() -> Optional[Dict[str, Any]]:
                                   "FROM app_config WHERE scope = 'global'"):
                 cfg[r['key']] = dict(r)
             arrays = []
-            for r in conn.execute("SELECT * FROM solar_arrays WHERE enabled = 1 ORDER BY id"):
+            # Battery-charging arrays first (SOLAR_ARRAYS order, collectors), then
+            # by id, so the order does not depend on which card was committed first
+            for r in conn.execute("SELECT * FROM solar_arrays WHERE enabled = 1 "
+                                  "ORDER BY charges_battery DESC, id"):
                 a = dict(r)
                 try:
                     a['config'] = json.loads(a.get('config_json') or '{}') or {}

@@ -138,6 +138,10 @@ if getattr(config, 'ADAPTIVE_ENGINE_ENABLED', False):
             },
         )
         ADAPTIVE_ENGINE_LOADED = True
+    except FileNotFoundError as e:
+        # rate_schedule.RateScheduleUnavailable: fresh install before the review
+        # commits a plan. main() observes only in this state (T037).
+        print(f"Adaptive engine not started: {e}")
     except Exception as e:
         print(f"Warning: Adaptive engine failed to load, falling back to v3.5 logic: {e}")
         import traceback
@@ -799,6 +803,30 @@ async def main() -> int:
             print(f"Manual override active: {mode}")
             return 0
         
+        # Fresh install (v4.7.0, T037): no rate plan in the store and no
+        # rate_schedule.json means the engine has nothing to plan against.
+        # Observe only — never fall through to the v3.5 path with default
+        # peak hours — until the configuration review has been committed.
+        try:
+            import rate_schedule as _rs
+            _setup_ok = _rs.schedule_available(str(config.DATA_DIR / 'rate_schedule.json'))
+        except Exception:
+            _setup_ok = True
+        if not _setup_ok:
+            log_intelligence("Setup not complete: no rate plan yet. Observing only, no mode "
+                             "changes. Open the dashboard and complete the configuration review.")
+            try:
+                battery_data = await get_battery_data()
+                if battery_data:
+                    log_intelligence(f"Baseline: SOC={battery_data.soc_percent:.1f}%, "
+                                     f"Solar={battery_data.solar_power_kw:.3f}kW, "
+                                     f"Mode={detect_mode(battery_data)}")
+            except Exception as e:
+                log_intelligence(f"Baseline read failed: {e}")
+            print("Setup not complete (no rate plan): observing only, no mode changes. "
+                  "Complete the configuration review in the dashboard.")
+            return 0
+
         # Startup grace period — first cycle after container start observes only
         # Prevents aggressive mode switches before the engine has baseline data
         # v4 adaptive engine skips this — it has forecast, rates, and profile on init

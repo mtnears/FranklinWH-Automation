@@ -269,6 +269,10 @@ def setting_row(ent: settings.Entry, store: Dict[str, dict], extra: dict = None)
             proposed = store_v
         else:
             proposed = None if ent.optional else _default_text(ent)
+        if ent.confirm and status == 'default':
+            # Fresh install: no .env value, no store row. The default is a
+            # guess; the user must choose (v4.7.0, T037).
+            proposed = None
     effective = settings.raw(ent.env[0]) if ent.env else (
         settings._row_text(settings._snap()['cfg'].get(ent.key))
         if settings.authority() == 'store' else env_v)
@@ -284,6 +288,7 @@ def setting_row(ent: settings.Entry, store: Dict[str, dict], extra: dict = None)
         'env': env_v, 'store': store_v, 'effective': effective,
         'proposed': proposed, 'status': status, 'hints': [],
         'required_if': ent.required_if, 'prefer': prefer,
+        'confirm': bool(ent.confirm and not _CTX['reviewed']),
     }
     if ent.required_if and proposed in (None, ''):
         row['hints'].append({'level': 'warn', 'text':
@@ -291,6 +296,10 @@ def setting_row(ent: settings.Entry, store: Dict[str, dict], extra: dict = None)
                              'because it is specific to your site.' +
                              ('' if ent.required_if == 'always' else
                               f' (needed while {LABELS.get(ent.required_if, ent.required_if)} is on)')})
+    elif row['confirm'] and proposed in (None, ''):
+        row['hints'].append({'level': 'warn', 'text':
+                             'Required for this install: choose a value. The built-in default '
+                             f'({_default_text(ent)}) is only a guess and is wrong for many sites.'})
     if extra:
         row.update(extra)
     return row
@@ -302,11 +311,19 @@ def secret_row(name: str, label: str = None, help_text: str = '') -> dict:
     if v and name == 'FRANKLIN_GATEWAY_ID':
         shown = '•••• ' + v[-4:]
     ent = settings.BY_ENV.get(name)
-    return {'kind': 'secret', 'env_name': name,
-            'label': label or SECRET_LABELS.get(name, name),
-            'help': help_text or (ent.help if ent else ''),
-            'set': bool(v), 'shown': shown, 'status': 'env',
-            'testable': name in SECRET_TESTS, 'test': SECRET_TESTS.get(name)}
+    row = {'kind': 'secret', 'env_name': name,
+           'label': label or SECRET_LABELS.get(name, name),
+           'help': help_text or (ent.help if ent else ''),
+           'set': bool(v), 'shown': shown, 'status': 'env',
+           'required_if': ent.required_if if ent else '', 'hints': [],
+           'testable': name in SECRET_TESTS, 'test': SECRET_TESTS.get(name)}
+    if row['required_if'] and not v:
+        row['hints'].append({'level': 'warn', 'text':
+                             'Required' + ('' if row['required_if'] == 'always' else
+                                           f" while {LABELS.get(row['required_if'], row['required_if'])} is on") +
+                             f': add {name}=... to .env on the host, run docker compose up -d, '
+                             'then reload this review.'})
+    return row
 
 
 # Secret row -> live test run with it (review_tests.py)
@@ -366,9 +383,19 @@ def review_payload() -> Dict[str, Any]:
     # ---- Battery ------------------------------------------------------------
     cnt, cap = rows_by_key['battery.count'], rows_by_key['battery.capacity_kwh']
     det_cnt, det_cap = profile.get('battery_count'), profile.get('total_capacity_kwh')
+    if profile.get('discovery_source') != 'modbus':
+        # 'config' is the .env value and 'defaults' is the code default (1 x 13.6):
+        # neither is a detection, and a fresh install must not inherit them
+        det_cnt = det_cap = None
     for r, det in ((cnt, det_cnt), (cap, det_cap)):
         r['detected'] = None if det is None else str(det)
         r['detected_source'] = profile.get('discovery_source')
+        if det is not None and r['proposed'] in (None, ''):
+            # Fresh install with a reachable aGate: propose what was detected
+            r['proposed'] = str(det)
+            r['hints'] = [h for h in r['hints'] if not h['text'].startswith('Required for this install')]
+            r['hints'].append({'level': 'ok', 'text': 'Detected from the aGate. Confirm, or type an '
+                               'override if detection is wrong.'})
         if det is not None and r['proposed'] is not None and \
                 _canon(r['type'], r['proposed']) == _canon(r['type'], str(det)):
             r['hints'].append({'level': 'ok', 'text': 'Matches the detected value. '
@@ -402,12 +429,24 @@ def review_payload() -> Dict[str, Any]:
     # ---- Arrays ---------------------------------------------------------------
     s_arrays = {a['array_id']: a for a in _store_arrays()}
     env_ids = [a.strip().lower() for a in os.environ.get('SOLAR_ARRAYS', '').split(',') if a.strip()]
+    # A fresh install's .env holds only the arrays' secrets (SOLAR_ARRAY_<ID>_EMAIL ...),
+    # so the array IDs are taken from those names too (T037)
+    for n in sorted(os.environ):
+        m = settings._ARRAY_RE.match(n)
+        if m and m.group(1).lower() not in env_ids:
+            env_ids.append(m.group(1).lower())
     ids = env_ids + [a for a in s_arrays if a not in env_ids]
     for aid in ids:
         sa = s_arrays.get(aid)
         rows = []
         atype_now = ((sa or {}).get('array_type') or
                      os.environ.get(f'SOLAR_ARRAY_{aid.upper()}_TYPE') or '').lower()
+        # Fields a new array must have before it can be committed
+        required_flds = {'NAME', 'TYPE', 'CAPACITY_KW'}
+        if atype_now == 'enphase':
+            required_flds |= {'IP', 'SERIAL'}
+        elif atype_now == 'solaredge':
+            required_flds |= {'SITE_ID'}
         for fld, (cls, where, name) in settings.ARRAY_FIELDS.items():
             env_name = f'SOLAR_ARRAY_{aid.upper()}_{fld}'
             if cls == settings.SECRET:
@@ -424,8 +463,8 @@ def review_payload() -> Dict[str, Any]:
             env_v = os.environ.get(env_name) or None
             store_v = settings._array_field_text(
                 dict(sa, config=sa['config']) if sa else None, fld) if sa else None
-            if env_v is None and store_v is None:
-                continue
+            if env_v is None and store_v is None and not (sa is None or fld in required_flds):
+                continue   # optional field nobody set; new arrays show every field
             st = _status(env_v, store_v, 'float' if fld == 'CAPACITY_KW' else 'str')
             rows.append({'kind': 'setting', 'key': f'array.{aid}.{name}', 'env_name': env_name,
                          'label': ARRAY_FIELD_LABELS[fld], 'cls': 'setting',
@@ -435,7 +474,14 @@ def review_payload() -> Dict[str, Any]:
                          'env': env_v, 'store': store_v, 'effective': store_v if
                          settings.authority() == 'store' else env_v,
                          'proposed': env_v if env_v is not None else store_v, 'status': st,
-                         'readonly': fld == 'TYPE'})
+                         'readonly': fld == 'TYPE' and sa is not None,
+                         'required_if': 'always' if fld in required_flds else '',
+                         'vmin': 0.1 if fld == 'CAPACITY_KW' else None,
+                         'vmax': 1000 if fld == 'CAPACITY_KW' else None})
+            if fld in required_flds and (env_v or store_v) is None:
+                rows[-1]['hints'].append({'level': 'warn', 'text': 'Required for this array.' + (
+                    ' Pick the type first; it decides which connection fields are needed.'
+                    if fld == 'TYPE' else '')})
             if fld == 'IP':
                 if atype_now == 'enphase':
                     rows[-1].update({'testable': True, 'test': 'envoy', 'array_id': aid})
@@ -471,6 +517,31 @@ def review_payload() -> Dict[str, Any]:
         cards['arrays'].append({'title': title, 'subtitle': subtitle, 'array_id': aid,
                                 'in_env': aid in env_ids, 'in_store': sa is not None,
                                 'rows': rows})
+    has_array_cards = bool(cards['arrays'])
+    forecast_on = settings._bool_text(rows_by_key['features.forecast'].get('proposed') or 'false') == 'true'
+    if not has_array_cards:
+        cards['arrays'].append({'title': 'No solar arrays', 'rows': [info_row(
+            'None configured',
+            'No SOLAR_ARRAY_<ID>_* lines in .env and none in the store. The engine runs without '
+            'solar (no forecast, grid-only charging). To add an array, put its secrets in .env as '
+            'SOLAR_ARRAY_<ID>_EMAIL / _PASSWORD (Enphase) or SOLAR_ARRAY_<ID>_API_KEY (SolarEdge), '
+            'restart, and reload this review; the array card then appears with its fields.')]})
+    if not any((s_arrays.get(c.get('array_id')) or {}).get('charges_battery') == 1
+               for c in cards['arrays']):
+        # Fresh install (or no array classified yet): the forecast geometry has
+        # no array card to live on, so it gets its own card here (T037). With no
+        # arrays at all the rows only show while forecasting is switched on.
+        geo = [rows_by_key[k] for k in ('forecast.house_kwp', 'forecast.house_tilt',
+                                        'forecast.house_azimuth')]
+        if not has_array_cards:
+            for r in geo:
+                r['show_if'] = 'features.forecast'
+        cards['arrays'].append({
+            'title': 'Battery-charging array: forecast geometry',
+            'subtitle': 'needed while solar forecasting is on',
+            'rows': [info_row('Which array', 'The array wired into the aGate (mark it "Charges the '
+                              'battery" above). These describe that array; after the first commit '
+                              'they move onto its card.')] + geo})
     derived_rows = [
         info_row('Battery-charging solar (kWp)', settings._derived_text('SOLAR_CAPACITY_KW', None)
                  if settings.authority() == 'store' else os.environ.get('SOLAR_CAPACITY_KW'),
@@ -639,11 +710,26 @@ def rates_cards() -> List[dict]:
         return [{'title': 'Rate plan', 'rows': [info_row('Unavailable', str(e))]}]
     plans = _q("SELECT * FROM rate_plans WHERE active = 1 ORDER BY id")
     if not plans:
-        return [{'title': 'Rate plan', 'rows': [info_row(
-            'Not in the store yet',
-            'Your data/rate_schedule.json is imported when you commit, so the store runs on the '
-            'same prices and windows you have today. Check that file before committing; prices '
-            'and times can be edited here after that.')]}]
+        try:
+            import migrate_v46
+            has_json = bool(migrate_v46.load_rate_schedule()[0])
+        except Exception:
+            has_json = False
+        if has_json:
+            return [{'title': 'Rate plan', 'rows': [info_row(
+                'Not in the store yet',
+                'Your data/rate_schedule.json is imported when you commit, so the store runs on the '
+                'same prices and windows you have today. Check that file before committing; prices '
+                'and times can be edited here after that.')]}]
+        # Fresh install: the plan is built here (T033/T037)
+        return [{'title': 'Rate plan', 'kind': 'rate_plan_new', 'rows': [info_row(
+            'No rate plan yet',
+            'Build it from the rate schedule named on your electricity bill: the seasons it has, '
+            'the price of each tier in each season, and the time windows when each tier applies. '
+            'Start from a template below, then correct the names, months, prices and times. '
+            'Committing is blocked until every month is covered and every season has its prices.',
+            'Utilities publish their rate schedules (tariffs) as documents on their website; the '
+            'Setup Checklist (Rates section) lists where to find them.')]}]
     out = []
     today = datetime.now().strftime('%Y-%m-%d')
     win = rate_config.peak_window_for_date(today)
@@ -660,9 +746,12 @@ def rates_cards() -> List[dict]:
             except (json.JSONDecodeError, TypeError):
                 months = []
             tiers = dict(base)
+            own = set()
             for r in _q("SELECT tier, rate_cents FROM rate_tiers WHERE plan_id = ? AND season_id = ?",
                         (pid, s['id'])):
                 tiers[r['tier']] = r['rate_cents']
+                own.add(r['tier'])
+            inherited = sorted(t for t in tiers if t not in own)
             wins = _q("SELECT id, tier, days_json, start_time, end_time, season_id FROM rate_windows "
                       "WHERE plan_id = ? AND season_id = ? ORDER BY start_time", (pid, s['id'])) or \
                 _q("SELECT id, tier, days_json, start_time, end_time, season_id FROM rate_windows "
@@ -675,8 +764,17 @@ def rates_cards() -> List[dict]:
                 # A year-round window is shown under every season; editing it changes all of them
                 w['shared'] = w.pop('season_id') is None
             seasons.append({'id': s['id'], 'name': s['name'], 'months': months, 'tiers': tiers,
-                            'windows': wins})
+                            'windows': wins, 'inherited': inherited})
         hints = []
+        inh = [(s['name'], s['inherited']) for s in seasons if s['inherited']]
+        if inh:
+            hints.append({'level': 'warn', 'text':
+                          'Prices marked "inherited" were not set for that season when the plan was '
+                          'imported; they are copied from the plan\'s base prices (' +
+                          '; '.join(f"{n}: {', '.join(t.replace('_', ' ') for t in ts)}" for n, ts in inh) +
+                          '). Check them against your tariff and edit any that are wrong. Editing the '
+                          'plan structure (seasons, tiers, windows) writes every season\'s prices '
+                          'explicitly.'})
         if i == 0 and res and win and win.season:
             plan_tiers = next((s['tiers'] for s in seasons if s['name'] == win.season), {})
             for t in ('peak', 'off_peak'):

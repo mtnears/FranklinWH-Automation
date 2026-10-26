@@ -3106,6 +3106,17 @@ async function checkConfigReview(){
         if(!r.ok)return;
         const st=await r.json();
         if(st.review_completed_at && st.authority==='store')return;
+        if(st.setup_complete===false){
+            // Fresh install: nothing to run on yet; the banner cannot be dismissed
+            try{sessionStorage.removeItem('fwh_review_later')}catch(e){}
+            document.getElementById('review-banner-text').innerHTML='<b>Welcome. Setup is not complete:</b> the engine is observing only (no battery mode changes) until you finish the guided setup. '+
+                'It asks for your site, battery, solar arrays and rate plan; have your electricity bill and the '+
+                '<a href="/SETUP_CHECKLIST.pdf" target="_blank" rel="noopener" style="background:none;color:#d9ceff;padding:0;font-weight:400;text-decoration:underline">Setup Checklist</a> to hand.';
+            document.getElementById('review-banner').style.display='flex';
+            var later=document.getElementById('review-banner').querySelector('button'); if(later)later.style.display='none';
+            var go=document.getElementById('review-banner').querySelector('a[href="/config_review.html"]'); if(go)go.textContent='Start the guided setup';
+            return;
+        }
         document.getElementById('review-banner-text').innerHTML=st.review_completed_at
             ?'<b>Configuration review:</b> this system is running on .env again. Take the review to move back to the reviewed configuration.'
             :'<b>New in '+(st.version||'v4.7')+':</b> please take the configuration review (about 10 minutes). Every setting is checked once and then managed by the app instead of .env. '+
