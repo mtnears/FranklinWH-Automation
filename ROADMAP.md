@@ -1,104 +1,95 @@
 # FranklinWH Battery Automation — Roadmap
 
-Planned features and improvements. Items are listed in rough priority order. Contributions, feedback, and discussion are welcome — open an [issue](https://github.com/mtnears/FranklinWH-Automation/issues).
+Planned features and improvements, in rough priority order. Contributions, feedback and discussion are welcome — open an [issue](https://github.com/mtnears/FranklinWH-Automation/issues). The maintainer runs one FranklinWH system (PG&E, NEM2, two aPower 2, Enphase + SolarEdge), so reports from other utilities, NEM3 and export setups shape what gets built next.
 
 ---
 
-## 🔧 In Progress
+## ✅ Just shipped: v4.7.0 (October 2026)
 
-### Configuration Editing + Guided Setup (built on v4.6)
-**Priority: High** · **Status: v4.7.0-beta on the `v4.7-config-review` branch**
-
-**Beta (v4.7.0-beta):** the one-time configuration review is built and in testing with existing installs. Committing it moves every setting into the store and switches the system to it; `.env` keeps only credentials, keys and deployment values. The review includes live connection tests, a backup before every commit, and one-click rollback to `.env`. See the [beta release notes](docs/RELEASE_NOTES_v4.7.0-beta.md). The branch merges to `main` once at least two existing installs have completed the review. Still to come after the merge:
-- the **setup wizard for new installs**, which builds the rate schedule from a utility/plan picker;
-- **per-meter rate plans**, for aggregated billing with a second meter on a different schedule;
-- **season-aware rate history**;
-- **re-scheduling pre/post-peak checks daily** for plans whose peak window changes by season.
-
-Background — v4.6 shipped the configuration foundation: a DB-resident config store, one canonical rate resolver, and a **read-only** Settings page with configuration-health validation. The next major step builds the *write* path on top of it — editing configuration from the UI, and a guided setup wizard for new installs that builds your rate schedule from a utility/plan picker instead of hand-editing JSON. This is also when `.env` stops being the source of truth for settings: completing a one-time configuration review moves every setting into the store, and `.env` keeps only credentials, API keys and deployment values (ports, paths, timezone). Rolling back is a single flag. Gated on the v4.6 store and validation checks proving themselves across community configurations first — see "How you can help" in the [v4.6.0 release notes](https://github.com/mtnears/FranklinWH-Automation/releases).
-
-### Direct Battery Power Register 
-**Priority: Medium**
-
-v4.6 parallel-logs battery power read directly from Modbus register 1048 (`battery_kw_direct`) alongside the derived value (load − solar − grid). Once the parallel-log soak confirms the direct read tracks the derived value across real charge/discharge cycles, a following patch swaps the direct read to authoritative and drops the deprecated `self_reserve_pct`/`tou_reserve_pct` columns in favor of the single `active_reserve_pct`.
-
-### Telemetry Expansion
-**Priority: Medium**
-
-Initial telemetry deployment is complete — opt-in anonymous collection with dashboard consent flow, v2 schema with expanded config flags and health signals. Next steps: build `scripts/aggregate.py` for the [franklin-telemetry](https://github.com/mtnears/franklin-telemetry) collection repo to generate `summary.json` and a community dashboard with anonymous fleet statistics (system sizes, utility distribution, engine versions, aggregate performance). Expand the collection repo README with full privacy policy, data schema documentation, and opt-out instructions.
-
-### Open Issue Resolution
-**Priority: Medium**
-
-Beta tester on ComEd (Illinois) dynamic pricing encountering mode detection issues (`detected=unknown`) and P7 gap charging behavior that may not suit dynamic hourly pricing without fixed peak periods. Enhanced diagnostic bundle deployed for data collection — pending further verification and log analysis to determine whether ComEd requires a dynamic pricing path distinct from fixed TOU schedules.
-
-### SolarEdge Inverter Local Data
-**Priority: Medium**
-
-`solaredge_inverter_readings` table exists and schema is defined. SE7600H (device_id=1) confirmed working via Modbus TCP at 192.168.4.213:1502. SE11400H (device_id=2) not yet responding — awaiting verification by installer. Once both inverters are confirmed, a production collector can be built for inverter-level data (AC/DC power, temperature, status) at the same cadence as the house system.
+Guided setup for new installs, a rate plan editor, and the engine running on the configuration store. See the [release notes](docs/RELEASE_NOTES_v4.7.0.md). What we most want from v4.7.0: **a few new installs going through the guided setup and telling us what was confusing or refused**. The clean-install path was verified in simulation against the maintainer's configuration; it has not yet met a stranger's house.
 
 ---
 
-## 📋 Planned
+## 🔧 In Progress: v4.7.1
 
-### Dashboard Conditional UI
-**Priority: Medium**
+### Dashboard alert banners
+**Priority: Medium** · optional, pluggable banners for utility outage maps and PSPS notices, NWS weather alerts, and (planned) burn-day status and nearby fire/evacuation feeds. Built on the `v4.7-alerts` branch during the v4.7 cycle; being rebased onto v4.7.0 and merged.
 
-The dashboard currently assumes a solar+battery system on a single-peak TOU rate. Multiple user profiles need tailored views:
-- **Solar-less systems:** Hide Solar Status card and suppress zero-value solar fields when no solar arrays are configured.
-- **Battery-only arbitrage users:** Show rate arbitrage stats (buy low/sell high metrics) instead of solar production stats.
-- **Dynamic pricing users:** Rate Plan card should show current price, next price change, and price trend instead of static E-TOU-D info.
-- **Multiple peak periods:** Some rate plans have mid-peak, super off-peak, etc. Peak bar and countdown currently assume single 5-8 PM peak — needs multi-period support.
+### Decision Engine card for export users (#28)
+**Priority: Medium** · the card is blank for installs on the export path because that path emits a different metrics schema. Fix: log the CT metrics every cycle and serve them from one `/api/engine-metrics` contract.
 
-### Automation Savings Calculation Update
-**Priority: Medium**
+### Diagnostic bundle privacy
+**Priority: High** · allowlist what the bundle exports, read configuration from the store, scrub coordinates from logs, and remove the bundles still attached to old public issues.
 
-**v4.6 progress:** the savings calculator now resolves rates and the peak window per date through the canonical `rate_config` resolver (no more hardcoded fictional rates or fixed peak hours), reads battery capacity from `app_config`, and recomputes history against the rates actually in effect on each date — including the CARE discount via `rate_history`. Remaining work:
-- Dynamic pricing: savings should use the actual price at time of charge/discharge, not flat-rate assumptions
-- Export-credit asymmetry under CARE: consumption charges discounted but export credits unaffected — verify the math accounts for this
-- NEM 3.0 export-rate modeling (separate workstream; `rate_schedule.json` export_rates currently null-only)
-
-### Export / NEM 3.0 Handling + Charging Strategy
-**Priority: Medium**
-
-v4.6's Settings page surfaces the active charging strategy and flags `SOLAR_EXPORT`-vs-NEM mismatches, clarifying that `SOLAR_EXPORT` is a *strategy* flag (self-consumption vs export-friendly), not a capability flag (#21). Remaining: make the engine path selection explicit/configurable rather than gated by a single env var, a metrics contract so the Decision Engine dashboard card populates for export-path users, and an **optional** opt-in "charge-to-target" mode for users who want a fuller battery into peak even at some off-peak grid cost (engine-behavior change, default off — design pass pending).
-
-### Home Load & Battery Power via Modbus
-**Priority: Medium**
-
-`home_load_kw` and `battery_kw` are currently hardcoded to `0.0` in the Modbus data path (`home_load_kwh` daily rollup is now working via instantaneous power fallback). Quick win: energy balance derivation after Modbus+Enphase merge. Proper fix: validate Modbus registers 82 (battery power) and 83 (home load) during active charging and peak discharge. Resolves flat zero lines in Power Flow charts.
-
-### Hybrid ML Engine Evolution
-**Priority: Medium**
-
-Evolve the engine from pure algorithmic to hybrid ML. Keep algorithmic safety/mode logic as guardrails, add learned models for: solar prediction (actual vs forecast accuracy), load prediction (beyond static hourly averages), and SC/TOU timing optimization (from historical outcomes). Data foundation exists in SQLite. The algorithmic tuning keeps circling on the same variables a trained model could learn from data.
-
-### Script Status Dashboard — Description Updates
-**Priority: Low**
-
-The Script Status dashboard tab needs updated descriptions for the new v4.1 scripts and scheduled tasks added in this release.
-
-### Multi-Gateway Management
-**Priority: Low**
-
-Support for users with multiple FranklinWH aGate systems. Coordinated management of multiple battery systems with independent configurations. **v4.6 groundwork:** `app_config` is keyed `(scope, key)` and `solar_arrays.gateway_id` ties arrays to a gateway, so per-gateway configuration is representable without a schema change.
+### Smaller fixes
+- Decision-log labels: partial-peak self-consumption and EB cycles show as "TOU"; add the rate to the partial-peak text and rename post-peak.
+- The scheduler keeps only the first 200 characters of a collector's stderr, which hides the real error (seen with the Franklin cloud `get_stats` null `runtimeData` failures).
+- Telemetry: de-duplicate installs on the fleet dashboard (count unique installs, not reports) and finish the install-UUID churn cleanup.
 
 ---
 
-## 💡 Future Ideas
+## 📋 Planned: v4.8 engine work
 
-- **Weekend strategy optimization** — Pure solar self-consumption on non-peak days with dynamic off-grid duration. The forecast engine now provides the solar production estimates needed to plan optimal weekend discharge.
-- **Holiday schedule support** — Rate schedule awareness for utility holidays
-- **Modbus write exploration** — Investigate direct Modbus register control for mode switching (currently requires cloud API; DIY orchestration is possible but fragile and unsupported)
-- **SolarEdge local API** — Direct panel monitoring if/when local API access becomes available
-- **Home Assistant integration** — MQTT discovery for HA dashboards alongside the built-in web dashboard
-- **Dashboard device auto-detection** — Automatically detect viewport dimensions and adapt layout, replacing manual device presets
-- **Dashboard cache-busting** — Version query strings on asset URLs (`?v=X`) to avoid manual cache clearing in Fully Kiosk Browser on updates
-- **Utility billing data import (Opower)** — Integration with the [tronikos/opower](https://github.com/tronikos/opower) library to pull historical usage and cost data from supported utilities (PG&E, ComEd, SMUD, Exelon subsidiaries, and 25+ others). Would enable bill estimation, savings validation against actual utility data, and historical import for new users who don't have local data yet. Caveat: utility data arrives with ~48 hour delay and auth is web-scraping based (fragile). Local Modbus/Enphase data is more timely for real-time decisions, so this would primarily serve billing validation and historical backfill. *(Community request — [#10](https://github.com/mtnears/FranklinWH-Automation/issues/10))*
+### Rate tiers ranked by price
+**Priority: High** · with the rate plan editor in place, the engine should derive its behaviour from the plan rather than from the single named `peak` tier: rank the tiers by price per day so the most expensive window drives EB timing and peak protection, and add per-tier "grid charging allowed" flags in the editor. This retires `CHARGING_STRATEGY` and makes two-peak and super-off-peak plans first-class.
+
+### Export and NEM 3.0 economics (#30, #21)
+**Priority: Medium** · a first request for battery export to the grid under SCE's NBT ("vacation export mode"). Needs NEM 3.0 export-rate modelling (the month × hour export credit matrix), explicit engine path selection instead of the single `SOLAR_EXPORT` flag, and the metrics contract above. Design pass pending; input from NEM3 and export users wanted.
+
+### Forecast calibration
+**Priority: Medium** · the solar forecast runs high on some days; review the intraday calibration and the yesterday-correction, and the hot-day peak-need forecast for summer.
+
+### Solar-day learning across the clock change
+**Priority: Medium** · the learned production window is clock-time based and relearns over several days after a DST change. Review after the November 2026 fall-back and decide whether it should be anchored to sunrise/sunset offsets instead.
+
+### Engine timing
+**Priority: Low** · trace a ~22 s pause observed in the P7 gap evaluation.
+
+---
+
+## 📋 Planned: platform
+
+### Telemetry endpoint move
+**Priority: Medium** · the anonymous telemetry endpoint (`mtnears.com/telemetry`) moves off GoDaddy to a small VPS by early 2027. The URL does not change, so no install needs reconfiguring; a short gap in reports during the cutover is expected.
+
+### Direct battery power register
+**Priority: Medium** · battery power read directly from Modbus register 1048 (`battery_kw_direct`) is still parallel-logged alongside the derived value. Once a longer soak confirms it tracks across charge and discharge cycles, it becomes authoritative and the deprecated `self_reserve_pct`/`tou_reserve_pct` columns are dropped.
+
+### Dashboard conditional UI
+**Priority: Medium** · the dashboard still assumes solar + battery on a single-peak TOU plan. Solar-less systems should lose the solar cards; battery-only arbitrage users should see buy/sell metrics; dynamic-pricing users should see the current and next price; multi-period plans need a multi-period peak bar.
+
+### Savings calculation
+**Priority: Medium** · dynamic pricing should use the price at the time of charge and discharge; export-credit asymmetry under discount programs needs checking; NEM 3.0 export rates (see above).
+
+### Multi-gateway management
+**Priority: Low** · support for more than one aGate. The store is keyed by scope and arrays carry a gateway id, so this is representable without a schema change.
+
+### Script Status descriptions
+**Priority: Low** · update the Script Status tab for the scripts and jobs added since v4.1.
+
+---
+
+## 💡 Future ideas
+
+- **Hybrid ML engine** — keep the algorithmic safety and mode logic as guardrails; learn solar and load prediction and SC/TOU timing from the history already in SQLite.
+- **Utility/plan picker** — build the rate plan from a utility database (OpenEI URDB) instead of typing it; the editor built in v4.7 is the place it would land.
+- **Weekend strategy optimization** — pure solar self-consumption on non-peak days with a planned off-grid duration from the forecast.
+- **Utility billing data import (Opower)** — pull usage and cost history from supported utilities for bill validation and backfill ([#10](https://github.com/mtnears/FranklinWH-Automation/issues/10)); auth is scraping-based and data lags ~48 h, so this serves billing, not real-time decisions.
+- **Home Assistant integration** — MQTT discovery for HA dashboards alongside the built-in dashboard (this project stays standalone automation, not an HA add-on).
+- **Dashboard** — device auto-detection replacing manual presets; cache-busting asset URLs for kiosk browsers.
+
+Concluded: direct Modbus writes for mode control need an installer unlock that most owners cannot get, so mode switching uses the aGate's local connection (port 9000) with the cloud as fallback, as shipped in v4.7.
 
 ---
 
 ## ✅ Recently Completed
+
+### v4.7.0 — Guided Setup, Rate Plan Editor, Store-Backed Engine (October 2026)
+- **Guided setup for new installs:** a secrets-only `.env` (`.env.minimal.example`), every other setting entered once in the dashboard; required settings enforced at commit (site, battery, export compensation, per-array details, feature keys); the engine observes only until the setup is committed. The configuration review from the rc series is the same flow for existing installs.
+- **Rate plan editor:** add and remove seasons, tiers and time windows with templates; the plan must cover every month, price every tier it uses per season and have no overlapping windows; plans built in the editor have no inherited prices, and imported plans mark inherited ones.
+- **Engine reads rates from the configuration store** (`rate_schedule.json` only as a fallback for un-migrated installs), so review edits reach the engine.
+- **Local connection (rc.1–rc.6):** readings and mode switches over the aGate's local port with Modbus cross-check and cloud fallback; cloud token reuse; int16 power unwrap for >32.7 kW flows; daily rollup carry-over fix; SoH column; PVOutput catch-up; telemetry peak metric v2 and review-edit counts.
+- **Build:** all dependencies and the base image pinned to the tested set; the v4 engine is the default (`ADAPTIVE_ENGINE_ENABLED` had defaulted to false in code).
 
 ### v4.6.1 — Mode Detection Fix + SolarEdge Collector Auth Migration (June 2026)
 - **Mode detection fix (#21):** `detect_mode()` fell through to the unreliable `run_status` field for any Franklin schedule whose name didn't contain backup/tou/self substrings (e.g. a cloud-only user's "Custom NEM 3.0"), so the engine believed it was already in Emergency Backup and skipped switches it had correctly decided to make. Restored the exhaustive name-based detection from v3.3.0, mapping unmatched names to `HOME_MODE`. Cloud-only users only; Modbus installs verify via register 15507 and were unaffected.
