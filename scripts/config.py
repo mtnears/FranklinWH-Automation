@@ -181,7 +181,9 @@ class Config:
     # When enabled, smart_decision.py delegates to adaptive_engine.py
     # which uses forecast-aware charging, learned system profiles, and
     # full rate schedule awareness. Falls back to v3.5 logic on error.
-    ADAPTIVE_ENGINE_ENABLED: bool = field(default_factory=lambda: get_bool('ADAPTIVE_ENGINE_ENABLED', False))
+    # v4.7.0: the v4 engine is the default (docs always said so; a secrets-only
+    # .env must not fall back to the v3.x time-based path)
+    ADAPTIVE_ENGINE_ENABLED: bool = field(default_factory=lambda: get_bool('ADAPTIVE_ENGINE_ENABLED', True))
     DECISION_INTERVAL_MINUTES: int = field(default_factory=lambda: get_int('DECISION_INTERVAL_MINUTES', 15))
     BATTERY_COUNT: int = field(default_factory=lambda: get_int('BATTERY_COUNT', 2))
     BACKUP_RESERVE_PCT: float = field(default_factory=lambda: get_float('BACKUP_RESERVE_PCT', 20.0))

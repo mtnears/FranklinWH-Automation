@@ -221,9 +221,10 @@ REGISTRY: List[Entry] = [
     _e('scheduling.peak_transition_buffer_minutes', ('PEAK_TRANSITION_BUFFER_MINUTES',), SETTING,
        'int', 10, 'C', category='scheduling', advanced=True, vmin=1, vmax=59,
        help='How many minutes before peak the pre-peak check runs.'),
-    _e('features.adaptive_engine', ('ADAPTIVE_ENGINE_ENABLED',), SETTING, 'bool', False, 'C',
+    _e('features.adaptive_engine', ('ADAPTIVE_ENGINE_ENABLED',), SETTING, 'bool', True, 'C',
        category='features', legacy=True,
-       help='Use the v4 adaptive engine. Off falls back to the v3.5 logic.'),
+       help='Use the v4 adaptive engine (default). Off falls back to the v3.5 time-based logic; '
+            'only for troubleshooting.'),
     _e('scheduling.home_mode', ('HOME_MODE',), SETTING, 'enum', 'tou', 'C',
        category='scheduling', legacy=True, choices=('tou', 'self_consumption'),
        help='v3 path only: default home mode.'),
